@@ -1,6 +1,15 @@
 import AppKit
 import SwiftUI
 
+/// Single source of truth for the popover dimensions. Both the
+/// NSPopover.contentSize and the inner SwiftUI .frame need to match,
+/// otherwise the SwiftUI side collapses to its natural intrinsic size
+/// while AppKit allocates the larger frame (or vice versa).
+enum PRBarPopoverSize {
+    static let width: CGFloat = 560
+    static let height: CGFloat = 640
+}
+
 /// Owns the menu-bar `NSStatusItem` and the SwiftUI popover. Replaces
 /// `MenuBarExtra(.window)` so we can route left-click vs right-click
 /// independently — left toggles the popover, right pops a Settings + Quit
@@ -92,7 +101,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
+        // Without an explicit contentSize, NSPopover sizes to whatever
+        // SwiftUI reports as the intrinsic content size — which collapses
+        // when the inner ScrollView's natural height is small or the
+        // detail view's anchor pushes the layout. Pin to a reasonable
+        // popover-shape (560 × 640) so the list scrolls inside its frame.
+        popover.contentSize = NSSize(width: PRBarPopoverSize.width,
+                                     height: PRBarPopoverSize.height)
         let root = PopoverView()
+            .frame(width: PRBarPopoverSize.width, height: PRBarPopoverSize.height)
             .environment(poller)
             .environment(notifier)
             .environment(queue)

@@ -37,7 +37,7 @@ struct PopoverView: View {
             }
         }
         .padding(16)
-        .frame(width: 480)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await probeTools() }
         .task { poller.pollNow() }   // refresh whenever the popover opens
         .onAppear { notifier.setPopoverVisible(true) }
@@ -68,11 +68,7 @@ struct PopoverView: View {
             case .history: HistoryView()
             }
         }
-        .frame(minHeight: 80, alignment: .top)
-
-        Divider()
-
-        rightClickHint
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var header: some View {
@@ -138,18 +134,6 @@ struct PopoverView: View {
         case .myPRs:  return myPRsCount > 0  ? "\(tab.rawValue)  \(myPRsCount)"  : tab.rawValue
         case .inbox:  return inboxCount > 0  ? "\(tab.rawValue)  \(inboxCount)"  : tab.rawValue
         case .history: return tab.rawValue
-        }
-    }
-
-    private var rightClickHint: some View {
-        HStack {
-            Image(systemName: "cursorarrow.click.2")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text("Right-click the menu-bar icon for Settings or Quit")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Spacer()
         }
     }
 
