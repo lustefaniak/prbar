@@ -10,7 +10,19 @@ import SwiftUI
 struct AnnotationsSummaryView: View {
     let annotations: [DiffAnnotation]
 
+    /// Called when the user wants to jump from this list into the actual
+    /// diff. The parent (`PRDetailView`) wires this to set its
+    /// `focusedDiffKey` and scroll the inline `DiffView` to the matching
+    /// line. nil = "navigation disabled" (e.g. detail view doesn't have a
+    /// diff loaded yet).
+    var onLocate: ((DiffAnnotation) -> Void)?
+
     @State private var expanded: Set<Int> = []
+
+    init(annotations: [DiffAnnotation], onLocate: ((DiffAnnotation) -> Void)? = nil) {
+        self.annotations = annotations
+        self.onLocate = onLocate
+    }
 
     var body: some View {
         if annotations.isEmpty {
@@ -41,26 +53,46 @@ struct AnnotationsSummaryView: View {
     private func row(idx: Int, annotation: DiffAnnotation) -> some View {
         let isOpen = expanded.contains(idx)
         VStack(alignment: .leading, spacing: 2) {
-            Button {
-                if isOpen { expanded.remove(idx) } else { expanded.insert(idx) }
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Circle()
-                        .fill(severityColor(annotation.severity))
-                        .frame(width: 8, height: 8)
-                    Text(annotation.displayTitle)
-                        .font(.callout)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer()
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Button {
+                    if isOpen { expanded.remove(idx) } else { expanded.insert(idx) }
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Circle()
+                            .fill(severityColor(annotation.severity))
+                            .frame(width: 8, height: 8)
+                        Text(annotation.displayTitle)
+                            .font(.callout)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                if let onLocate {
+                    Button {
+                        onLocate(annotation)
+                    } label: {
+                        HStack(spacing: 2) {
+                            Text(locationLabel(annotation))
+                                .font(.system(.caption2, design: .monospaced))
+                            Image(systemName: "arrow.down.right.square")
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Locate in diff")
+                } else {
                     Text(locationLabel(annotation))
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
                 }
             }
-            .buttonStyle(.plain)
 
             if isOpen {
                 Text(annotation.body)

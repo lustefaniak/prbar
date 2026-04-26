@@ -45,6 +45,15 @@ struct PRBarApp: App {
     }
 
     private static func enforceSingleInstance() {
+        // XCTest hosts the app inside a runner process; an early exit(0)
+        // here makes xcodebuild think the test bundle never bootstrapped.
+        // Detect the test session by the XCTest bundle's env var and skip.
+        if ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil {
+            return
+        }
+        if NSClassFromString("XCTestCase") != nil {
+            return
+        }
         let myBundleID = Bundle.main.bundleIdentifier ?? "dev.lustefaniak.prbar"
         let myPID = ProcessInfo.processInfo.processIdentifier
         let others = NSRunningApplication

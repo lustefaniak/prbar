@@ -16,6 +16,14 @@ struct DiffView: View {
     /// the subpath of one subreview (e.g. "kernel-billing").
     let subpaths: [String]
 
+    /// Two-way handle for "scroll the diff to this line and pop its
+    /// annotation bubble open". Caller (PRDetailView) sets this when the
+    /// user clicks a row in the AnnotationsSummary; DiffView observes it
+    /// and inserts the matching key into `expandedAnnotationKeys` so the
+    /// inline bubble expands. The actual scrolling is done by the parent's
+    /// ScrollViewReader (the outer ScrollView lives in PRDetailView).
+    @Binding var focusedKey: String?
+
     @State private var selectedSubpath: String? = nil
     @State private var collapsedFiles: Set<String> = []
     @State private var expandedAnnotationKeys: Set<String> = []
@@ -23,11 +31,23 @@ struct DiffView: View {
     init(
         hunks: [Hunk],
         annotations: [DiffAnnotation],
-        subpaths: [String] = []
+        subpaths: [String] = [],
+        focusedKey: Binding<String?> = .constant(nil)
     ) {
         self.hunks = hunks
         self.annotations = annotations
         self.subpaths = subpaths
+        self._focusedKey = focusedKey
+    }
+
+    /// Stable id for a single rendered line of the diff. Only set for
+    /// lines that have a new-side line number (.added / .context); .removed
+    /// lines never carry annotations and aren't navigation targets. The
+    /// shape — `anchor:<path>:<newLineNo>` — is shared with the
+    /// AnnotationsSummary so a click there can directly request scroll +
+    /// expansion to the same key.
+    static func anchorKey(path: String, newLine: Int) -> String {
+        "anchor:\(path):\(newLine)"
     }
 
     var body: some View {
@@ -43,6 +63,15 @@ struct DiffView: View {
                 ForEach(fileGroups, id: \.path) { group in
                     fileSection(path: group.path, hunks: group.hunks)
                 }
+            }
+        }
+        // When the parent flips focusedKey (user clicked an annotation in
+        // the summary list), expand the matching bubble in-place. Scroll
+        // is the parent's job via its ScrollViewReader; here we just make
+        // sure the destination is visible (i.e. the bubble pops open).
+        .onChange(of: focusedKey) { _, newValue in
+            if let key = newValue {
+                expandedAnnotationKeys.insert(key)
             }
         }
     }
@@ -184,12 +213,14 @@ struct DiffView: View {
 
             ForEach(Array(hunk.lines.enumerated()), id: \.offset) { lineIdx, line in
                 let hitsHere = hitsByLine[lineIdx] ?? []
+                let newLine = newLines[lineIdx]
+                let key = newLine.map { Self.anchorKey(path: hunk.filePath, newLine: $0) }
                 diffLineRow(
                     line: line,
                     oldLine: oldLines[lineIdx],
-                    newLine: newLines[lineIdx],
+                    newLine: newLine,
                     hits: hitsHere,
-                    keyPrefix: "\(hunk.filePath)#\(hunkIndexInFile).\(lineIdx)"
+                    anchorKey: key
                 )
             }
         }
@@ -201,7 +232,7 @@ struct DiffView: View {
         oldLine: Int?,
         newLine: Int?,
         hits: [DiffAnnotationCorrelator.Hit],
-        keyPrefix: String
+        anchorKey: String?
     ) -> some View {
         let bg: Color = {
             switch line {
@@ -248,15 +279,20 @@ struct DiffView: View {
             .background(bg)
             .contentShape(Rectangle())
             .onTapGesture {
-                if !hits.isEmpty {
-                    toggleExpanded(keyPrefix)
+                if !hits.isEmpty, let key = anchorKey {
+                    toggleExpanded(key)
                 }
             }
 
-            if !hits.isEmpty && expandedAnnotationKeys.contains(keyPrefix) {
+            if !hits.isEmpty,
+               let key = anchorKey,
+               expandedAnnotationKeys.contains(key) {
                 annotationBubble(hits: hits)
             }
         }
+        // Anchor for the outer ScrollViewReader. .removed lines have no
+        // anchorKey and aren't valid jump destinations.
+        .modifier(OptionalIDModifier(id: anchorKey))
     }
 
     @ViewBuilder
@@ -312,6 +348,16 @@ private extension DiffLine {
     var isContext: Bool {
         if case .context = self { return true }
         return false
+    }
+}
+
+/// Helper that conditionally applies `.id(...)` only when the id string
+/// is non-nil. SwiftUI doesn't ignore `.id(nil)` cleanly, and we want to
+/// avoid bogus collisions among `.removed` lines that share no identity.
+private struct OptionalIDModifier: ViewModifier {
+    let id: String?
+    func body(content: Content) -> some View {
+        if let id { content.id(id) } else { content }
     }
 }
 

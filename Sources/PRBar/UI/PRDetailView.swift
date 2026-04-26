@@ -14,6 +14,11 @@ struct PRDetailView: View {
     @State private var bodyDraft: String = ""
     @State private var showActionPicker: Bool = false
 
+    /// Set when the user clicks an annotation row → drives scroll +
+    /// expand-bubble in the diff. Cleared after a short delay so the
+    /// same annotation can be re-clicked to re-jump.
+    @State private var focusedDiffKey: String? = nil
+
     private var review: AggregatedReview? {
         if case .completed(let agg) = queue.reviews[pr.nodeId]?.status {
             return agg
@@ -57,18 +62,38 @@ struct PRDetailView: View {
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if !pr.allCheckSummaries.isEmpty {
-                        CIStatusView(checks: pr.allCheckSummaries)
-                        Divider()
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            // Anchor target for the scroll-to-top button.
+                            Color.clear.frame(height: 0).id("top")
+                            if !pr.allCheckSummaries.isEmpty {
+                                CIStatusView(checks: pr.allCheckSummaries)
+                                Divider()
+                            }
+                            aiSection
+                            Divider()
+                            diffSection
+                            if showsReviewActions {
+                                Divider()
+                                actionsSection
+                            }
+                        }
                     }
-                    aiSection
-                    Divider()
-                    diffSection
-                    if showsReviewActions {
-                        Divider()
-                        actionsSection
+                    scrollToTopButton(proxy: proxy)
+                }
+                .onChange(of: focusedDiffKey) { _, newKey in
+                    guard let key = newKey else { return }
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(key, anchor: .center)
+                    }
+                    // Clear the focus shortly after so re-clicking the
+                    // same annotation triggers another scroll. SwiftUI
+                    // only fires onChange on actual value changes.
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(400))
+                        focusedDiffKey = nil
                     }
                 }
             }
@@ -241,7 +266,17 @@ struct PRDetailView: View {
                 .textSelection(.enabled)
                 .lineLimit(20)
             if !agg.annotations.isEmpty {
-                AnnotationsSummaryView(annotations: agg.annotations)
+                AnnotationsSummaryView(
+                    annotations: agg.annotations,
+                    onLocate: { ann in
+                        // Land on the last covered line so multi-line
+                        // ranges still highlight the bottom edge of the
+                        // span. Scroller centers it; close enough to read.
+                        focusedDiffKey = DiffView.anchorKey(
+                            path: ann.path, newLine: ann.lineEnd
+                        )
+                    }
+                )
             }
             if agg.perSubreview.count > 1 {
                 SubreviewBreakdownView(outcomes: agg.perSubreview)
@@ -306,10 +341,33 @@ struct PRDetailView: View {
                 DiffView(
                     hunks: hunks,
                     annotations: review?.annotations ?? [],
-                    subpaths: subpathsFromReview()
+                    subpaths: subpathsFromReview(),
+                    focusedKey: $focusedDiffKey
                 )
             }
         }
+    }
+
+    /// Floating button bottom-right of the detail scroller. Always
+    /// rendered; visually unobtrusive (small, slightly transparent) so
+    /// it doesn't get in the way of short PRs but is right there when
+    /// the diff scrolls past several screens. Click → scroll to top.
+    @ViewBuilder
+    private func scrollToTopButton(proxy: ScrollViewProxy) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                proxy.scrollTo("top", anchor: .top)
+            }
+        } label: {
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.title2)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.tint)
+        }
+        .buttonStyle(.plain)
+        .padding(8)
+        .opacity(0.7)
+        .help("Scroll to top")
     }
 
     private func subpathsFromReview() -> [String] {
