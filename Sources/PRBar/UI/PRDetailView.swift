@@ -263,37 +263,31 @@ struct PRDetailView: View {
                         descriptionExpanded = true
                     }
                 } label: {
-                    // Collapsed preview uses inline-only AttributedString
-                    // so `lineLimit` + `.truncationMode(.tail)` clip
-                    // cleanly — `Markdown`'s per-block VStack layout
-                    // ignores `lineLimit` across blocks. The expanded
-                    // view is the real renderer.
-                    collapsedPreview(pr.body)
+                    // Collapsed preview renders the full Markdown but
+                    // clips to a fixed height with a fade-out mask at
+                    // the bottom — `Markdown`'s per-block VStack layout
+                    // ignores SwiftUI's `lineLimit`, so we clip
+                    // visually rather than line-count.
+                    MarkdownText(raw: pr.body)
                         .font(.callout)
-                        .lineLimit(6)
-                        .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .multilineTextAlignment(.leading)
+                        .frame(maxHeight: 120, alignment: .top)
+                        .clipped()
+                        .mask(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .black, location: 0.0),
+                                    .init(color: .black, location: 0.75),
+                                    .init(color: .black.opacity(0.0), location: 1.0),
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .allowsHitTesting(false)
                 }
                 .buttonStyle(.plain)
             }
-        }
-    }
-
-    @ViewBuilder
-    private func collapsedPreview(_ raw: String) -> some View {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let attr = try? AttributedString(
-            markdown: trimmed,
-            options: AttributedString.MarkdownParsingOptions(
-                allowsExtendedAttributes: false,
-                interpretedSyntax: .inlineOnlyPreservingWhitespace,
-                failurePolicy: .returnPartiallyParsedIfPossible
-            )
-        ) {
-            Text(attr)
-        } else {
-            Text(trimmed)
         }
     }
 
