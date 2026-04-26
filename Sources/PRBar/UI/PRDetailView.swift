@@ -269,6 +269,7 @@ struct PRDetailView: View {
                     // ignores SwiftUI's `lineLimit`, so we clip
                     // visually rather than line-count.
                     MarkdownText(raw: pr.body)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .frame(maxHeight: 110, alignment: .top)
                         .clipped()
@@ -286,6 +287,7 @@ struct PRDetailView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
