@@ -249,22 +249,33 @@ struct PRDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            descriptionMarkdown(pr.body)
-                .font(.callout)
-                .lineLimit(descriptionExpanded ? nil : 6)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    // Tap-to-expand on the body too, not just the
-                    // button — the button is small and easy to miss.
-                    if !descriptionExpanded {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            descriptionExpanded = true
-                        }
+            // Selection (.textSelection) and click-to-expand fight
+            // each other: with selection enabled, every click drops a
+            // text-cursor caret instead of triggering the gesture, and
+            // moving the mouse during click starts a selection drag.
+            // Resolve cleanly: when collapsed, the body is a tap target
+            // (no selection); when expanded, switch to selectable text
+            // (no tap, copy/paste works) and rely on "Show less".
+            if descriptionExpanded {
+                descriptionMarkdown(pr.body)
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            } else {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        descriptionExpanded = true
                     }
+                } label: {
+                    descriptionMarkdown(pr.body)
+                        .font(.callout)
+                        .lineLimit(6)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .multilineTextAlignment(.leading)
                 }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -730,11 +741,16 @@ struct PRDetailView: View {
     }
 
     private func verdictAppearance(_ v: ReviewVerdict) -> (String, Color) {
+        // Labels mirror GitHub's own review action verbs verbatim — no
+        // ALL CAPS, no abbreviations — so clicking the pill posts what
+        // the label literally says. "Abstain" has no GitHub equivalent;
+        // shown as informational only (the badge isn't clickable in
+        // that case — see `reviewAction(for:)`).
         switch v {
-        case .approve:        return ("APPROVE", .green)
-        case .comment:        return ("COMMENT", .blue)
-        case .requestChanges: return ("CHANGES", .red)
-        case .abstain:        return ("ABSTAIN", .gray)
+        case .approve:        return ("Approve", .green)
+        case .comment:        return ("Comment", .blue)
+        case .requestChanges: return ("Request changes", .red)
+        case .abstain:        return ("Abstain", .gray)
         }
     }
 }
