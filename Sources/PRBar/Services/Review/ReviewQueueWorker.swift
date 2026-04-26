@@ -161,7 +161,9 @@ final class ReviewQueueWorker {
 
         do {
             let diffText = try await diffFetcher(pr.owner, pr.repo, pr.number)
-            let subdiffs = MonorepoSplitter.split(diffText: diffText)
+            let config = MonorepoConfig.match(owner: pr.owner, repo: pr.repo)
+            let effectiveToolMode = config.toolModeOverride ?? toolMode
+            let subdiffs = MonorepoSplitter.split(diffText: diffText, config: config)
             guard !subdiffs.isEmpty else {
                 reviews[pr.nodeId]?.status = .failed("Empty diff — nothing to review.")
                 return
@@ -171,7 +173,7 @@ final class ReviewQueueWorker {
             // and reuse it across all subreviews of this PR (they all
             // reference the same SHA, just different subpaths).
             let sharedHandle: RepoCheckoutManager.Handle?
-            if toolMode == .minimal, let mgr = checkoutManager {
+            if effectiveToolMode == .minimal, let mgr = checkoutManager {
                 sharedHandle = try await mgr.provision(
                     owner: pr.owner, repo: pr.repo,
                     headSha: pr.headSha, subpath: ""
@@ -192,15 +194,15 @@ final class ReviewQueueWorker {
                     pr: pr,
                     subdiff: subdiff,
                     diffText: diffText,
-                    toolMode: toolMode,
+                    toolMode: effectiveToolMode,
                     workdir: workdir
                 )
                 let options = ProviderOptions(
                     model: nil,
-                    toolMode: toolMode,
+                    toolMode: effectiveToolMode,
                     additionalAddDirs: [],
-                    maxToolCalls: 10,
-                    maxCostUsd: 0.30,
+                    maxToolCalls: config.maxToolCallsPerSubreview,
+                    maxCostUsd: config.maxCostUsdPerSubreview,
                     timeout: .seconds(120),
                     schema: try PromptLibrary.outputSchema()
                 )

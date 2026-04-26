@@ -192,6 +192,9 @@ struct PRDetailView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+            if agg.perSubreview.count > 1 {
+                SubreviewBreakdownView(outcomes: agg.perSubreview)
+            }
         }
     }
 

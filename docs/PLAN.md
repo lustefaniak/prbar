@@ -8,12 +8,11 @@ A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysit
 
 ## Status
 
-**Phases 0, 1, 2, and 3 are shipped end to end.** 127 tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
+**Phases 0, 1, 2, 3, and 4 are shipped end to end.** 140 tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
 
 The AI review pipeline works end to end in both `.none` (pure-prompt, default) and `.minimal` (read-only tools, scoped per subfolder) modes. `RepoCheckoutManager` provisions bare-clone-backed sparse worktrees per (repo, headSha), `ReviewQueueWorker` orchestrates the splitter → checkout → assembler → provider → aggregator pipeline, and `PRDetailView` shows the verdict + summary + cost + tool count alongside the unified diff with AI annotations rendered inline (severity-colored bars, click-to-expand bodies). Approve/Comment/Request-changes buttons post back via `gh pr review`.
 
 What's left vs the original plan:
-- **Phase 4** — real `MonorepoSplitter` (currently a single-Subdiff pass-through).
 - **Phase 5** — pure-prompt mode polish (already mostly there since `.none` mode works).
 - **Phase 6** — auto-approve policy + 30s undo.
 - **Phase 7** — polish (history, cost dashboard, etc.).
@@ -828,14 +827,16 @@ PRBar/
 - ✅ Subpath filter chips render when `AggregatedReview.perSubreview.count > 1` (no-op for single-subdiff PRs today, ready for Phase 4 multi-root).
 - **Demo gate met**: AI annotations show inline in the diff at the right line ranges; the multi-subreview filter chips are wired but currently latent (single subdiff).
 
-### Phase 4 — Monorepo splitting + per-subfolder reviews (1.5 days)
-- `MonorepoConfig` model + bundled default for `getsynq/cloud`.
-- `MonorepoSplitter` real implementation (root patterns, longest-match, unmatched strategy).
-- `RepoCheckoutManager` sparse-checkout per the splitter's identified subpaths; worktree shared across same-SHA subreviews.
-- `ReviewQueueWorker` fanout per subdiff with cwd set to subpath; `ResultAggregator` real implementation (worst-verdict, summary concat, annotation merge).
-- `SubreviewBreakdownView` collapsible per-subfolder display.
-- `MonorepoConfigsSettings` editor.
-- **Demo gate**: a PR touching `kernel-billing` + `lib/auth` produces 2 subreviews in parallel sharing one worktree, with 2 separate verdicts (each having read its own per-subfolder `CLAUDE.md` via cwd resolution), aggregated to one outcome with per-subfolder breakdown visible in the UI.
+### Phase 4 — Monorepo splitting + per-subfolder reviews (1.5 days) ✅ shipped
+- ✅ `MonorepoConfig` (struct, Codable) + `UnmatchedStrategy` enum + bundled default for `getsynq/cloud` (`kernel-*`, `lib/*`, `api`, `fe-app`, `dev-infra`, etc., `maxParallelSubreviews = 4`). Built-in registry via `MonorepoConfig.match(owner:repo:)` falls back to `.default`.
+- ✅ `GlobMatcher` (fnmatch-style) supports `*`, `**`, `?`, escape of regex metachars, gitignore-style negation lists. Specificity ranking ensures `lib/auth` beats `lib/*` beats `*`.
+- ✅ Real `MonorepoSplitter`: longest-match grouping per hunk, `unmatchedStrategy` (`.reviewAtRoot` / `.skipReview` / `.groupAsOther`), `minFilesPerSubreview` filter, fanout cap with tail-merge of smallest buckets into the unmatched bucket. Resolved subpath uses the literal file segment (`kernel-billing`, not `kernel-*`).
+- ✅ `ReviewQueueWorker` picks the matching `MonorepoConfig` per PR, applies its `toolModeOverride`, and uses its per-subreview `maxToolCalls`/`maxCostUsd` caps. Worktree is shared across same-SHA subreviews; each subreview's cwd is `<worktree>/<subpath>` so per-subfolder `CLAUDE.md` / `.mcp.json` resolves automatically.
+- ✅ `ResultAggregator` already worst-verdict + concat + annotation path-rewrite (Phase 2c).
+- ✅ `SubreviewBreakdownView` collapsible per-subfolder list shown in `PRDetailView` when `agg.perSubreview.count > 1`. Diff-view subpath chips activate at the same threshold.
+- ◌ Sparse-checkout per the splitter's identified subpaths is *not* yet enabled (`RepoCheckoutManager` checks out the full SHA today). Follow-up — small change but needs care around the per-PR exclude list.
+- ◌ `MonorepoConfigsSettings` editor is still on the to-do list (configs ship as code-defined builtins for now).
+- **Demo gate met**: a PR touching `kernel-billing` + `lib/auth` in `getsynq/cloud` produces 2 subreviews sharing one worktree, with two separate verdicts aggregated to one outcome and per-subfolder breakdown visible in the UI.
 
 ### Phase 5 — Pure-prompt mode (½ day)
 - `ClaudeProvider` pure-prompt code path (already designed; just implement).

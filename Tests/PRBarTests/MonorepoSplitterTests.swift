@@ -22,9 +22,9 @@ final class MonorepoSplitterTests: XCTestCase {
         XCTAssertEqual(subs[0].hunks[0].filePath, "foo.go")
     }
 
-    func testMultiFileYieldsOneSubdiffAtRepoRootForNow() {
-        // Phase 2 trivial pass-through: even when files belong to different
-        // subfolders, we return one Subdiff. Phase 4 will split.
+    func testMultiFileWithDefaultConfigStaysAtRoot() {
+        // Default config has no rootPatterns; every hunk routes to the
+        // unmatched bucket, collapsed into one repo-root Subdiff.
         let diff = """
         diff --git a/kernel-billing/log.go b/kernel-billing/log.go
         --- a/kernel-billing/log.go
@@ -42,9 +42,126 @@ final class MonorepoSplitterTests: XCTestCase {
         let subs = MonorepoSplitter.split(diffText: diff)
         XCTAssertEqual(subs.count, 1)
         XCTAssertEqual(subs[0].subpath, "")
-        XCTAssertEqual(subs[0].hunks.map(\.filePath), [
-            "kernel-billing/log.go",
-            "lib/auth/token.go",
+    }
+
+    // MARK: - real config
+
+    func testGetsynqCloudSplitsByRoot() {
+        let diff = """
+        diff --git a/kernel-billing/audit/log.go b/kernel-billing/audit/log.go
+        --- a/kernel-billing/audit/log.go
+        +++ b/kernel-billing/audit/log.go
+        @@ -1 +1 @@
+        -a
+        +b
+        diff --git a/lib/auth/token.go b/lib/auth/token.go
+        --- a/lib/auth/token.go
+        +++ b/lib/auth/token.go
+        @@ -1 +1 @@
+        -a
+        +b
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1 +1 @@
+        -a
+        +b
+        """
+        let subs = MonorepoSplitter.split(diffText: diff, config: .getsynqCloud)
+
+        let bySubpath = Dictionary(uniqueKeysWithValues: subs.map { ($0.subpath, $0) })
+        XCTAssertNotNil(bySubpath["kernel-billing"], "kernel-* should resolve to kernel-billing")
+        XCTAssertNotNil(bySubpath["lib/auth"], "lib/* should resolve to lib/auth")
+        XCTAssertNotNil(bySubpath[""], "README.md should land in repo-root unmatched bucket")
+    }
+
+    func testFanoutCapTailMergesSmallestIntoUnmatched() {
+        // 5 distinct kernel modules with the cap = 4 → smallest one tail-
+        // merges into the unmatched (root) bucket. We arrange counts so
+        // kernel-d is the smallest.
+        let diff = makeMultiKernelDiff(filesPerKernel: [
+            "kernel-a": 3, "kernel-b": 3, "kernel-c": 3, "kernel-d": 1, "kernel-e": 2,
         ])
+        let subs = MonorepoSplitter.split(diffText: diff, config: .getsynqCloud)
+        let names = subs.map(\.subpath).filter { !$0.isEmpty }.sorted()
+        XCTAssertFalse(names.contains("kernel-d"), "smallest bucket should be tail-merged out")
+        XCTAssertLessThanOrEqual(subs.count, 4, "fanout cap is 4")
+    }
+
+    func testSkipReviewStrategyDropsUnmatched() {
+        let diff = """
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1 +1 @@
+        -a
+        +b
+        """
+        let cfg = MonorepoConfig(
+            repoGlobs: ["*/*"],
+            rootPatterns: ["kernel-*"],
+            unmatchedStrategy: .skipReview,
+            minFilesPerSubreview: 1,
+            toolModeOverride: nil,
+            maxParallelSubreviews: 4,
+            maxToolCallsPerSubreview: 10,
+            maxCostUsdPerSubreview: 0.30
+        )
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        XCTAssertTrue(subs.isEmpty)
+    }
+
+    func testGroupAsOtherBucket() {
+        let diff = """
+        diff --git a/README.md b/README.md
+        --- a/README.md
+        +++ b/README.md
+        @@ -1 +1 @@
+        -a
+        +b
+        """
+        let cfg = MonorepoConfig(
+            repoGlobs: ["*/*"],
+            rootPatterns: ["kernel-*"],
+            unmatchedStrategy: .groupAsOther,
+            minFilesPerSubreview: 1,
+            toolModeOverride: nil,
+            maxParallelSubreviews: 4,
+            maxToolCallsPerSubreview: 10,
+            maxCostUsdPerSubreview: 0.30
+        )
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        XCTAssertEqual(subs.map(\.subpath), ["<other>"])
+    }
+
+    func testConfigMatchPicksGetsynqCloud() {
+        let cfg = MonorepoConfig.match(owner: "getsynq", repo: "cloud")
+        XCTAssertEqual(cfg.repoGlobs, ["getsynq/cloud"])
+    }
+
+    func testConfigMatchFallsBackToDefault() {
+        let cfg = MonorepoConfig.match(owner: "someone", repo: "elsewhere")
+        XCTAssertEqual(cfg.rootPatterns, [])
+    }
+
+    // MARK: - helpers
+
+    private func makeMultiKernelDiff(filesPerKernel: [String: Int]) -> String {
+        var s = ""
+        for (kernel, n) in filesPerKernel {
+            for i in 0..<n {
+                let path = "\(kernel)/file\(i).go"
+                s += """
+                diff --git a/\(path) b/\(path)
+                --- a/\(path)
+                +++ b/\(path)
+                @@ -1 +1 @@
+                -a
+                +b
+
+                """
+            }
+        }
+        return s
     }
 }
