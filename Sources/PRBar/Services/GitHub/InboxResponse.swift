@@ -99,13 +99,18 @@ struct InboxResponse: Decodable, Sendable {
 
     struct StatusCheckRollup: Decodable, Sendable {
         let state: String
-        let contexts: NodeList<CheckContext>
+        let contexts: NullableNodeList<CheckContext>
+    }
+
+    /// Like `NodeList` but tolerates null entries in the `nodes` array.
+    /// GitHub returns `null` for context entries the viewer can't see (e.g.
+    /// check runs from a private fork the viewer doesn't have access to).
+    struct NullableNodeList<T: Decodable & Sendable>: Decodable, Sendable {
+        let nodes: [T?]
     }
 
     struct CheckContext: Decodable, Sendable {
         let typename: String
-        // Common across both branches (resolved per-branch below).
-        let isRequired: Bool?
         // CheckRun branch.
         let name: String?
         let conclusion: String?
@@ -120,9 +125,15 @@ struct InboxResponse: Decodable, Sendable {
 
         enum CodingKeys: String, CodingKey {
             case typename = "__typename"
-            case isRequired
             case name, conclusion, status, detailsUrl, summary
             case context, state, targetUrl, description
         }
+        // Note: we deliberately DON'T request `isRequired` here. Querying
+        // CheckRun.isRequired makes gh CLI emit ~3 stderr "A pull request
+        // ID or pull request number is required" lines per PR (and exit 1)
+        // even though stdout JSON is valid. Confirmed via curl: the
+        // GitHub API itself accepts the field. gh CLI quirk.
+        // We'll compute `isRequired` from the REST branch-protection
+        // cache (planned for Phase 1+), which is the canonical source.
     }
 }

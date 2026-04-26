@@ -49,7 +49,6 @@ final class InboxResponseTests: XCTestCase {
                                     "name": "Test Suite",
                                     "conclusion": "SUCCESS",
                                     "status": "COMPLETED",
-                                    "isRequired": true,
                                     "detailsUrl": "https://example.com",
                                     "summary": null
                                   }
@@ -88,7 +87,6 @@ final class InboxResponseTests: XCTestCase {
         XCTAssertEqual(pr.allCheckSummaries.count, 1)
         XCTAssertEqual(pr.allCheckSummaries[0].name, "Test Suite")
         XCTAssertEqual(pr.allCheckSummaries[0].typename, "CheckRun")
-        XCTAssertTrue(pr.allCheckSummaries[0].isRequired)
         XCTAssertFalse(pr.hasAutoMerge)
     }
 
@@ -136,7 +134,6 @@ final class InboxResponseTests: XCTestCase {
               "__typename": "StatusContext",
               "context": "ci/circleci",
               "state": "SUCCESS",
-              "isRequired": false,
               "targetUrl": "https://circleci.com/...",
               "description": "Tests passed"
             }]
@@ -148,7 +145,6 @@ final class InboxResponseTests: XCTestCase {
         XCTAssertEqual(pr.allCheckSummaries[0].typename, "StatusContext")
         XCTAssertEqual(pr.allCheckSummaries[0].name, "ci/circleci")
         XCTAssertEqual(pr.allCheckSummaries[0].status, "SUCCESS")
-        XCTAssertFalse(pr.allCheckSummaries[0].isRequired)
     }
 
     // MARK: - fixture helpers
@@ -165,7 +161,7 @@ final class InboxResponseTests: XCTestCase {
             reviewersJson = "[]"
         }
         let contexts = statusContextsJson ?? """
-        [{ "__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS", "status": "COMPLETED", "isRequired": true, "detailsUrl": null, "summary": null }]
+        [{ "__typename": "CheckRun", "name": "ci", "conclusion": "SUCCESS", "status": "COMPLETED", "detailsUrl": null, "summary": null }]
         """
         return """
         {

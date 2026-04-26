@@ -5,7 +5,6 @@ struct CheckSummary: Sendable, Hashable, Codable {
     let name: String            // workflow/check name (or context for legacy)
     let conclusion: String?     // SUCCESS | FAILURE | NEUTRAL | … (CheckRun)
     let status: String?         // QUEUED | IN_PROGRESS | COMPLETED (CheckRun) or state (StatusContext)
-    let isRequired: Bool        // mirrors GitHub's "Required" badge — drives ready-to-merge logic
 }
 
 struct InboxPR: Identifiable, Sendable, Hashable, Codable {
@@ -78,13 +77,13 @@ extension InboxPR {
 
         let rollup = node.commits.nodes.first?.commit.statusCheckRollup
         self.checkRollupState = rollup?.state ?? "EMPTY"
-        self.allCheckSummaries = (rollup?.contexts.nodes ?? []).map { ctx in
-            CheckSummary(
+        self.allCheckSummaries = (rollup?.contexts.nodes ?? []).compactMap { ctx in
+            guard let ctx else { return nil }   // skip nulls (private/inaccessible)
+            return CheckSummary(
                 typename: ctx.typename,
                 name: ctx.name ?? ctx.context ?? "(unknown)",
                 conclusion: ctx.conclusion,
-                status: ctx.status ?? ctx.state,
-                isRequired: ctx.isRequired ?? false
+                status: ctx.status ?? ctx.state
             )
         }
     }

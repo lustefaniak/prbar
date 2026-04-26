@@ -33,18 +33,15 @@ final class GHClientIntegrationTests: XCTestCase {
         let prs = try await client.fetchInbox()
 
         // Don't assert on count — user's open-PR list changes over time.
-        // Just assert shape on whatever came back.
+        // Just assert shape on whatever came back. Note: `.other` is a
+        // valid role here — `involves:@me` returns PRs where I'm a past
+        // commenter or past reviewer (not currently requested + not author).
         for pr in prs {
             XCTAssertFalse(pr.nodeId.isEmpty,    "empty nodeId on #\(pr.number)")
             XCTAssertFalse(pr.owner.isEmpty,     "empty owner on #\(pr.number)")
             XCTAssertFalse(pr.repo.isEmpty,      "empty repo on #\(pr.number)")
             XCTAssertGreaterThan(pr.number, 0)
             XCTAssertEqual(pr.url.scheme, "https")
-            XCTAssertNotEqual(
-                pr.role, .other,
-                "involves:@me search shouldn't return PRs where I'm neither "
-                + "author nor reviewer; got #\(pr.number) with role .other"
-            )
             for check in pr.allCheckSummaries {
                 XCTAssertFalse(check.name.isEmpty, "check has empty name on #\(pr.number)")
                 XCTAssertTrue(
@@ -65,12 +62,12 @@ final class GHClientIntegrationTests: XCTestCase {
 
         try await assertFieldsExist(
             on: "CheckRun",
-            expected: ["name", "conclusion", "status", "isRequired", "detailsUrl", "summary"],
+            expected: ["name", "conclusion", "status", "detailsUrl", "summary"],
             ghPath: ghPath
         )
         try await assertFieldsExist(
             on: "StatusContext",
-            expected: ["context", "state", "isRequired", "targetUrl", "description"],
+            expected: ["context", "state", "targetUrl", "description"],
             ghPath: ghPath
         )
     }
