@@ -23,6 +23,28 @@ enum ProviderID: String, Codable, Sendable, Hashable, CaseIterable {
         case .codex:  return "codex"
         }
     }
+
+    /// "Auto" tag for the General Settings picker — stored in
+    /// UserDefaults under `defaultProviderId` instead of a real
+    /// `ProviderID.rawValue`. Resolved at app launch to a concrete
+    /// provider via `resolveAuto()`.
+    static let autoSentinel = "auto"
+
+    /// Pick the best available provider. Tie-break is **claude** when
+    /// both are installed (more battle-tested in PRBar; live streaming
+    /// + SIGTERM-on-budget; subscription auth = $0 cost). When neither
+    /// is installed we still default to claude — the failure surfaces
+    /// later with a clear "not found" error, which is more honest than
+    /// silently swapping to a backend the user also doesn't have.
+    static func resolveAuto(
+        find: (String) -> Bool = { ExecutableResolver.find($0) != nil }
+    ) -> ProviderID {
+        let claudeOK = find("claude")
+        let codexOK  = find("codex")
+        if claudeOK { return .claude }
+        if codexOK  { return .codex }
+        return .claude
+    }
 }
 
 enum PRRole: String, Codable, Sendable, Hashable, CaseIterable {

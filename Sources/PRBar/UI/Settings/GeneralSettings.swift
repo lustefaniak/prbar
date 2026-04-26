@@ -44,15 +44,16 @@ struct GeneralSettings: View {
 
             Section {
                 Picker("Default review provider", selection: providerBinding) {
+                    Text(autoLabel).tag(ProviderID.autoSentinel)
                     ForEach(ProviderID.allCases, id: \.self) { p in
-                        Text(label(for: p)).tag(p)
+                        Text(label(for: p)).tag(p.rawValue)
                     }
                 }
                 .pickerStyle(.segmented)
             } header: {
                 Text("AI provider")
             } footer: {
-                Text("App-wide default. A repo's `providerOverride` (Settings → Repositories) wins over this; PRDetailView's \"Re-run with…\" menu can override either for a single run. If a chosen provider isn't installed the review fails with a clear message — see Diagnostics for current status.")
+                Text("App-wide default. \"Auto\" picks claude when it's installed, otherwise codex. A repo's `providerOverride` (Settings → Repositories) wins over this; PRDetailView's \"Re-run with…\" menu can override either for a single run. If a chosen provider isn't installed the review fails with a clear message — see Diagnostics for current status.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -82,6 +83,18 @@ struct GeneralSettings: View {
         return p.displayName
     }
 
+    /// "Auto" picker label that names which provider would actually
+    /// run right now, so the segmented control isn't opaque.
+    private var autoLabel: String {
+        let resolved = ProviderID.resolveAuto { binary in
+            providerAvailability.first { $0.key.binaryName == binary }?.value ?? false
+        }
+        // While availability is still being probed, fall back to the
+        // tie-break.
+        if providerAvailability.isEmpty { return "Auto (claude)" }
+        return "Auto (\(resolved.displayName.lowercased()))"
+    }
+
     /// Probe both binaries off the main thread; populate the @State map
     /// so the picker reactively updates.
     private func probeProviderAvailability() async {
@@ -95,15 +108,21 @@ struct GeneralSettings: View {
         }
     }
 
-    /// Bridge `defaultProviderRaw` (String for AppStorage) ↔ `ProviderID`.
-    /// Setter also pushes the value into the live `ReviewQueueWorker` so
-    /// the change applies on the next enqueue without a restart.
-    private var providerBinding: Binding<ProviderID> {
+    /// Bridge the AppStorage string (`"auto"`, `"claude"`, `"codex"`) ↔
+    /// the picker's selection. Setter pushes the resolved concrete
+    /// `ProviderID` into the live worker so the change applies without
+    /// restart; `"auto"` resolves to whichever backend is installed
+    /// (claude wins ties).
+    private var providerBinding: Binding<String> {
         Binding(
-            get: { ProviderID(rawValue: defaultProviderRaw) ?? .claude },
+            get: { defaultProviderRaw },
             set: { newValue in
-                defaultProviderRaw = newValue.rawValue
-                queue.defaultProviderId = newValue
+                defaultProviderRaw = newValue
+                if newValue == ProviderID.autoSentinel {
+                    queue.defaultProviderId = ProviderID.resolveAuto()
+                } else {
+                    queue.defaultProviderId = ProviderID(rawValue: newValue) ?? .claude
+                }
             }
         )
     }
