@@ -40,7 +40,7 @@ struct PRRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
-                    Text("\(pr.nameWithOwner) #\(pr.number)")
+                    Text(verbatim: "\(pr.nameWithOwner) #\(pr.numberString)")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                     if pr.isDraft {
@@ -59,7 +59,7 @@ struct PRRowView: View {
         .onHover { isHovering = $0 }
         .help(tooltip)
         .confirmationDialog(
-            "\(pendingMergeMethod.displayName) #\(pr.number)?",
+            "\(pendingMergeMethod.displayName) #\(pr.numberString)?",
             isPresented: $showMergeConfirm,
             titleVisibility: .visible
         ) {
@@ -165,11 +165,11 @@ struct PRRowView: View {
         .menuStyle(.borderlessButton)
         .controlSize(.small)
         .fixedSize()
-        .help("\(primary.displayName) #\(pr.number) — click chevron for alternatives")
+        .help("\(primary.displayName) #\(pr.numberString) — click chevron for alternatives")
     }
 
     private var tooltip: String {
-        var parts = ["\(pr.nameWithOwner) #\(pr.number) — \(pr.title)"]
+        var parts = ["\(pr.nameWithOwner) #\(pr.numberString) — \(pr.title)"]
         parts.append("mergeable: \(pr.mergeStateStatus)")
         if let dec = pr.reviewDecision { parts.append("review: \(dec)") }
         parts.append("author: @\(pr.author)")

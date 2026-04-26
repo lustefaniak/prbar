@@ -90,6 +90,11 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
 
     var nameWithOwner: String { "\(owner)/\(repo)" }
 
+    /// Plain string form of the PR number — avoids SwiftUI's
+    /// LocalizedStringKey grouping (which renders 20609 as "20 609").
+    /// Use this in any UI string interpolation.
+    var numberString: String { String(number) }
+
     /// True when this PR is genuinely click-to-merge ready: GitHub says
     /// `mergeStateStatus == "CLEAN"` (no conflicts, required checks
     /// passed, required reviews approved), it's not a draft, the row

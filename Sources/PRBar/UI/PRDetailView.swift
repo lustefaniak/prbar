@@ -89,7 +89,7 @@ struct PRDetailView: View {
             .keyboardShortcut(.cancelAction)
 
             Spacer()
-            Text("\(pr.nameWithOwner) #\(pr.number)")
+            Text(verbatim: "\(pr.nameWithOwner) #\(pr.numberString)")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @main
 struct PRBarApp: App {
@@ -9,6 +10,14 @@ struct PRBarApp: App {
     @State private var repoConfigs: RepoConfigStore
 
     init() {
+        // Single-instance: if another PRBar is already running, bow out
+        // immediately so we don't end up with two menu-bar icons + two
+        // pollers fighting over `inbox-snapshot.json` / `reviews.json`.
+        // Compare bundle ID against runningApplications, exclude
+        // ourselves by PID. The existing instance is left alone; we
+        // exit(0) before SwiftUI builds any scenes.
+        Self.enforceSingleInstance()
+
         let n = Notifier()
         let p = PRPoller.live()
         let q = ReviewQueueWorker.live()
@@ -32,6 +41,18 @@ struct PRBarApp: App {
         // Best-effort cleanup of leaked worktrees from a previous crash.
         if let mgr = q.checkoutManager {
             Task { await mgr.sweepStaleWorktrees() }
+        }
+    }
+
+    private static func enforceSingleInstance() {
+        let myBundleID = Bundle.main.bundleIdentifier ?? "dev.lustefaniak.prbar"
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication
+            .runningApplications(withBundleIdentifier: myBundleID)
+            .filter { $0.processIdentifier != myPID }
+        if !others.isEmpty {
+            others.first?.activate(options: [])
+            exit(0)
         }
     }
 
