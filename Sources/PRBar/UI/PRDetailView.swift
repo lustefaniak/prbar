@@ -333,10 +333,18 @@ struct PRDetailView: View {
                     .foregroundStyle(.secondary)
 
             case .queued:
-                retriageInProgressView(label: "Queued — retriaging the new commits…")
+                inProgressView(
+                    label: priorReview != nil
+                        ? "Queued — retriaging the new commits…"
+                        : "Queued…"
+                )
 
             case .running:
-                retriageInProgressView(label: "Reviewing the new commits…")
+                inProgressView(
+                    label: priorReview != nil
+                        ? "Reviewing the new commits…"
+                        : "Reviewing…"
+                )
 
             case .failed(let msg):
                 VStack(alignment: .leading, spacing: 8) {
@@ -358,11 +366,11 @@ struct PRDetailView: View {
         }
     }
 
-    /// In-flight retriage shows: the spinner + label + the prior review
-    /// kept visible underneath. Avoids the "blank AI section" gap that
-    /// happens when the user re-runs and loses their last verdict.
+    /// In-flight review shows: spinner + label + (when this is a
+    /// retriage with a prior verdict) the previous review kept visible
+    /// underneath. Avoids the "blank AI section" gap on re-run.
     @ViewBuilder
-    private func retriageInProgressView(label: String) -> some View {
+    private func inProgressView(label: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
