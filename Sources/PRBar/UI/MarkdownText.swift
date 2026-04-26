@@ -94,26 +94,28 @@ extension InlineImageProvider where Self == SafeRemoteImageProvider {
 }
 
 extension Theme {
-    /// Tuned for the popover: tighter margins than the default GitHub
-    /// theme.
+    /// Tuned for the popover: matches `.callout` body size and tightens
+    /// heading scale so headings don't dominate next to the rest of the
+    /// (small) menu-bar UI.
     @MainActor
     static let prbar = Theme.gitHub
         .text {
             ForegroundColor(.primary)
             BackgroundColor(.clear)
-            FontSize(.em(1.0))
+            FontFamily(.system())
+            FontSize(12)
         }
         .paragraph { config in
             config.label
                 .relativeLineSpacing(.em(0.15))
-                .markdownMargin(top: 0, bottom: 6)
+                .markdownMargin(top: 0, bottom: 4)
         }
         .heading1 { config in
             config.label
                 .markdownMargin(top: 8, bottom: 4)
                 .markdownTextStyle {
                     FontWeight(.bold)
-                    FontSize(.em(1.25))
+                    FontSize(14)
                 }
         }
         .heading2 { config in
@@ -121,7 +123,7 @@ extension Theme {
                 .markdownMargin(top: 8, bottom: 4)
                 .markdownTextStyle {
                     FontWeight(.bold)
-                    FontSize(.em(1.15))
+                    FontSize(13)
                 }
         }
         .heading3 { config in
@@ -129,7 +131,40 @@ extension Theme {
                 .markdownMargin(top: 6, bottom: 2)
                 .markdownTextStyle {
                     FontWeight(.semibold)
-                    FontSize(.em(1.05))
+                    FontSize(12)
                 }
         }
+        .heading4 { config in
+            config.label
+                .markdownMargin(top: 4, bottom: 2)
+                .markdownTextStyle {
+                    FontWeight(.semibold)
+                    FontSize(12)
+                }
+        }
+        .listItem { config in
+            config.label.markdownMargin(top: 1, bottom: 1)
+        }
+        .code {
+            FontFamilyVariant(.monospaced)
+            FontSize(11)
+            BackgroundColor(.secondary.opacity(0.18))
+        }
+        .codeBlock { config in
+            ScrollView(.horizontal, showsIndicators: false) {
+                config.label
+                    .markdownTextStyle {
+                        FontFamilyVariant(.monospaced)
+                        FontSize(11)
+                    }
+                    .padding(8)
+            }
+            .background(Color.secondary.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .markdownMargin(top: 4, bottom: 4)
+        }
+}
+
+private extension ShapeStyle where Self == Color {
+    static var secondaryFill: Color { Color.secondary }
 }
