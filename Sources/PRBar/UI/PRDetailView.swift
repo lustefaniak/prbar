@@ -173,8 +173,10 @@ struct PRDetailView: View {
                 if agg.costUsd > 0 {
                     Text(String(format: "$%.4f", agg.costUsd))
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .help("Total cost")
+                        .foregroundStyle(agg.isSubscriptionAuth ? Color.secondary.opacity(0.5) : .secondary)
+                        .help(agg.isSubscriptionAuth
+                              ? "API-equivalent cost. Running on subscription auth — not actually billed per-token."
+                              : "Total cost")
                 }
                 if agg.toolCallCount > 0 {
                     Text("\(agg.toolCallCount) tool\(agg.toolCallCount == 1 ? "" : "s")")

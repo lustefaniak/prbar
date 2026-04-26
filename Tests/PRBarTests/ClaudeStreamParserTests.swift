@@ -13,6 +13,30 @@ final class ClaudeStreamParserTests: XCTestCase {
     {"type":"result","subtype":"success","is_error":false,"api_error_status":null,"duration_ms":4361,"num_turns":2,"result":"","stop_reason":"end_turn","session_id":"d2a6d1e3-bb31-4b1a-a694-9cfd284bcc07","total_cost_usd":0.0670366,"permission_denials":[],"structured_output":{"verdict":"approve","summary":"Trivial."},"terminal_reason":"completed"}
     """
 
+    func testApiKeySourceDetectsSubscription() {
+        let line = #"{"type":"system","subtype":"init","session_id":"x","apiKeySource":"/login managed key"}"#
+        var state = ClaudeStreamState()
+        ClaudeStreamParser.parseEvent(line: line, into: &state)
+        XCTAssertEqual(state.apiKeySource, "/login managed key")
+        XCTAssertTrue(state.isSubscriptionAuth)
+    }
+
+    func testApiKeySourceDetectsApiKey() {
+        let line = #"{"type":"system","subtype":"init","session_id":"x","apiKeySource":"ANTHROPIC_API_KEY"}"#
+        var state = ClaudeStreamState()
+        ClaudeStreamParser.parseEvent(line: line, into: &state)
+        XCTAssertEqual(state.apiKeySource, "ANTHROPIC_API_KEY")
+        XCTAssertFalse(state.isSubscriptionAuth)
+    }
+
+    func testApiKeySourceMissingDefaultsToBilledSemantics() {
+        let line = #"{"type":"system","subtype":"init","session_id":"x"}"#
+        var state = ClaudeStreamState()
+        ClaudeStreamParser.parseEvent(line: line, into: &state)
+        XCTAssertNil(state.apiKeySource)
+        XCTAssertFalse(state.isSubscriptionAuth)   // err on showing real cost
+    }
+
     func testParseRealFixtureExtractsResult() {
         let state = ClaudeStreamParser.parseFull(realFixture)
 

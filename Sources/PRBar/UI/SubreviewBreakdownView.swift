@@ -41,7 +41,12 @@ struct SubreviewBreakdownView: View {
                     if let cost = outcome.result.costUsd, cost > 0 {
                         Text(String(format: "$%.4f", cost))
                             .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(outcome.result.isSubscriptionAuth
+                                             ? Color.secondary.opacity(0.5)
+                                             : .secondary)
+                            .help(outcome.result.isSubscriptionAuth
+                                  ? "API-equivalent. Running on subscription — not billed."
+                                  : "Cost")
                     }
                     if outcome.result.toolCallCount > 0 {
                         Text("\(outcome.result.toolCallCount) tool\(outcome.result.toolCallCount == 1 ? "" : "s")")

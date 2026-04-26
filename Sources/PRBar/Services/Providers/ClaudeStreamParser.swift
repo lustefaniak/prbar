@@ -20,6 +20,28 @@ struct ClaudeStreamState: Sendable {
 
     /// True once we've parsed the final `result` event.
     var receivedResult: Bool = false
+
+    /// Auth source the CLI is using, as reported by the `system` init
+    /// event. Recent claude versions emit `apiKeySource`; we accept any
+    /// of the few keys we've seen in the wild. Examples seen:
+    ///   - "ANTHROPIC_API_KEY" / "/login" / "subscription" / "oauth"
+    /// `nil` means the CLI didn't report a source (older versions, or
+    /// the event wasn't a system one).
+    var apiKeySource: String?
+
+    /// True when the CLI run is being charged via the user's Claude
+    /// subscription rather than per-token API billing. The CLI still
+    /// emits `total_cost_usd` (API-equivalent cost) for budgeting, but
+    /// it's informational — actual money charged is $0. Heuristic: any
+    /// `apiKeySource` that *isn't* an API-key indicator is treated as
+    /// subscription. Defaults to `false` when we can't tell, so we err
+    /// on the side of showing the cost as real.
+    var isSubscriptionAuth: Bool {
+        guard let src = apiKeySource?.lowercased() else { return false }
+        // Known API-key indicators — anything else (login/oauth/subscription/...) implies subscription.
+        let apiKeyMarkers = ["api_key", "anthropic_api_key", "x-api-key", "apikey"]
+        return !apiKeyMarkers.contains(where: { src.contains($0) })
+    }
 }
 
 enum ClaudeStreamParser {
@@ -40,6 +62,17 @@ enum ClaudeStreamParser {
         switch type {
         case "system":
             if let id = obj["session_id"] as? String { state.sessionID = id }
+            // claude CLI 1.x reports the auth source on the init system
+            // event under one of these keys (varies across versions).
+            if state.apiKeySource == nil {
+                if let src = obj["apiKeySource"] as? String {
+                    state.apiKeySource = src
+                } else if let src = obj["api_key_source"] as? String {
+                    state.apiKeySource = src
+                } else if let src = obj["authSource"] as? String {
+                    state.apiKeySource = src
+                }
+            }
 
         case "assistant":
             // assistant.message.content is an array of blocks; tool_use blocks

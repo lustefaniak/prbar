@@ -67,6 +67,13 @@ struct ProviderResult: Sendable {
     /// Raw JSON wrapper as emitted by the CLI, for debugging and audit
     /// (includes the tool-use trace if minimal-tools was used).
     let rawJson: Data
+
+    /// True when the CLI ran against a subscription auth (Claude Max /
+    /// Pro), which means `costUsd` is API-equivalent / informational —
+    /// the user is not actually billed per-token. The UI grays out the
+    /// cost label in this case. Defaults to false so we err on the side
+    /// of showing real-money UI when uncertain.
+    var isSubscriptionAuth: Bool = false
 }
 
 protocol ReviewProvider: Sendable {

@@ -20,6 +20,11 @@ struct AggregatedReview: Sendable, Hashable {
     let toolCallCount: Int
     let toolNamesUsed: [String]
     let perSubreview: [SubreviewOutcome]
+
+    /// True when *every* subreview ran on subscription auth — the cost is
+    /// purely informational (API-equivalent). If any subreview was billed
+    /// (mixed-auth setup), we treat the whole thing as billed.
+    let isSubscriptionAuth: Bool
 }
 
 struct SubreviewOutcome: Sendable, Hashable {
@@ -37,6 +42,7 @@ extension ProviderResult: Hashable {
             && lhs.toolCallCount == rhs.toolCallCount
             && lhs.toolNamesUsed == rhs.toolNamesUsed
             && lhs.rawJson == rhs.rawJson
+            && lhs.isSubscriptionAuth == rhs.isSubscriptionAuth
     }
 
     public func hash(into hasher: inout Hasher) {
@@ -48,6 +54,7 @@ extension ProviderResult: Hashable {
         hasher.combine(toolCallCount)
         hasher.combine(toolNamesUsed)
         hasher.combine(rawJson)
+        hasher.combine(isSubscriptionAuth)
     }
 }
 
@@ -76,6 +83,10 @@ enum ResultAggregator {
         let toolCallCount = outcomes.reduce(0) { $0 + $1.result.toolCallCount }
         let toolNamesUsed = aggregateToolNames(outcomes: outcomes)
 
+        // All-subscription only counts as subscription-billed; any single
+        // billed subreview means cost is real and shouldn't be grayed.
+        let allSubscription = outcomes.allSatisfy { $0.result.isSubscriptionAuth }
+
         return AggregatedReview(
             verdict: verdict,
             confidence: confidence,
@@ -84,7 +95,8 @@ enum ResultAggregator {
             costUsd: costUsd,
             toolCallCount: toolCallCount,
             toolNamesUsed: toolNamesUsed,
-            perSubreview: outcomes
+            perSubreview: outcomes,
+            isSubscriptionAuth: allSubscription
         )
     }
 

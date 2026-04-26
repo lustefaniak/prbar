@@ -141,7 +141,8 @@ final class AutoApprovePolicyTests: XCTestCase {
             costUsd: 0.01,
             toolCallCount: 0,
             toolNamesUsed: [],
-            perSubreview: [SubreviewOutcome(subpath: "", result: result)]
+            perSubreview: [SubreviewOutcome(subpath: "", result: result)],
+            isSubscriptionAuth: false
         )
     }
 

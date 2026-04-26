@@ -123,7 +123,8 @@ struct ClaudeProvider: ReviewProvider {
             costUsd: state.costUsd,
             toolCallCount: state.toolCallCount,
             toolNamesUsed: state.toolNamesUsed,
-            rawJson: Data(stream.utf8)
+            rawJson: Data(stream.utf8),
+            isSubscriptionAuth: state.isSubscriptionAuth
         )
     }
 
