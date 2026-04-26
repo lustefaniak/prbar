@@ -190,9 +190,7 @@ struct PRDetailView: View {
                 .textSelection(.enabled)
                 .lineLimit(20)
             if !agg.annotations.isEmpty {
-                Text("\(agg.annotations.count) annotation\(agg.annotations.count == 1 ? "" : "s") shown inline below.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                AnnotationsSummaryView(annotations: agg.annotations)
             }
             if agg.perSubreview.count > 1 {
                 SubreviewBreakdownView(outcomes: agg.perSubreview)

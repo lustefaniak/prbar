@@ -16,7 +16,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["path", "line_start", "line_end", "severity", "body"],
+        "required": ["path", "line_start", "line_end", "severity", "title", "body"],
         "properties": {
           "path": { "type": "string" },
           "line_start": { "type": "integer" },
@@ -25,6 +25,7 @@
             "type": "string",
             "enum": ["info", "suggestion", "warning", "blocker"]
           },
+          "title": { "type": "string" },
           "body": { "type": "string" }
         }
       }

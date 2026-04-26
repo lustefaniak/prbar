@@ -34,7 +34,12 @@ Output **strictly** the JSON matching the provided schema. Don't wrap it in code
 
 `confidence` is your subjective confidence in the verdict (0.0–1.0). Auto-approve rules use this to gate unattended actions, so be honest — 0.6 means "probably right, could be wrong".
 
-`annotations` are anchored review notes. Each one points at a span in the diff (`path` + `line_start`/`line_end`). Severity:
+`annotations` are anchored review notes. Each one points at a span in the diff (`path` + `line_start`/`line_end`) and has both:
+
+- `title`: a short glanceable headline (≤ 60 characters, no trailing punctuation). Think GitHub PR-review summary line: "Missing nil check on cache miss", "Possible TOCTOU on file open", "Tests don't cover the error branch". This is what the user reads at-a-glance under the verdict.
+- `body`: the full explanation — context, why it matters, suggested fix if any. Markdown allowed.
+
+Severity:
 
 - `info` — purely informational, low signal.
 - `suggestion` — a non-blocking idea.

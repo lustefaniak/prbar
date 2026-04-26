@@ -58,13 +58,48 @@ struct DiffAnnotation: Codable, Sendable, Hashable {
     let lineStart: Int
     let lineEnd: Int
     let severity: AnnotationSeverity
+    /// Short headline (≤ 60 chars) — what the issue is in glanceable form.
+    /// Optional in the model to stay back-compat with reviews cached
+    /// before this field existed; the AI is asked to provide it.
+    let title: String?
     let body: String
+
+    /// Convenience: title if present, otherwise the first sentence of
+    /// body trimmed to ~80 chars. Used by the summary list when the AI
+    /// didn't supply a title (older reviews, model regression).
+    var displayTitle: String {
+        if let t = title, !t.isEmpty { return t }
+        let firstSentence = body
+            .split(whereSeparator: { ".!?\n".contains($0) })
+            .first
+            .map(String.init) ?? body
+        let trimmed = firstSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count <= 80 { return trimmed }
+        return String(trimmed.prefix(80)) + "…"
+    }
+
+    init(
+        path: String,
+        lineStart: Int,
+        lineEnd: Int,
+        severity: AnnotationSeverity,
+        title: String? = nil,
+        body: String
+    ) {
+        self.path = path
+        self.lineStart = lineStart
+        self.lineEnd = lineEnd
+        self.severity = severity
+        self.title = title
+        self.body = body
+    }
 
     enum CodingKeys: String, CodingKey {
         case path
         case lineStart = "line_start"
         case lineEnd = "line_end"
         case severity
+        case title
         case body
     }
 }
