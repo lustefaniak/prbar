@@ -8,16 +8,23 @@ A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysit
 
 ## Status
 
-**Phase 0 (skeleton) and Phase 1 (poller + tabs + merge action + Notifier + snapshot cache) are shipped.** 40+ tests passing including real-API integration tests that run on every `bin/test` — these catch schema drift the moment it happens (which already paid off once with the `workflowName` regression).
+**Phases 0, 1, and most of Phase 2 are shipped.** 70+ tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
+
+Pure-prompt AI review path is end-to-end working: a review-requested PR auto-enqueues, `claude` returns a verdict + summary within seconds, the user sees it in the detail pane, and Approve/Comment/Request-changes posts back to GitHub. Verified end-to-end on 2026-04-26 against a trivial fixture diff.
+
+What's left in Phase 2:
+- **Phase 2g: `RepoCheckoutManager`** — bare clones + transient sparse worktrees so `.minimal` tool mode has a real workdir. Currently `.none` (pure-prompt) is the default, so the AI can't actually `Read`/`Grep` files — that's the main gap.
 
 Notable divergences from the original spec, tracked here so they don't get lost:
 
-1. **Snapshot persistence is JSON, not SwiftData (yet).** `SnapshotCache` writes the latest inbox to `~/Library/Application Support/io.synq.prbar/inbox-snapshot.json`. SwiftData lands in Phase 2 alongside `ReviewRun` + `Subreview` + `ActionLog` + `AutoApproveRule` + `MonorepoConfig`, where the relational queries pay back.
+1. **Snapshot persistence is JSON, not SwiftData (yet).** `SnapshotCache` writes the latest inbox to `~/Library/Application Support/io.synq.prbar/inbox-snapshot.json`. SwiftData lands later when `ReviewRun` + `Subreview` + `ActionLog` + `AutoApproveRule` + `MonorepoConfig` are persisted.
 2. **`CheckRun.isRequired` is not queried.** gh CLI emits ~3 stderr "PR ID required" errors per PR (and exits 1) when this field is in the GraphQL query, even though stdout JSON is valid — a gh-side quirk, confirmed via curl that the GitHub API itself accepts the field. Workaround: drop the field; "required" will come from the REST branch-protection cache later (the canonical source anyway).
 3. **Subprocess uses Foundation `Process` + temp-file redirection**, not yet the `swift-subprocess` package. Temp files avoid the 64 KB Pipe-buffer deadlock that bit us on the inbox query (full PR bodies × 50 PRs ≈ 110 KB).
-4. **Notifications fire title/body but not yet action buttons.** `UNUserNotificationCenter` is wired with categories; routing the `[Merge all] [Open]` / `[Undo]` action callbacks needs a `UNUserNotificationCenterDelegate` (small follow-up).
-5. **Repo-allowed merge methods are honored.** `Repository.{merge,squash,rebase}MergeAllowed` already reflects `requiresLinearHistory` (GitHub auto-flips `mergeCommitAllowed` to false). Plumbed through to `InboxPR.allowedMergeMethods` and the row's "⋯" menu hides forbidden methods. `PRPoller.mergePR` rejects disallowed methods server-side. Verified against `getsynq/cloud` (squash + rebase only).
-6. **Per-PR refresh** — surfaced as a hover button + menu item in addition to the global poll. Cheaper than re-running `fetchInbox` (1 GraphQL point vs 25), wasn't in the original spec but obvious once you're babysitting one specific CI run.
+4. **`claude --json-schema` is picky about JSON Schema dialect.** `$schema`, `description`, `additionalProperties`, `minimum`, `maximum`, and `maxLength` cause `claude` to hang silently. Bisected on 2026-04-26; the GitHub API itself accepts these (verified via curl), so it's a `claude` CLI / API constraint. `Resources/schemas/review.json` sticks to `type` + `enum` + `required` + `properties` only; range/length validation moves client-side. `PromptLibraryTests.testOutputSchemaHasNoConstraintsClaudeRejects` is the regression net.
+5. **`claude` budget enforcement is post-hoc**, not live SIGTERM. Cost cap throws an error; tool-call cap is informational only (claude in plan mode fires ambient tools we can't enumerate in `--disallowedTools` — Skill, Monitor, MCP integrations — typically 1–2 calls). Live SIGTERM-on-overrun is a follow-up that needs streaming reads (current `ProcessRunner` redirects to temp files for the Pipe-deadlock fix).
+6. **Notifications fire title/body but not yet action buttons.** `UNUserNotificationCenter` is wired with categories; routing the `[Merge all] [Open]` / `[Undo]` action callbacks needs a `UNUserNotificationCenterDelegate` (small follow-up).
+7. **Repo-allowed merge methods are honored.** `Repository.{merge,squash,rebase}MergeAllowed` already reflects `requiresLinearHistory` (GitHub auto-flips `mergeCommitAllowed` to false). Plumbed through to `InboxPR.allowedMergeMethods` and the row's "⋯" menu hides forbidden methods. `PRPoller.mergePR` rejects disallowed methods server-side. Verified against `getsynq/cloud` (squash + rebase only).
+8. **Per-PR refresh** — surfaced as a hover button + menu item in addition to the global poll. Cheaper than re-running `fetchInbox` (1 GraphQL point vs 25), wasn't in the original spec but obvious once you're babysitting one specific CI run.
 
 ---
 
