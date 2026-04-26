@@ -23,27 +23,43 @@ The AI review pipeline works end to end in both `.none` (pure-prompt, default) a
 - **Diff persistence** (`DiffStore`, in-memory): cached parsed `[Hunk]` per `(prNodeId, headSha)` so detail re-opens are instant. Disk persistence is the next obvious extension.
 - **Subscription detection**: `ClaudeStreamParser` reads `apiKeySource` from claude's init event; cost label grays out on subscription auth (the `total_cost_usd` is API-equivalent / informational, not actually billed).
 - **CI status panel** (`CIStatusView`): failed checks pinned with red shield header, pending+passed under disclosure, click-through to GitHub when `detailsUrl` / `targetUrl` available.
-- **Split merge button**: replaces the hover-only `…` menu when a PR is `isReadyToMerge`. Primary action is the per-repo last-used method (UserDefaults), chevron exposes alternatives.
+- **Clickable verdict badge**: the APPROVE / COMMENT / CHANGES pill under "AI Review" doubles as a one-click way to post that exact verdict to GitHub using the AI's summary as the body. Hidden on `.authored`-only PRs (no self-review).
+- **Split merge button**: replaces the hover-only `…` menu when a PR is `isReadyToMerge`. Primary action is the per-repo last-used method (UserDefaults), chevron exposes alternatives. `.borderedProminent` green tint mirrors GitHub's own merge button. Secondary `…` menu (Open in browser / Refresh) stays reachable next to it.
 - **Single-instance enforcement**: bundle-ID + PID check in `PRBarApp.init`; XCTest hosts exempted.
-- **Right-click menu** (Settings + Quit): replaced `MenuBarExtra(.window)` with an `NSStatusItem` driven by `AppDelegate`. Left-click toggles the SwiftUI popover (still SwiftUI via `NSHostingController`); right-click opens an `NSMenu`.
+- **Right-click menu** (Settings + Quit): replaced `MenuBarExtra(.window)` with an `NSStatusItem` driven by `AppDelegate`. Left-click toggles the SwiftUI popover (still SwiftUI via `NSHostingController`); right-click opens an `NSMenu`. Settings gear icon also lives at the bottom-right of the popover for in-popover discoverability.
+- **Popover sizing pinned** at 560×640 via `PRBarPopoverSize` to fix the NSPopover-collapses-to-intrinsic-size bug.
+- **Annotations → diff jump + scroll-to-top**: `arrow.down.right.square` per annotation row scrolls + expands the matching bubble; floating `arrow.up.circle.fill` at bottom-right of detail view scrolls back to top.
 - **Worktree sweep**: `RepoCheckoutManager.sweepStaleWorktrees()` runs at launch and removes worktree dirs > 1 h old (catches leaks from crashed previous runs). Diagnostics shows total bare-clone bytes + manual Prune button.
 - **Custom app icon + status-bar icon**: rasterized from SVG into Asset Catalog (`AppIcon.appiconset`, `MenuBarIcon.imageset` template-rendered, `PopoverIcon.imageset`).
+- **PR number formatting fix**: `InboxPR.numberString` avoids SwiftUI's locale grouping that was rendering `#20609` as `#20 609`.
+- **Drafts skipped by default** (`RepoConfig.reviewDrafts`, opt-in per repo). Manual Re-run still works.
+- **About tab**: app icon, version, copyright, authors row crediting Łukasz Stefaniak + Claude Code Opus, links to `@lustefaniak` and the source repo.
+- **Versioning derived from git** (`bin/version`): `marketing` reads the latest tag (sans `v`, validated semver-shape), `build` reads `git rev-list --count HEAD` (monotonic), `describe` powers the DMG filename. `bin/build` and `bin/release-dmg` pass these to `xcodebuild` so `Info.plist` is honest. About tab reflects them at runtime.
+- **Universal DMG release pipeline** (`bin/release-dmg` + `.github/workflows/release.yml`): builds an arm64+x86_64 archive, sanity-checks both slices via `lipo`, packages a UDZO DMG with an `/Applications` symlink, uploads as workflow artifact + publishes a GitHub Release on tag pushes. Pinned to `Xcode_16.0`. App is ad-hoc signed today (notarization is a follow-up).
 
-### Still missing vs the original plan
+### Still to do — ranked by value
 
-- **Phase 5** — pure-prompt mode polish: in `.none` mode the assembler still doesn't inline `<subpath>/CLAUDE.md` (capped at 8 KB) the way the spec called for.
-- **Phase 7** — `History` tab (action log) and cost dashboard (per day/week broken out by repo / tool-mode) are still placeholders.
-- **Notification action buttons** — categories are wired; the routing delegate that turns "Merge all" / "Open" taps into actions isn't implemented.
-- **SwiftData migration** — still using JSON for inbox snapshot, repo configs, and reviews. Acceptable for personal use; SwiftData lands when we want the History tab and cost dashboard.
-- **Live SIGTERM budget enforcement** — post-hoc only today (cost cap throws after the fact). Live kill-on-overrun needs streaming reads instead of `ProcessRunner`'s temp-file redirection.
-- **Sparse-checkout** — `RepoCheckoutManager` checks out the full SHA today. Sparse-by-subpath is small but ties into the per-PR exclude list.
-- **Bare-clone LRU eviction** — manual Prune button shipped; automatic 5 GB cap not yet wired.
-- **Branch-protection cache** — no `BranchProtectionCache.swift` yet; the inbox query also drops `CheckRun.isRequired` because of a `gh` quirk, so "required" filtering is missing.
-- **Failed-job log fetch** — `gh run view --log-failed` plumbing exists in spec but not implemented; the AI's "## CI failures" prompt section is currently empty.
-- **Bigger PR detail window** — separate `Window` scene with the existing `PRDetailView` at full size for big PRs (popover stays for triage).
-- **Delta-diff prompt on retriage** — when SHA changes we re-review from scratch instead of feeding "## Previous review" + the commits-since-last-review delta diff. Cheap to add via `gh api compare/{old}...{new}`.
-- **Dynamic menu-bar icon by state** — icon stays static; spec called for tinted accent + state changes when actionable items appear.
-- **Auto-approve notification action buttons** — banner only shows when popover is open; out-of-popover signaling not wired.
+**High value, low effort:**
+1. **Failed-job log fetch** — `gh run view --log-failed` per failed CheckRun, tail to ~200 lines, feed into the AI prompt's `## CI failures` section. Today the section is empty so the AI doesn't know *why* CI failed. Biggest review-quality win available.
+2. **Action history** — `ActionLog` written before/after every `gh pr review` / `gh pr merge` / auto-approve fire. Replace `HistoryView` placeholder with a grouped list. Combine with cached `AggregatedReview`s already on disk for an "AI review history" surface. ~1 day total.
+3. **Auto-update** — *recommend Sparkle* over building it. ~1 day end-to-end (SPM dep, EdDSA keys, `appcast.xml` on `gh-pages`, `sign_update` step in the release workflow, "Check for Updates…" item in the right-click menu). Lighter alternative: in-popover "Update available" banner that compares Bundle.main version to the latest GH Release tag.
+4. **Delta-diff prompt on retriage** — when SHA changes, fetch `gh api compare/{old}...{new}` and feed the agent the previous verdict + summary + the delta. Both a quality win (explicit "did the new commits address prior concerns?" framing) and a cost win (smaller delta = fewer tokens than the full new diff).
+5. **Dynamic menu-bar icon by state** — tinted accent + small badge when actionable items exist (ready-to-merge, review-requested, CI red). Glanceable signal without opening the popover.
+
+**Polish + safety:**
+6. **Notification action buttons** — `UNUserNotificationCenter` categories are wired; routing delegate that turns "Merge all" / "Open" / "Undo" taps into actions isn't implemented. Auto-approve banner is also popover-only today; a real notification banner would let undo work without opening the app.
+7. **Bigger PR detail window** — separate `Window` scene at full size for large diffs (popover stays for triage). Already prototyped in the design ; ~½ day.
+8. **Sparse-checkout** — `RepoCheckoutManager` checks out the full SHA today; sparse-by-subpath shrinks worktree disk use and lines up with the per-PR exclude list (`.env*` / `*.pem`).
+9. **Bare-clone LRU eviction** — manual Prune button shipped; automatic 5 GB cap not yet wired.
+10. **Live SIGTERM budget enforcement** — post-hoc only today; live kill-on-overrun needs streaming reads instead of `ProcessRunner`'s temp-file redirection. Cost cap is currently honoured *after* the run finishes.
+11. **Branch-protection cache** — no `BranchProtectionCache.swift` yet; the inbox query drops `CheckRun.isRequired` because of a `gh` quirk, so the "required-only" filtering called for in the spec is missing.
+12. **DiffStore disk persistence** — currently in-memory; cache to disk by `(prNodeId, headSha)` so detail re-opens after a relaunch don't re-fetch.
+13. **DMG notarization** — Developer ID cert + AC API key + `xcrun notarytool` step in the release workflow. Removes the right-click-Open Gatekeeper warning on first launch for non-technical users.
+
+**Phase 5 / 7 remnants:**
+14. **Pure-prompt mode polish** — in `.none` mode, the assembler doesn't inline `<subpath>/CLAUDE.md` (capped at 8 KB) the way the spec called for. Important for repos where you've turned off code exploration but still want the per-subfolder voice.
+15. **Cost dashboard** — sum of `costUsd` per day/week broken out by repo / tool-mode. Lower priority on a subscription (cost is informational anyway).
+16. **SwiftData migration** — still JSON for inbox snapshot, repo configs, reviews, action log. Acceptable for personal use; lands when we want richer relational queries in the History tab + cost dashboard.
 
 Notable divergences from the original spec, tracked here so they don't get lost:
 
