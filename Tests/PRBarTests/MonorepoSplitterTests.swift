@@ -44,9 +44,21 @@ final class MonorepoSplitterTests: XCTestCase {
         XCTAssertEqual(subs[0].subpath, "")
     }
 
-    // MARK: - real config
+    // MARK: - per-subfolder config
 
-    func testGetsynqCloudSplitsByRoot() {
+    /// Local fixture for tests that need a rich `perSubfolder` config —
+    /// stand-in for what a real monorepo's `.prbar.yml` would specify.
+    private var kernelLibConfig: RepoConfig {
+        var cfg = RepoConfig.default
+        cfg.splitMode = .perSubfolder
+        cfg.rootPatterns = ["kernel-*", "lib/*"]
+        cfg.unmatchedStrategy = .reviewAtRoot
+        cfg.maxParallelSubreviews = 4
+        cfg.collapseAboveSubreviewCount = 6
+        return cfg
+    }
+
+    func testPerSubfolderConfigSplitsByRoot() {
         let diff = """
         diff --git a/kernel-billing/audit/log.go b/kernel-billing/audit/log.go
         --- a/kernel-billing/audit/log.go
@@ -67,7 +79,7 @@ final class MonorepoSplitterTests: XCTestCase {
         -a
         +b
         """
-        let subs = MonorepoSplitter.split(diffText: diff, config: .getsynqCloud)
+        let subs = MonorepoSplitter.split(diffText: diff, config: kernelLibConfig)
 
         let bySubpath = Dictionary(uniqueKeysWithValues: subs.map { ($0.subpath, $0) })
         XCTAssertNotNil(bySubpath["kernel-billing"], "kernel-* should resolve to kernel-billing")
@@ -82,7 +94,7 @@ final class MonorepoSplitterTests: XCTestCase {
         let diff = makeMultiKernelDiff(filesPerKernel: [
             "kernel-a": 3, "kernel-b": 3, "kernel-c": 3, "kernel-d": 1, "kernel-e": 2,
         ])
-        let subs = MonorepoSplitter.split(diffText: diff, config: .getsynqCloud)
+        let subs = MonorepoSplitter.split(diffText: diff, config: kernelLibConfig)
         let names = subs.map(\.subpath).filter { !$0.isEmpty }.sorted()
         XCTAssertFalse(names.contains("kernel-d"), "smallest bucket should be tail-merged out")
         XCTAssertLessThanOrEqual(subs.count, 4, "fanout cap is 4")
@@ -152,7 +164,7 @@ final class MonorepoSplitterTests: XCTestCase {
         -a
         +b
         """
-        var cfg = RepoConfig.getsynqCloud
+        var cfg = kernelLibConfig
         cfg.splitMode = .single
         let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
         XCTAssertEqual(subs.count, 1)
@@ -164,7 +176,7 @@ final class MonorepoSplitterTests: XCTestCase {
         let diff = makeMultiKernelDiff(filesPerKernel: [
             "kernel-a": 2, "kernel-b": 2, "kernel-c": 2,
         ])
-        var cfg = RepoConfig.getsynqCloud
+        var cfg = kernelLibConfig
         cfg.collapseAboveSubreviewCount = 2
         cfg.maxParallelSubreviews = 8
         let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
@@ -176,18 +188,23 @@ final class MonorepoSplitterTests: XCTestCase {
         let diff = makeMultiKernelDiff(filesPerKernel: [
             "kernel-a": 2, "kernel-b": 2,
         ])
-        var cfg = RepoConfig.getsynqCloud
+        var cfg = kernelLibConfig
         cfg.collapseAboveSubreviewCount = 5
         let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
         XCTAssertGreaterThanOrEqual(subs.count, 2)
     }
 
-    func testConfigMatchPicksGetsynqCloud() {
-        let cfg = MonorepoConfig.match(owner: "getsynq", repo: "cloud")
-        XCTAssertEqual(cfg.repoGlobs, ["getsynq/cloud"])
+    func testConfigMatchUsesUserSuppliedConfigs() {
+        var cfg = RepoConfig.default
+        cfg.repoGlobs = ["acme/platform"]
+        cfg.rootPatterns = ["service-*"]
+        let resolved = MonorepoConfig.match(
+            owner: "acme", repo: "platform", configs: [cfg]
+        )
+        XCTAssertEqual(resolved.repoGlobs, ["acme/platform"])
     }
 
-    func testConfigMatchFallsBackToDefault() {
+    func testConfigMatchFallsBackToDefaultWhenNoBuiltins() {
         let cfg = MonorepoConfig.match(owner: "someone", repo: "elsewhere")
         XCTAssertEqual(cfg.rootPatterns, [])
     }

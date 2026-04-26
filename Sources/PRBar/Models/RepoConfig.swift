@@ -169,35 +169,9 @@ struct RepoConfig: Sendable, Hashable, Codable {
         notifyPolicy: .batchSettled
     )
 
-    /// Bundled default for `getsynq/cloud`. Mirrors the actual top-level
-    /// layout: `kernel-*`, `lib/*`, plus the named monorepo apps.
-    static let getsynqCloud = RepoConfig(
-        repoGlobs: ["getsynq/cloud"],
-        excluded: false,
-        splitMode: .perSubfolder,
-        rootPatterns: [
-            "kernel-*", "lib/*",
-            "api", "api_public", "app-slack", "fe-app",
-            "dev-infra", "dev-tools", "dev-helpers",
-            "proto", "proto_public", "playbooks", "Taskfiles",
-        ],
-        unmatchedStrategy: .reviewAtRoot,
-        minFilesPerSubreview: 1,
-        maxParallelSubreviews: 4,
-        collapseAboveSubreviewCount: 6,
-        toolModeOverride: nil,
-        customSystemPrompt: nil,
-        replaceBaseSystemPrompt: false,
-        maxToolCallsPerSubreview: 10,
-        maxCostUsdPerSubreview: 0.30,
-        autoApprove: .off,
-        reviewDrafts: false,
-        aiReviewEnabled: true,
-        notifyPolicy: .batchSettled
-    )
-
     /// Pick the first config whose `repoGlobs` match (negations honored).
-    /// Falls back to `.default`.
+    /// Falls back to `.default`. With no built-ins shipped, this only
+    /// finds matches in user-supplied configs.
     static func match(owner: String, repo: String, configs: [RepoConfig] = builtins) -> RepoConfig {
         let nameWithOwner = "\(owner)/\(repo)"
         for config in configs where config.matches(nameWithOwner: nameWithOwner) {
@@ -206,8 +180,10 @@ struct RepoConfig: Sendable, Hashable, Codable {
         return .default
     }
 
-    /// Built-ins ship with PRBar; user overrides land via `RepoConfigStore`.
-    static let builtins: [RepoConfig] = [.getsynqCloud]
+    /// No bundled configs — repo-specific layouts belong with their
+    /// repos (see PLAN.md: per-repo `.prbar.yml` is the planned source
+    /// of truth) or in the user's `RepoConfigStore` overrides.
+    static let builtins: [RepoConfig] = []
 
     func matches(nameWithOwner: String) -> Bool {
         GlobMatcher.anyMatch(repoGlobs, nameWithOwner)
