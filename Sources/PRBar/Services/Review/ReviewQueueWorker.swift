@@ -249,7 +249,7 @@ final class ReviewQueueWorker {
                 return try await c.fetchDiff(owner: owner, repo: repo, number: number)
             },
             checkoutManager: checkout,
-            cache: ReviewCache(),
+            cache: ReviewCache.live(),
             failureLogStore: FailureLogStore.live()
         )
     }

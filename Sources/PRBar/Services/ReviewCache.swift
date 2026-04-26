@@ -1,50 +1,76 @@
 import Foundation
+import SwiftData
 
-/// JSON-backed persistence for `ReviewState` so AI verdicts survive a
-/// relaunch. Keyed by `prNodeId`; the in-memory dictionary keeps only
-/// the latest review per PR. The stored review's `headSha` lets the
-/// queue worker detect staleness when the PR's head moves on the next
-/// poll — at that point the cached verdict is shown as "outdated for
-/// SHA xyz" and the PR is re-enqueued for a fresh triage.
+/// SwiftData-backed persistence for `ReviewState` so AI verdicts survive
+/// a relaunch. Keyed by `prNodeId`; the queue worker keeps the latest
+/// review per PR. The stored review's `headSha` lets the worker detect
+/// staleness when the PR's head moves on the next poll — at that point
+/// the cached verdict is shown as "outdated for SHA xyz" and the PR is
+/// re-enqueued for a fresh triage.
 ///
-/// File: `~/Library/Application Support/io.synq.prbar/reviews.json`.
-/// SwiftData migration is a follow-up; for now this is enough.
+/// The `ReviewState` graph is JSON-encoded into the entry's `payload`
+/// field — modeling the full `AggregatedReview` / `PriorReview` /
+/// nested annotation tree as relational `@Model`s buys nothing here
+/// (no relational queries against review internals) and would cost
+/// migration risk every time those structs evolve.
 struct ReviewCache: Sendable {
-    let fileURL: URL
+    let container: ModelContainer
 
-    init(fileURL: URL = ReviewCache.defaultURL) {
-        self.fileURL = fileURL
+    init(container: ModelContainer) {
+        self.container = container
     }
 
-    /// Read the persisted state. Empty dictionary on first run / corrupt
-    /// file (we don't want to crash a launch on a bad cache).
+    /// Convenience for production paths.
+    static func live() -> ReviewCache {
+        ReviewCache(container: PRBarModelContainer.live())
+    }
+
+    /// Read every persisted review state. Best-effort decode: any entry
+    /// whose payload fails to decode (e.g. after a `ReviewState` schema
+    /// change) is dropped rather than crashing the launch.
     func load() -> [String: ReviewState] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [:] }
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<ReviewStateEntry>()
+        guard let entries = try? context.fetch(descriptor) else { return [:] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([String: ReviewState].self, from: data)) ?? [:]
+        var result: [String: ReviewState] = [:]
+        for entry in entries {
+            guard let state = try? decoder.decode(ReviewState.self, from: entry.payload) else {
+                continue
+            }
+            result[entry.prNodeId] = state
+        }
+        return result
     }
 
-    /// Atomically replace the persisted state. Failures are silent — the
-    /// cache is best-effort, not load-bearing for correctness.
+    /// Replace the persisted set with `states`. Any rows for PRs no longer
+    /// in the dictionary are deleted (the worker discards `ReviewState`
+    /// once the PR leaves the inbox, so we mirror that here).
     func save(_ states: [String: ReviewState]) {
+        let context = ModelContext(container)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(states) else { return }
-        // Ensure parent dir exists (matches SnapshotCache behavior).
-        let dir = fileURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
-    }
 
-    static let defaultURL: URL = {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        let dir = appSupport.appendingPathComponent("io.synq.prbar", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("reviews.json")
-    }()
+        let descriptor = FetchDescriptor<ReviewStateEntry>()
+        let existing = (try? context.fetch(descriptor)) ?? []
+        let existingByKey = Dictionary(uniqueKeysWithValues: existing.map { ($0.prNodeId, $0) })
+
+        for (key, state) in states {
+            guard let payload = try? encoder.encode(state) else { continue }
+            if let row = existingByKey[key] {
+                row.payload = payload
+                row.triggeredAt = state.triggeredAt
+            } else {
+                context.insert(ReviewStateEntry(
+                    prNodeId: key, payload: payload, triggeredAt: state.triggeredAt
+                ))
+            }
+        }
+        // Drop rows whose PRs are no longer tracked.
+        for (key, row) in existingByKey where states[key] == nil {
+            context.delete(row)
+        }
+        try? context.save()
+    }
 }

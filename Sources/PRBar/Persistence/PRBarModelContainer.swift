@@ -14,6 +14,7 @@ enum PRBarModelContainer {
     /// to include the new entity on next launch.
     static let schema: Schema = Schema([
         ActionLogEntry.self,
+        ReviewStateEntry.self,
     ])
 
     static func live() -> ModelContainer {
