@@ -109,7 +109,11 @@ struct PopoverView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(poller.prs.prefix(10)) { pr in
-                    PRRowSummary(pr: pr)
+                    PRRowSummary(
+                        pr: pr,
+                        isRefreshing: poller.refreshingPRs.contains(pr.nodeId),
+                        onRefresh: { poller.refreshPR(pr) }
+                    )
                 }
                 if poller.prs.count > 10 {
                     Text("…and \(poller.prs.count - 10) more")
@@ -153,6 +157,10 @@ struct PopoverView: View {
 
 private struct PRRowSummary: View {
     let pr: InboxPR
+    let isRefreshing: Bool
+    let onRefresh: () -> Void
+
+    @State private var isHovering = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -175,7 +183,20 @@ private struct PRRowSummary: View {
                 }
             }
             Spacer()
+            if isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+            } else if isHovering {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .help("Refresh this PR")
+            }
         }
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
         .help("\(pr.nameWithOwner) #\(pr.number) — \(pr.title)\nmergeable: \(pr.mergeStateStatus); review: \(pr.reviewDecision ?? "—")")
     }
 
@@ -244,5 +265,5 @@ private struct PRRowSummary: View {
 
 #Preview {
     PopoverView()
-        .environment(PRPoller(fetcher: { [] }))
+        .environment(PRPoller(fetcher: { [] }, prRefresher: nil))
 }

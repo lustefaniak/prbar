@@ -53,4 +53,37 @@ actor GHClient {
             InboxPR(node: $0.node, viewerLogin: viewerLogin)
         }
     }
+
+    /// Refresh a single PR. Costs ~1 GraphQL point vs ~25 for fetchInbox.
+    func fetchPR(owner: String, repo: String, number: Int) async throws -> InboxPR {
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: [
+                "api", "graphql",
+                "-F", "owner=\(owner)",
+                "-F", "name=\(repo)",
+                "-F", "number=\(number)",
+                "-f", "query=\(GraphQLQueries.singlePR)",
+            ]
+        )
+
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+
+        let response: SinglePRResponse
+        do {
+            response = try JSONDecoder().decode(SinglePRResponse.self, from: result.stdout)
+        } catch {
+            throw GHError.decodingFailed(String(describing: error))
+        }
+
+        return InboxPR(
+            node: response.data.repository.pullRequest,
+            viewerLogin: response.data.viewer.login
+        )
+    }
 }

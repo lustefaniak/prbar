@@ -58,6 +58,67 @@ final class PRPollerTests: XCTestCase {
         XCTAssertTrue(delta.isEmpty)
     }
 
+    func testRefreshPRReplacesEntryInPlace() async throws {
+        let original = makePR(nodeId: "PR_a", number: 1, title: "before")
+        let updated  = makePR(nodeId: "PR_a", number: 1, title: "after")
+
+        let poller = PRPoller(
+            fetcher: { [original] },
+            prRefresher: { _, _, _ in updated }
+        )
+        poller.pollNow()
+        try await waitUntil { poller.prs.first?.title == "before" }
+
+        poller.refreshPR(original)
+        try await waitUntil { poller.prs.first?.title == "after" }
+
+        XCTAssertEqual(poller.prs.count, 1)
+        XCTAssertTrue(poller.refreshingPRs.isEmpty, "should clear after refresh")
+    }
+
+    func testRefreshPRSurfacesErrorWithoutRemovingEntry() async throws {
+        struct StubError: Error, LocalizedError {
+            var errorDescription: String? { "rate limited" }
+        }
+        let pr = makePR(nodeId: "PR_a", number: 1, title: "stays")
+        let poller = PRPoller(
+            fetcher: { [pr] },
+            prRefresher: { _, _, _ in throw StubError() }
+        )
+        poller.pollNow()
+        try await waitUntil { poller.prs.count == 1 }
+
+        poller.refreshPR(pr)
+        try await waitUntil { poller.lastError != nil }
+
+        XCTAssertEqual(poller.prs.first?.title, "stays")
+        XCTAssertEqual(poller.lastError, "rate limited")
+    }
+
+    func testRefreshPRWithoutRefresherFallsBackToPollNow() async throws {
+        let counter = AsyncCounter()
+        let pr = makePR(nodeId: "PR_a", number: 1, title: "x")
+        let poller = PRPoller(fetcher: {
+            await counter.increment()
+            return [pr]
+        })
+        poller.pollNow()
+        try await waitUntil { poller.prs.count == 1 }
+        let initialCount = await counter.value
+
+        // Without prRefresher, refreshPR falls back to pollNow → another full fetch.
+        poller.refreshPR(pr)
+
+        let deadline = Date().addingTimeInterval(2)
+        while await counter.value <= initialCount {
+            if Date() > deadline {
+                XCTFail("refreshPR did not trigger fetcher")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     func testStartIsIdempotent() async throws {
         let counter = AsyncCounter()
         let poller = PRPoller(fetcher: {

@@ -29,21 +29,41 @@ final class PRPoller {
     @ObservationIgnored
     private var pollingTask: Task<Void, Never>?
 
+    /// Tracks PR node IDs currently being refreshed individually, so the UI
+    /// can show a per-row spinner while a refresh is in flight.
+    private(set) var refreshingPRs: Set<String> = []
+
     @ObservationIgnored
     private let fetcher: @Sendable () async throws -> [InboxPR]
 
-    init(fetcher: @Sendable @escaping () async throws -> [InboxPR]) {
+    @ObservationIgnored
+    private let prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)?
+
+    init(
+        fetcher: @Sendable @escaping () async throws -> [InboxPR],
+        prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil
+    ) {
         self.fetcher = fetcher
+        self.prRefresher = prRefresher
     }
 
     /// Convenience constructor backed by a real `GHClient` that auto-starts
     /// the polling loop. Errors at fetch time (gh missing, auth, network)
     /// are surfaced via `lastError`, never thrown from construction.
     static func live() -> PRPoller {
-        let poller = PRPoller(fetcher: {
-            let client = try GHClient()
-            return try await client.fetchInbox()
-        })
+        // Cache one client across calls — instantiation only does an
+        // executable path lookup so it's cheap, but no need to repeat.
+        let client: GHClient? = try? GHClient()
+        let poller = PRPoller(
+            fetcher: {
+                let c = try client ?? GHClient()
+                return try await c.fetchInbox()
+            },
+            prRefresher: { owner, repo, number in
+                let c = try client ?? GHClient()
+                return try await c.fetchPR(owner: owner, repo: repo, number: number)
+            }
+        )
         poller.start()
         return poller
     }
@@ -70,6 +90,35 @@ final class PRPoller {
     /// Trigger an immediate poll without disturbing the schedule.
     func pollNow() {
         Task { await poll() }
+    }
+
+    /// Refresh a single PR via the cheap single-PR query. Replaces the entry
+    /// in `prs` in place; the row only "blinks" if the snapshot actually
+    /// changed. No-op (with optional fallback to pollNow) if no per-PR
+    /// refresher is configured (e.g. in tests using the simpler init).
+    func refreshPR(_ pr: InboxPR) {
+        let nodeId = pr.nodeId
+        let owner = pr.owner
+        let repo = pr.repo
+        let number = pr.number
+        guard let refresher = prRefresher else {
+            pollNow()
+            return
+        }
+        guard !refreshingPRs.contains(nodeId) else { return }
+        refreshingPRs.insert(nodeId)
+
+        Task {
+            defer { refreshingPRs.remove(nodeId) }
+            do {
+                let updated = try await refresher(owner, repo, number)
+                if let idx = self.prs.firstIndex(where: { $0.nodeId == nodeId }) {
+                    self.prs[idx] = updated
+                }
+            } catch {
+                self.lastError = error.localizedDescription
+            }
+        }
     }
 
     private func poll() async {

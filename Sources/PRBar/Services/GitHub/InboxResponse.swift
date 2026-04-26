@@ -9,6 +9,10 @@ struct InboxResponse: Decodable, Sendable {
         let rateLimit: RateLimit
     }
 
+    static func decode(_ data: Data) throws -> InboxResponse {
+        try JSONDecoder().decode(InboxResponse.self, from: data)
+    }
+
     struct Viewer: Decodable, Sendable {
         let login: String
     }
@@ -135,5 +139,19 @@ struct InboxResponse: Decodable, Sendable {
         // GitHub API itself accepts the field. gh CLI quirk.
         // We'll compute `isRequired` from the REST branch-protection
         // cache (planned for Phase 1+), which is the canonical source.
+    }
+}
+
+/// Response shape for the single-PR refresh query (GraphQLQueries.singlePR).
+struct SinglePRResponse: Decodable, Sendable {
+    let data: ResponseData
+
+    struct ResponseData: Decodable, Sendable {
+        let viewer: InboxResponse.Viewer
+        let repository: Repository
+    }
+
+    struct Repository: Decodable, Sendable {
+        let pullRequest: InboxResponse.PullRequestNode
     }
 }
