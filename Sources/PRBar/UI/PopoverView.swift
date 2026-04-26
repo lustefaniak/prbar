@@ -1,10 +1,7 @@
 import SwiftUI
 
 struct PopoverView: View {
-    @State private var prs: [InboxPR] = []
-    @State private var fetchError: String?
-    @State private var isFetching = false
-    @State private var lastFetchedAt: Date?
+    @Environment(PRPoller.self) private var poller
 
     @State private var toolResults: [ToolProbeResult] = []
     private let probedTools = ["gh", "claude", "git"]
@@ -30,6 +27,7 @@ struct PopoverView: View {
         .padding(16)
         .frame(width: 460)
         .task { await probeTools() }
+        .task { poller.pollNow() }   // refresh whenever the popover opens
     }
 
     private var header: some View {
@@ -40,7 +38,7 @@ struct PopoverView: View {
             Text("PRBar")
                 .font(.headline)
             Spacer()
-            Text("Phase 1a")
+            Text("Phase 1b")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 6)
@@ -73,19 +71,20 @@ struct PopoverView: View {
             HStack {
                 Text("Inbox")
                     .font(.subheadline.bold())
-                if !prs.isEmpty {
-                    Text("\(prs.count)")
+                if !poller.prs.isEmpty {
+                    Text("\(poller.prs.count)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if let lastFetchedAt {
+                if let lastFetchedAt = poller.lastFetchedAt {
                     Text(lastFetchedAt, format: .relative(presentation: .named))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .help("Last successful fetch")
                 }
-                Button(action: fetch) {
-                    if isFetching {
+                Button(action: { poller.pollNow() }) {
+                    if poller.isFetching {
                         ProgressView().controlSize(.small)
                     } else {
                         Image(systemName: "arrow.clockwise")
@@ -93,28 +92,36 @@ struct PopoverView: View {
                     }
                 }
                 .buttonStyle(.borderless)
-                .disabled(isFetching)
+                .disabled(poller.isFetching)
+                .help("Refresh now")
             }
 
-            if let fetchError {
-                Text(fetchError)
+            if let error = poller.lastError, poller.prs.isEmpty {
+                Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
                     .lineLimit(4)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
-            } else if prs.isEmpty {
-                Text(isFetching ? "Fetching…" : "No PRs (or never fetched). Click ⟳.")
+            } else if poller.prs.isEmpty {
+                Text(poller.isFetching ? "Fetching…" : "No PRs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(prs.prefix(10)) { pr in
+                ForEach(poller.prs.prefix(10)) { pr in
                     PRRowSummary(pr: pr)
                 }
-                if prs.count > 10 {
-                    Text("…and \(prs.count - 10) more")
+                if poller.prs.count > 10 {
+                    Text("…and \(poller.prs.count - 10) more")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                if let error = poller.lastError {
+                    Text("Last fetch failed: \(error)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
                 }
             }
         }
@@ -132,22 +139,6 @@ struct PopoverView: View {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
-        }
-    }
-
-    private func fetch() {
-        isFetching = true
-        fetchError = nil
-        Task {
-            do {
-                let client = try GHClient()
-                let fetched = try await client.fetchInbox()
-                self.prs = fetched
-                self.lastFetchedAt = Date()
-            } catch {
-                self.fetchError = error.localizedDescription
-            }
-            self.isFetching = false
         }
     }
 
@@ -253,4 +244,5 @@ private struct PRRowSummary: View {
 
 #Preview {
     PopoverView()
+        .environment(PRPoller(fetcher: { [] }))
 }

@@ -36,14 +36,16 @@ final class PRPoller {
         self.fetcher = fetcher
     }
 
-    /// Convenience constructor backed by a real `GHClient`. Errors at fetch
-    /// time (gh missing, auth, network) are surfaced via `lastError`, never
-    /// thrown from construction.
+    /// Convenience constructor backed by a real `GHClient` that auto-starts
+    /// the polling loop. Errors at fetch time (gh missing, auth, network)
+    /// are surfaced via `lastError`, never thrown from construction.
     static func live() -> PRPoller {
-        PRPoller(fetcher: {
+        let poller = PRPoller(fetcher: {
             let client = try GHClient()
             return try await client.fetchInbox()
         })
+        poller.start()
+        return poller
     }
 
     /// Start the polling loop. Idempotent — second call is a no-op.
