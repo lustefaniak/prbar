@@ -2,7 +2,22 @@
 
 A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysitting CI on PRs I authored* and *(2) burning context on shallow PR reviews other people send me*. It reuses my existing `gh` auth and my Claude Max subscription via the `claude` CLI — no GitHub OAuth, no API keys.
 
-> Project codename: **PRBar**. Working dir: `/Users/lustefaniak/getsynq/prs`. App bundle id (proposed): `io.synq.prbar`.
+> Working dir: `/Users/lustefaniak/getsynq/prs`. Remote: `github.com/lustefaniak/prs` (private). App bundle id: `dev.lustefaniak.prbar`.
+
+---
+
+## Status
+
+**Phase 0 (skeleton) and Phase 1 (poller + tabs + merge action + Notifier + snapshot cache) are shipped.** 40+ tests passing including real-API integration tests that run on every `bin/test` — these catch schema drift the moment it happens (which already paid off once with the `workflowName` regression).
+
+Notable divergences from the original spec, tracked here so they don't get lost:
+
+1. **Snapshot persistence is JSON, not SwiftData (yet).** `SnapshotCache` writes the latest inbox to `~/Library/Application Support/io.synq.prbar/inbox-snapshot.json`. SwiftData lands in Phase 2 alongside `ReviewRun` + `Subreview` + `ActionLog` + `AutoApproveRule` + `MonorepoConfig`, where the relational queries pay back.
+2. **`CheckRun.isRequired` is not queried.** gh CLI emits ~3 stderr "PR ID required" errors per PR (and exits 1) when this field is in the GraphQL query, even though stdout JSON is valid — a gh-side quirk, confirmed via curl that the GitHub API itself accepts the field. Workaround: drop the field; "required" will come from the REST branch-protection cache later (the canonical source anyway).
+3. **Subprocess uses Foundation `Process` + temp-file redirection**, not yet the `swift-subprocess` package. Temp files avoid the 64 KB Pipe-buffer deadlock that bit us on the inbox query (full PR bodies × 50 PRs ≈ 110 KB).
+4. **Notifications fire title/body but not yet action buttons.** `UNUserNotificationCenter` is wired with categories; routing the `[Merge all] [Open]` / `[Undo]` action callbacks needs a `UNUserNotificationCenterDelegate` (small follow-up).
+5. **Repo-allowed merge methods are honored.** `Repository.{merge,squash,rebase}MergeAllowed` already reflects `requiresLinearHistory` (GitHub auto-flips `mergeCommitAllowed` to false). Plumbed through to `InboxPR.allowedMergeMethods` and the row's "⋯" menu hides forbidden methods. `PRPoller.mergePR` rejects disallowed methods server-side. Verified against `getsynq/cloud` (squash + rebase only).
+6. **Per-PR refresh** — surfaced as a hover button + menu item in addition to the global poll. Cheaper than re-running `fetchInbox` (1 GraphQL point vs 25), wasn't in the original spec but obvious once you're babysitting one specific CI run.
 
 ---
 
@@ -94,7 +109,44 @@ A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysit
 
 ---
 
-## Data Model (SwiftData)
+## Data Model
+
+The original plan called for SwiftData `@Model`s end-to-end. Phase 1 ships with a simpler split: `InboxPR` is an in-memory `Sendable` `Codable` struct (one collection, no relational queries needed yet) persisted via `SnapshotCache` to a single JSON file. SwiftData lands in Phase 2 alongside `ReviewRun` / `Subreview` / `ActionLog` / `AutoApproveRule` / `MonorepoConfig` — those are relational and benefit from `@Query`. Models below are split into "shipped" (struct + JSON cache) and "planned" (`@Model` for Phase 2+).
+
+### Shipped (Phase 1)
+
+```swift
+struct InboxPR: Identifiable, Sendable, Hashable, Codable {
+    var id: String { nodeId }
+    let nodeId: String
+    let owner: String; let repo: String; let number: Int
+    let title: String; let body: String; let url: URL
+    let author: String; let headRef: String; let baseRef: String
+    let isDraft: Bool
+    let role: PRRole                              // .authored | .reviewRequested | .both | .other
+    let mergeable: String                         // MERGEABLE | CONFLICTING | UNKNOWN
+    let mergeStateStatus: String                  // CLEAN | BLOCKED | DIRTY | …
+    let reviewDecision: String?                   // APPROVED | REVIEW_REQUIRED | CHANGES_REQUESTED
+    let checkRollupState: String                  // SUCCESS | PENDING | FAILURE | ERROR | EMPTY
+    let totalAdditions: Int; let totalDeletions: Int; let changedFiles: Int
+    let hasAutoMerge: Bool; let autoMergeEnabledBy: String?
+    let allCheckSummaries: [CheckSummary]
+    // Repo-level merge policy (mirrors GitHub branch-protection effects):
+    let allowedMergeMethods: Set<MergeMethod>     // {.squash, .rebase} for getsynq/cloud
+    let autoMergeAllowed: Bool
+    let deleteBranchOnMerge: Bool
+}
+
+struct CheckSummary: Sendable, Hashable, Codable {
+    let typename: String         // "CheckRun" | "StatusContext"
+    let name: String
+    let conclusion: String?      // CheckRun
+    let status: String?          // CheckRun status or StatusContext state
+    // isRequired deliberately absent — see Status §2
+}
+```
+
+### Planned (Phase 2+ — SwiftData)
 
 ```swift
 @Model final class PRSnapshot {
@@ -197,7 +249,8 @@ All access via `gh` CLI subprocess — never raw HTTPS. One file, `Services/GitH
 
 ### Discovery (single GraphQL query)
 ```graphql
-query Inbox($login: String!) {
+query Inbox {
+  viewer { login }
   search(query: "is:pr is:open involves:@me archived:false", type: ISSUE, first: 50) {
     edges { node { ... on PullRequest { ...PRFields } } }
   }
@@ -206,7 +259,11 @@ query Inbox($login: String!) {
 
 fragment PRFields on PullRequest {
   id number title body url isDraft additions deletions changedFiles
-  repository { nameWithOwner }
+  repository {
+    nameWithOwner
+    mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed
+    autoMergeAllowed deleteBranchOnMerge
+  }
   author { login }
   headRefName baseRefName
   mergeable mergeStateStatus reviewDecision
@@ -222,7 +279,7 @@ fragment PRFields on PullRequest {
         contexts(first: 30) {
           nodes {
             __typename
-            ... on CheckRun     { name conclusion status workflowName detailsUrl summary }
+            ... on CheckRun     { name conclusion status detailsUrl summary }
             ... on StatusContext { context state targetUrl description }
           }
         }
@@ -231,6 +288,8 @@ fragment PRFields on PullRequest {
   }
 }
 ```
+
+The same fragment is reused by `GraphQLQueries.singlePR` (per-PR refresh; ~1 point instead of ~25). `viewer { login }` rides along so role (`.authored` / `.reviewRequested` / `.both`) is computed client-side without a second roundtrip. `repository.{merge,squash,rebase}MergeAllowed` drives the row "⋯" menu. `CheckRun.isRequired` and `StatusContext.isRequired` are *not* queried — see Status §2 for the gh quirk.
 
 Run via `gh api graphql -F login=@me -f query='…' --jq '.data'`. Cost ~25 GraphQL points/cycle for ≤50 PRs. **30s is the floor, default 60s, allow 15s burst while popover is open** and any PR is mid-CI. At 60s, full-day usage ≈ 1500 pts/hr (30% of the 5000 limit).
 
@@ -582,22 +641,21 @@ Three tabs (`Picker` with segmented style):
 
 Diff renderer: pure Swift — split on `diff --git`, then per-hunk parse `@@` headers and prefix-color `+`/`-`/` ` lines. SF Mono, 12pt. No third-party syntax highlighter in MVP.
 
-### Settings (separate full window, opened via `Settings` scene)
-Six sections:
-- **General** — launch at login (`SMAppService.mainApp.register()`), poll interval, popover hotkey.
-- **GitHub** — show `gh auth status` output, list of orgs/repos detected, exclude list.
-- **AI Provider** — current provider (Claude only in v1), model picker, default tool mode (`.minimal` / `.none`), prompt-template editor (opens template file in default editor with reveal-in-Finder fallback).
-- **Monorepo configs** — table editor for `MonorepoConfig` rows; new-config form. Default for `getsynq/cloud` ships pre-populated. Per-repo overrides for tool mode, tool-call cap, cost cap.
-- **Auto-approve rules** — table editor for `AutoApproveRule` rows.
-- **About / diagnostics** — versions of `gh`, `claude`; recent `ActionLog` viewer; "Reveal data folder" button; disk usage of repo cache.
+### Settings (separate full window, opened via `Settings` scene + Cmd+, / SettingsLink)
+Six sections planned, two shipped:
+- ✅ **General** — launch at login (`SMAppService.mainApp.register()`). *Planned: poll interval, popover hotkey.*
+- ✅ **Diagnostics** — current `gh` / `claude` / `git` resolved paths + versions. *Planned: recent `ActionLog`, "Reveal data folder", disk usage.*
+- ◌ **GitHub** — `gh auth status` output, list of orgs/repos detected, exclude list.
+- ◌ **AI Provider** — current provider (Claude only in v1), model picker, default tool mode (`.minimal` / `.none`), prompt-template editor.
+- ◌ **Monorepo configs** — table editor for `MonorepoConfig` rows; default `getsynq/cloud` ships pre-populated. Per-repo overrides for tool mode, tool-call cap, cost cap.
+- ◌ **Auto-approve rules** — table editor for `AutoApproveRule` rows.
 
 ### Notifications (UNUserNotificationCenter)
-- **Coalesced**: a 60s settling window after any state change. After it elapses, fire one notification summarizing all actionable items: `"3 PRs ready: 2 to merge, 1 review verdict ready"`.
-- **Suppressed** while popover is open.
-- Categories with actions:
-  - `merge_ready` → `[Merge all] [Open]`
-  - `reviews_ready` → `[Open inbox]`
-  - `auto_approved` → `[Undo] [Open]` (only when an auto-rule acted, with the 30s undo window)
+- ✅ **Coalesced**: 60s settling window resets on every new event; one delivery summarizes everything (`"PRBar: 1 ready to merge, 2 reviews"`).
+- ✅ **Suppressed** while popover is open; resumes ~500 ms after close.
+- ✅ **Dedup** by `(kind, prNodeId)` — same PR flipping back and forth between polls only notifies once per state.
+- ✅ **First-poll silence**: skip notifications on the very first successful poll after launch, so opening the app doesn't fire 5 "ready to merge" banners.
+- ◌ **Action buttons** (`[Merge all] [Open]` / `[Undo] [Open]`): categories are set on the request but not yet routed. Needs a `UNUserNotificationCenterDelegate`.
 - Respects system Focus modes natively; no extra logic.
 
 ---
@@ -628,98 +686,115 @@ Six sections:
 
 ## Tech Stack & Project Layout
 
-- **Language**: Swift 6.0+, SwiftUI, async/await.
-- **Min OS**: macOS 14 (`MenuBarExtra` `.window`, `SMAppService`, `SwiftData`).
-- **Subprocess**: `swift-subprocess` (Apple, Swift 6.2+).
-- **Storage**: SwiftData (`~/Library/Application Support/io.synq.prbar/store.sqlite`).
+- **Language**: Swift 6.0+, SwiftUI, async/await, strict concurrency.
+- **Min OS**: macOS 14 (`MenuBarExtra` `.window`, `SMAppService`, `SwiftData`, `@Observable`).
+- **Project tooling**: XcodeGen — `project.yml` is in git, `PRBar.xcodeproj` is generated and gitignored. Build/test/run via `bin/` wrappers (no direct `xcodegen` / `xcodebuild` in normal flow).
+- **Subprocess** *(shipped)*: Foundation `Process` + temp-file redirection (avoids 64 KB Pipe-buffer deadlock). Migration to `swift-subprocess` is a follow-up.
+- **Storage** *(shipped)*: JSON snapshot file at `~/Library/Application Support/io.synq.prbar/inbox-snapshot.json`. *Planned (Phase 2+):* SwiftData container at `…/store.sqlite` for `ReviewRun` / `Subreview` / `ActionLog` / `AutoApproveRule` / `MonorepoConfig`.
 - **No third-party deps** in MVP.
 - **Distribution**: ad-hoc-signed local build for personal use; Developer ID + notarization later if shared. Not sandboxed (subprocess access required).
 
+Project layout (✅ exists, ◌ planned):
+
 ```
 PRBar/
-├── Package.swift
-├── PRBar.xcodeproj
+├── ✅ project.yml                              # XcodeGen spec (PRBar.xcodeproj is gitignored)
+├── ✅ bin/{regen,build,test,run}               # Bash wrappers
+├── ✅ docs/PLAN.md                             # this file
 ├── Sources/PRBar/
-│   ├── PRBarApp.swift                       # @main, MenuBarExtra scene, Settings scene
+│   ├── ✅ PRBarApp.swift                       # @main, MenuBarExtra scene, Settings scene
 │   ├── Models/
-│   │   ├── PRSnapshot.swift
-│   │   ├── ReviewRun.swift
-│   │   ├── Subreview.swift
-│   │   ├── ActionLog.swift
-│   │   ├── AutoApproveRule.swift
-│   │   ├── MonorepoConfig.swift
-│   │   ├── PromptTemplate.swift
-│   │   └── Enums.swift
+│   │   ├── ✅ InboxPR.swift                    # Sendable struct (Phase 1)
+│   │   ├── ✅ Enums.swift                      # PRRole, MergeMethod
+│   │   ├── ◌ ReviewRun.swift                  # SwiftData @Model (Phase 2+)
+│   │   ├── ◌ Subreview.swift                  # SwiftData @Model
+│   │   ├── ◌ ActionLog.swift                  # SwiftData @Model
+│   │   ├── ◌ AutoApproveRule.swift            # SwiftData @Model
+│   │   ├── ◌ MonorepoConfig.swift             # SwiftData @Model
+│   │   └── ◌ PromptTemplate.swift
 │   ├── Services/
 │   │   ├── GitHub/
-│   │   │   ├── GHClient.swift               # subprocess wrapper around `gh`
-│   │   │   ├── GraphQLQueries.swift         # static query strings
-│   │   │   ├── BranchProtectionCache.swift
-│   │   │   ├── DiffCache.swift
-│   │   │   └── CIFailureLogFetcher.swift    # `gh run view --log-failed`
-│   │   ├── Review/
-│   │   │   ├── MonorepoSplitter.swift       # diff → [Subdiff]
-│   │   │   ├── RepoCheckoutManager.swift    # bare clones + transient worktrees
-│   │   │   ├── ContextAssembler.swift       # Subdiff + PR meta → PromptBundle
-│   │   │   ├── ResultAggregator.swift       # [ProviderResult] → PR-level outcome
-│   │   │   └── ReviewQueueWorker.swift      # actor that drives the pipeline
-│   │   ├── Providers/
-│   │   │   ├── ReviewProvider.swift         # protocol
-│   │   │   ├── ClaudeProvider.swift         # v1 only
-│   │   │   ├── ClaudeStreamParser.swift     # JSONL event parser, tool-call counter, budget killer
-│   │   │   └── ProviderRegistry.swift
+│   │   │   ├── ✅ GHClient.swift               # gh subprocess: fetchInbox / fetchPR / mergePR
+│   │   │   ├── ✅ GraphQLQueries.swift         # inbox + singlePR queries (shared fragment)
+│   │   │   ├── ✅ InboxResponse.swift          # Codable mirror of the response
+│   │   │   ├── ◌ BranchProtectionCache.swift  # REST cache for required-checks (Phase 2+)
+│   │   │   ├── ◌ DiffCache.swift               # cache `gh pr diff` per (nodeId, headSha)
+│   │   │   └── ◌ CIFailureLogFetcher.swift    # `gh run view --log-failed` per failed job
+│   │   ├── ✅ PRPoller.swift                   # @MainActor @Observable: fetcher + delta + refresh + merge
+│   │   ├── ✅ SnapshotCache.swift              # JSON cache (will fold into SwiftData later)
+│   │   ├── ✅ Notifier.swift                   # UNUserNotificationCenter wrapper + coalescing
+│   │   ├── ✅ NotificationEvent.swift          # event type + EventDeriver (pure function)
+│   │   ├── ✅ LaunchAtLogin.swift              # SMAppService wrapper
+│   │   ├── Review/                             # (Phase 2+ — entire dir)
+│   │   │   ├── ◌ MonorepoSplitter.swift       # diff → [Subdiff]
+│   │   │   ├── ◌ RepoCheckoutManager.swift    # bare clones + transient sparse worktrees
+│   │   │   ├── ◌ ContextAssembler.swift       # Subdiff + PR meta → PromptBundle
+│   │   │   ├── ◌ ResultAggregator.swift       # [ProviderResult] → PR-level outcome
+│   │   │   └── ◌ ReviewQueueWorker.swift      # actor that drives the pipeline
+│   │   ├── Providers/                          # (Phase 2+)
+│   │   │   ├── ◌ ReviewProvider.swift         # protocol
+│   │   │   ├── ◌ ClaudeProvider.swift         # v1 only
+│   │   │   ├── ◌ ClaudeStreamParser.swift     # JSONL parser, tool-call counter, budget killer
+│   │   │   └── ◌ ProviderRegistry.swift
+│   │   └── ◌ AutoApprovePolicy.swift           # rule evaluation (Phase 6)
 │   │   ├── PRPoller.swift                   # actor that drives discovery
 │   │   ├── AutoApprovePolicy.swift          # rule evaluation
 │   │   └── Notifier.swift                   # UNUserNotificationCenter wrapper
 │   ├── UI/
-│   │   ├── PopoverRoot.swift                # tab container
-│   │   ├── MyPRsView.swift
-│   │   ├── InboxView.swift
-│   │   ├── HistoryView.swift
-│   │   ├── PRRowView.swift
-│   │   ├── PRDetailView.swift
-│   │   ├── SubreviewBreakdownView.swift     # per-subfolder chips + summaries + tools used
-│   │   ├── DiffView.swift                   # AttributedString-based renderer
-│   │   ├── AnnotationOverlay.swift
+│   │   ├── ✅ PopoverView.swift                # tab container
+│   │   ├── ✅ MyPRsView.swift
+│   │   ├── ✅ InboxView.swift
+│   │   ├── ✅ HistoryView.swift                # placeholder until Phase 2 ActionLog lands
+│   │   ├── ✅ PRRowView.swift                  # row + ⋯ menu (Open/Refresh/Merge)
+│   │   ├── ✅ PRListView.swift                 # shared list (empty/error/fetching states)
+│   │   ├── ✅ ToolAvailabilityView.swift       # used in Diagnostics + popover banner
+│   │   ├── ◌ PRDetailView.swift               # detail pane with AI section (Phase 2)
+│   │   ├── ◌ SubreviewBreakdownView.swift     # per-subfolder chips + summaries + tools used
+│   │   ├── ◌ DiffView.swift                   # AttributedString-based diff (Phase 3)
+│   │   ├── ◌ AnnotationOverlay.swift
 │   │   └── Settings/
-│   │       ├── SettingsRoot.swift
-│   │       ├── GeneralSettings.swift
-│   │       ├── GitHubSettings.swift
-│   │       ├── AIProviderSettings.swift
-│   │       ├── MonorepoConfigsSettings.swift
-│   │       └── AutoApproveRulesSettings.swift
+│   │       ├── ✅ SettingsRoot.swift
+│   │       ├── ✅ GeneralSettings.swift        # launch at login
+│   │       ├── ✅ DiagnosticsView.swift        # tool-availability + future diagnostics
+│   │       ├── ◌ GitHubSettings.swift          # auth status, exclude list (Phase 2+)
+│   │       ├── ◌ AIProviderSettings.swift
+│   │       ├── ◌ MonorepoConfigsSettings.swift
+│   │       └── ◌ AutoApproveRulesSettings.swift
 │   └── Util/
-│       ├── ExecutableResolver.swift          # finds gh/claude/git in /opt/homebrew/bin etc.
-│       ├── DiffParser.swift                  # unified-diff → [Hunk]
-│       ├── GlobMatcher.swift
-│       └── CoalescedSignal.swift             # 60s settling window helper
-└── Resources/
+│       ├── ✅ ExecutableResolver.swift          # /opt/homebrew/bin etc. PATH search
+│       ├── ✅ ProcessRunner.swift               # async Process wrapper (temp-file based)
+│       ├── ✅ ToolProbe.swift                   # versions of gh / claude / git
+│       ├── ◌ DiffParser.swift                  # unified-diff → [Hunk] (Phase 2)
+│       ├── ◌ GlobMatcher.swift                 # fnmatch-style (Phase 4)
+│       └── ◌ CoalescedSignal.swift             # 60s settling helper if Notifier needs more
+└── Resources/                                  # ◌ entire dir Phase 2+
     ├── schemas/review.json
-    ├── monorepo-configs/getsynq-cloud.json   # bundled default
-    └── prompts/
-        ├── system-base.md
-        ├── golang.md
-        ├── typescript.md
-        └── swift.md
+    ├── monorepo-configs/getsynq-cloud.json
+    └── prompts/{system-base,golang,typescript,swift}.md
 ```
 
 ---
 
 ## Implementation Roadmap
 
-### Phase 0 — Skeleton (½ day)
-- Create Xcode project (App target, macOS 14+, no sandbox, `LSUIElement = true`).
-- `MenuBarExtra(.window)` showing a static "Hello" popover.
-- `SMAppService.mainApp.register()` toggle wired to a `@AppStorage` boolean.
-- Verify `Subprocess` package resolves; smoke `which gh && which claude && which git`.
+### Phase 0 — Skeleton (½ day) ✅ shipped
+- ✅ XcodeGen-driven project (`project.yml` is the source of truth; `PRBar.xcodeproj` is gitignored). App target, macOS 14+, no sandbox, `LSUIElement = true`.
+- ✅ `MenuBarExtra(.window)` with the popover.
+- ✅ `SMAppService.mainApp.register()` toggle (now in Settings → General).
+- ✅ Tool-availability smoke: `gh` / `claude` / `git` resolved via `ExecutableResolver`.
+- ✅ `bin/regen`, `bin/build`, `bin/test`, `bin/run` wrappers.
 
-### Phase 1 — MVP loop, no AI (2 days)
-- `GHClient.fetchInbox()` running the GraphQL query above; map JSON → `PRSnapshot`s.
-- `PRPoller` actor with 60s timer, persists snapshots, computes deltas.
-- `MyPRsView` + `InboxView` rendering rows from SwiftData via `@Query`.
-- "Open in browser" + "Merge" actions wired to `gh pr merge`.
-- `Notifier` with coalesced firing + popover-open suppression.
-- **Demo gate**: I push a PR, see it appear; CI goes green and I get one notification with a working merge button. Same flow for incoming review requests (no AI yet).
+### Phase 1 — MVP loop, no AI (2 days) ✅ shipped
+- ✅ `GHClient.fetchInbox()` runs the inbox GraphQL query, decodes via `InboxResponse`, maps to `[InboxPR]`. Plus `GHClient.fetchPR(...)` for cheap per-PR refresh.
+- ✅ `PRPoller` (`@MainActor @Observable`) with 60s timer, delta detection (added/removed/changed), idempotent start/stop, fixture-injectable for tests.
+- ✅ `SnapshotCache` persists the latest `[InboxPR]` to JSON; `loadCached()` seeds state on launch.
+- ✅ Tabs: `MyPRsView` (role `.authored` / `.both`, sorted ready-to-merge first), `InboxView` (role `.reviewRequested` / `.both`, sorted not-yet-reviewed first), `HistoryView` (placeholder).
+- ✅ Per-PR refresh button + global refresh button.
+- ✅ Per-row "⋯" menu: Open in browser (`NSWorkspace.open`), Refresh, Squash/Merge/Rebase (filtered by `allowedMergeMethods`, with confirmation dialog).
+- ✅ `Notifier` with 60s settling window, popover-open suppression, dedup by (kind, prNodeId). Title/body delivery via `UNUserNotificationCenter`.
+- ✅ `EventDeriver` (pure function): turns `(PollDelta, oldPRs)` into `[NotificationEvent]` for `.readyToMerge`, `.newReviewRequest`, `.ciFailed`. Suppresses notifications on the very first poll after launch.
+- ✅ Settings scene: General (launch at login), Diagnostics (tool availability).
+- ⚠️ **Demo gate partially met**: notifications fire title/body but action buttons (Merge / Open inbox / Undo) aren't wired yet — small follow-up.
 
 ### Phase 2 — Minimal-tools AI review, single subreview (2.5 days)
 - `DiffParser`, `MonorepoSplitter` (no monorepo configs yet, returns single subdiff for whole PR with `subpath = ""`).
@@ -821,6 +896,10 @@ Daily spend cap in Settings (default $5). `ReviewQueueWorker` reads cumulative `
 | Concurrent reviews of different SHAs in same repo race on git operations | Per-repo lock around `git fetch` + `git worktree add` (cheap). Different worktrees are isolated. |
 | Context window blown by huge diffs | `ContextAssembler` truncates per-file diff at configurable threshold (default 1500 lines/file) with explicit "[truncated]" marker. Monorepo splitting alone shrinks the worst case dramatically. |
 | AI ignores the "minimize tool use" directive | Hard tool-call cap (default 10) is the enforcement. Cost cap is the second backstop. Both are visible per row so I can tune them per-repo. |
+| **(realized in Phase 1)** Foundation Pipe deadlocks on >64 KB output | `ProcessRunner` redirects stdout/stderr to temp files instead of `Pipe()`. Files have no buffer cap; gh's full inbox response (~110 KB) flows through unblocked. |
+| **(realized in Phase 1)** gh CLI emits hundreds of "PR ID required" stderr lines on certain GraphQL fields | Identified via bisection: `CheckRun.isRequired` is the trigger (gh side, not GitHub API; raw curl works). Workaround: drop the field from the query; we'll get "required" from the REST branch-protection cache (canonical source anyway) when that lands. |
+| **(realized in Phase 1)** `involves:@me` returns PRs where I'm a *past* commenter or reviewer, not currently assigned | These get `PRRole.other` and intentionally don't appear in My PRs or Inbox tabs. Integration test relaxed to allow `.other` (it's not an error). Could surface as a 4th "Watching" tab if there's appetite. |
+| **(realized in Phase 1)** GitHub returns `null` for context entries the viewer can't see (e.g. private fork) | `InboxResponse.NullableNodeList<T>` allows `[T?]`; `InboxPR` mapping uses `compactMap` to drop nulls. |
 
 ---
 
@@ -837,23 +916,33 @@ Daily spend cap in Settings (default $5). `ReviewQueueWorker` reads cumulative `
 
 ---
 
-## Critical files (planned, none exist yet)
+## Critical files
 
-The whole repo is greenfield. The most architecturally load-bearing files:
+### Shipped (Phase 0–1)
+- `project.yml` — XcodeGen spec; the only place project config can be edited.
+- `Sources/PRBar/PRBarApp.swift` — scene composition (MenuBarExtra + Settings); also constructs the shared `PRPoller` + `Notifier` and wires them together.
+- `Sources/PRBar/Services/GitHub/GHClient.swift` — single source of truth for all GitHub interaction (`fetchInbox`, `fetchPR`, `mergePR`).
+- `Sources/PRBar/Services/GitHub/GraphQLQueries.swift` — `inbox` + `singlePR` queries, sharing a `PRFields` fragment so the two stay in lockstep.
+- `Sources/PRBar/Services/GitHub/InboxResponse.swift` — Codable mirror of the GraphQL response; `NullableNodeList` tolerates nulls in `statusCheckRollup.contexts`.
+- `Sources/PRBar/Services/PRPoller.swift` — heartbeat actor; holds `[InboxPR]`, drives delta detection, dispatches refresh / merge.
+- `Sources/PRBar/Services/Notifier.swift` + `NotificationEvent.swift` — coalesced delivery; `EventDeriver` is the pure function that decides what's "actionable".
+- `Sources/PRBar/Services/SnapshotCache.swift` — JSON persistence for `[InboxPR]`. To be folded into SwiftData when ReviewRun lands.
+- `Sources/PRBar/Util/ProcessRunner.swift` — async wrapper around Foundation `Process`. Uses temp-file redirection (not pipes) to avoid the 64 KB Pipe-buffer deadlock.
+- `Sources/PRBar/UI/PopoverView.swift` + `MyPRsView.swift` + `InboxView.swift` + `PRRowView.swift` + `PRListView.swift` — the popover surface.
+- `Sources/PRBar/UI/Settings/{SettingsRoot,GeneralSettings,DiagnosticsView}.swift` — settings scene.
 
-- `Sources/PRBar/PRBarApp.swift` — Scene composition (MenuBarExtra + Settings).
-- `Sources/PRBar/Services/GitHub/GHClient.swift` — single source of truth for all GitHub interaction.
-- `Sources/PRBar/Services/GitHub/GraphQLQueries.swift` — the inbox query (defines the data model implicitly).
-- `Sources/PRBar/Services/PRPoller.swift` — the heartbeat actor.
+### Planned (Phase 2+)
 - `Sources/PRBar/Services/Review/MonorepoSplitter.swift` — diff → [Subdiff]; the entire monorepo story lives here.
-- `Sources/PRBar/Services/Review/RepoCheckoutManager.swift` — the only place that touches the real filesystem; mistakes here cause data loss or disk bloat.
+- `Sources/PRBar/Services/Review/RepoCheckoutManager.swift` — bare clones + transient sparse worktrees; the only place that touches the real filesystem; mistakes here cause data loss or disk bloat.
 - `Sources/PRBar/Services/Review/ContextAssembler.swift` — defines the prompt shape; shapes the AI's behavior more than any other file.
 - `Sources/PRBar/Services/Review/ResultAggregator.swift` — single-PR verdict from N subreviews.
+- `Sources/PRBar/Services/Review/ReviewQueueWorker.swift` — drives the splitter → checkout → assembler → provider → aggregator pipeline.
 - `Sources/PRBar/Services/Providers/ReviewProvider.swift` — provider protocol; getting this shape right matters because v1 Claude implementation locks the contract.
 - `Sources/PRBar/Services/Providers/ClaudeProvider.swift` — exact `claude -p` invocation (minimal + pure-prompt modes); ties us to the CLI's JSON contract.
 - `Sources/PRBar/Services/Providers/ClaudeStreamParser.swift` — the only place that enforces the tool-call and cost budgets in real time. Bug here = runaway costs.
+- `Sources/PRBar/Services/GitHub/BranchProtectionCache.swift` + `DiffCache.swift` + `CIFailureLogFetcher.swift` — cached REST calls for protected-branch rules, on-demand diff, and failed-job log tails.
 - `Sources/PRBar/Services/AutoApprovePolicy.swift` — only place that can enqueue an unattended action.
-- `Sources/PRBar/UI/DiffView.swift` + `AnnotationOverlay.swift` + `SubreviewBreakdownView.swift` — the centerpiece of the inbox UX.
+- `Sources/PRBar/UI/DiffView.swift` + `AnnotationOverlay.swift` + `SubreviewBreakdownView.swift` + `PRDetailView.swift` — the centerpiece of the inbox UX.
 - `Resources/schemas/review.json` — defines the AI output contract; changing it is breaking for users' custom prompts.
 - `Resources/prompts/system-base.md` — ships as default; users can edit in place.
 - `Resources/monorepo-configs/getsynq-cloud.json` — bundled default for the most-used monorepo.
