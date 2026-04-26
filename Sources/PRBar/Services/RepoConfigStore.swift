@@ -1,31 +1,32 @@
 import Foundation
 import Observation
+import SwiftData
 
-/// JSON-backed persistence for user-edited `RepoConfig`s.
-///
-/// File layout:
-/// ```
-/// ~/Library/Application Support/io.synq.prbar/repo-configs.json
-/// ```
+/// SwiftData-backed persistence for user-edited `RepoConfig`s.
 ///
 /// Resolution order when looking up a config for a PR:
 ///   1. user-defined configs (most-specific match wins, in list order)
 ///   2. built-ins (`RepoConfig.builtins`)
 ///   3. `RepoConfig.default`
 ///
-/// Loaded eagerly on init; saves are write-through. SwiftData migration
-/// is a follow-up — keeping this small and Codable for now.
+/// Loaded eagerly on init; saves are write-through. The `RepoConfig`
+/// struct is stored as a JSON blob in `RepoConfigEntry.payload` so its
+/// shape can evolve without a SwiftData migration each time.
 @MainActor
 @Observable
 final class RepoConfigStore {
     private(set) var userConfigs: [RepoConfig]
 
     @ObservationIgnored
-    private let fileURL: URL
+    private let container: ModelContainer
 
-    init(fileURL: URL = RepoConfigStore.defaultURL) {
-        self.fileURL = fileURL
-        self.userConfigs = Self.loadFromDisk(at: fileURL)
+    @ObservationIgnored
+    private let context: ModelContext
+
+    init(container: ModelContainer = PRBarModelContainer.live()) {
+        self.container = container
+        self.context = ModelContext(container)
+        self.userConfigs = Self.loadFromContext(context)
     }
 
     /// Resolve the config for a given owner/repo. User configs win over
@@ -75,8 +76,6 @@ final class RepoConfigStore {
 
     /// Closure form for injection into `ReviewQueueWorker.configResolver`.
     nonisolated func makeResolver() -> @Sendable (String, String) -> RepoConfig {
-        // Snapshot the list at resolver-creation time. The worker swaps
-        // its closure when configs change (see PRBarApp wiring).
         let snapshot = MainActor.assumeIsolated { userConfigs }
         return { owner, repo in
             let nameWithOwner = "\(owner)/\(repo)"
@@ -89,26 +88,28 @@ final class RepoConfigStore {
 
     // MARK: - persistence
 
-    static let defaultURL: URL = {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        let dir = appSupport.appendingPathComponent("io.synq.prbar", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("repo-configs.json")
-    }()
-
-    private static func loadFromDisk(at url: URL) -> [RepoConfig] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
+    private static func loadFromContext(_ context: ModelContext) -> [RepoConfig] {
+        var descriptor = FetchDescriptor<RepoConfigEntry>(
+            sortBy: [SortDescriptor(\RepoConfigEntry.orderIndex)]
+        )
+        descriptor.includePendingChanges = false
+        guard let rows = try? context.fetch(descriptor) else { return [] }
         let decoder = JSONDecoder()
-        return (try? decoder.decode([RepoConfig].self, from: data)) ?? []
+        return rows.compactMap { try? decoder.decode(RepoConfig.self, from: $0.payload) }
     }
 
     private func save() {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(userConfigs) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        encoder.outputFormatting = [.sortedKeys]
+
+        // Replace strategy: drop everything, re-insert in current order.
+        // The user-config list is small (single-digit to a dozen entries)
+        // so the cost is negligible and the code stays simple.
+        try? context.delete(model: RepoConfigEntry.self)
+        for (idx, config) in userConfigs.enumerated() {
+            guard let payload = try? encoder.encode(config) else { continue }
+            context.insert(RepoConfigEntry(orderIndex: idx, payload: payload))
+        }
+        try? context.save()
     }
 }

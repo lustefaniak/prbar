@@ -15,6 +15,7 @@ enum PRBarModelContainer {
     static let schema: Schema = Schema([
         ActionLogEntry.self,
         ReviewStateEntry.self,
+        RepoConfigEntry.self,
     ])
 
     static func live() -> ModelContainer {
