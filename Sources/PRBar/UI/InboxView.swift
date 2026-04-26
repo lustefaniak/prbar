@@ -2,6 +2,7 @@ import SwiftUI
 
 struct InboxView: View {
     @Environment(PRPoller.self) private var poller
+    let onSelect: (InboxPR) -> Void
 
     private var inboxPRs: [InboxPR] {
         poller.prs
@@ -18,7 +19,8 @@ struct InboxView: View {
             refreshingPRs: poller.refreshingPRs,
             mergingPRs: poller.mergingPRs,
             onRefreshPR: { poller.refreshPR($0) },
-            onMergePR: { pr, method in poller.mergePR(pr, method: method) }
+            onMergePR: { pr, method in poller.mergePR(pr, method: method) },
+            onSelect: onSelect
         )
     }
 

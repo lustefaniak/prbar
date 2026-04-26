@@ -3,8 +3,10 @@ import SwiftUI
 struct PopoverView: View {
     @Environment(PRPoller.self) private var poller
     @Environment(Notifier.self) private var notifier
+    @Environment(ReviewQueueWorker.self) private var queue
 
     @State private var selectedTab: Tab = .myPRs
+    @State private var selectedPR: InboxPR?
     @State private var toolResults: [ToolProbeResult] = []
     private let probedTools = ["gh", "claude", "git"]
 
@@ -28,27 +30,11 @@ struct PopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            header
-
-            if !missingTools.isEmpty {
-                missingToolsBanner
+            if let selected = selectedPR {
+                PRDetailView(pr: selected, onBack: { selectedPR = nil })
+            } else {
+                listContent
             }
-
-            tabPicker
-
-            // Tab content
-            Group {
-                switch selectedTab {
-                case .myPRs:  MyPRsView()
-                case .inbox:  InboxView()
-                case .history: HistoryView()
-                }
-            }
-            .frame(minHeight: 80, alignment: .top)
-
-            Divider()
-
-            footer
         }
         .padding(16)
         .frame(width: 480)
@@ -56,6 +42,33 @@ struct PopoverView: View {
         .task { poller.pollNow() }   // refresh whenever the popover opens
         .onAppear { notifier.setPopoverVisible(true) }
         .onDisappear { notifier.setPopoverVisible(false) }
+        .onChange(of: poller.prs) { _, newPRs in
+            queue.enqueueNewReviewRequests(from: newPRs)
+        }
+    }
+
+    @ViewBuilder
+    private var listContent: some View {
+        header
+
+        if !missingTools.isEmpty {
+            missingToolsBanner
+        }
+
+        tabPicker
+
+        Group {
+            switch selectedTab {
+            case .myPRs:  MyPRsView(onSelect: { selectedPR = $0 })
+            case .inbox:  InboxView(onSelect: { selectedPR = $0 })
+            case .history: HistoryView()
+            }
+        }
+        .frame(minHeight: 80, alignment: .top)
+
+        Divider()
+
+        footer
     }
 
     private var header: some View {
@@ -149,6 +162,7 @@ struct PopoverView: View {
     PopoverView()
         .environment(PRPoller(fetcher: { [] }))
         .environment(Notifier(deliverer: NoopDeliverer()))
+        .environment(ReviewQueueWorker(diffFetcher: { _, _, _ in "" }))
 }
 
 private struct NoopDeliverer: NotificationDeliverer {

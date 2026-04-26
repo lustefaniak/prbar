@@ -12,6 +12,7 @@ struct PRListView: View {
     let mergingPRs: Set<String>
     let onRefreshPR: (InboxPR) -> Void
     let onMergePR: (InboxPR, MergeMethod) -> Void
+    let onSelect: (InboxPR) -> Void
 
     private let visibleLimit = 12
 
@@ -38,6 +39,8 @@ struct PRListView: View {
                         onRefresh: { onRefreshPR(pr) },
                         onMerge: { method in onMergePR(pr, method) }
                     )
+                    .contentShape(Rectangle())
+                    .onTapGesture { onSelect(pr) }
                 }
                 if prs.count > visibleLimit {
                     Text("…and \(prs.count - visibleLimit) more")

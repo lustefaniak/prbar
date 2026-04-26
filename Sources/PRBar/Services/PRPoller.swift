@@ -45,6 +45,13 @@ final class PRPoller {
     @ObservationIgnored
     private let prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)?
 
+    @ObservationIgnored
+    private let prReviewer: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ kind: ReviewActionKind, _ body: String) async throws -> Void)?
+
+    /// PRs currently being reviewed (approve/comment/requestChanges). Same
+    /// purpose as refreshingPRs / mergingPRs.
+    private(set) var postingReviewPRs: Set<String> = []
+
     /// Optional Notifier; when set, the poller forwards derived events
     /// after each successful poll. Tests typically don't wire one.
     @ObservationIgnored
@@ -59,11 +66,13 @@ final class PRPoller {
         fetcher: @Sendable @escaping () async throws -> [InboxPR],
         prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil,
         prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)? = nil,
+        prReviewer: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ kind: ReviewActionKind, _ body: String) async throws -> Void)? = nil,
         cache: SnapshotCache? = nil
     ) {
         self.fetcher = fetcher
         self.prRefresher = prRefresher
         self.prMerger = prMerger
+        self.prReviewer = prReviewer
         self.cache = cache
     }
 
@@ -102,6 +111,13 @@ final class PRPoller {
                 try await c.mergePR(
                     owner: owner, repo: repo, number: number,
                     method: method, deleteBranch: false
+                )
+            },
+            prReviewer: { owner, repo, number, kind, body in
+                let c = try client ?? GHClient()
+                try await c.postReview(
+                    owner: owner, repo: repo, number: number,
+                    kind: kind, body: body
                 )
             },
             cache: snapshotCache
@@ -158,6 +174,27 @@ final class PRPoller {
                 if let idx = self.prs.firstIndex(where: { $0.nodeId == nodeId }) {
                     self.prs[idx] = updated
                 }
+            } catch {
+                self.lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Post a review (approve / comment / request changes) on a PR. After
+    /// success, refreshes the PR so the row reflects the new
+    /// reviewDecision. On failure, surfaces error text in `lastError`.
+    func postReview(_ pr: InboxPR, kind: ReviewActionKind, body: String = "") {
+        let nodeId = pr.nodeId
+        guard let reviewer = prReviewer else { return }
+        guard !postingReviewPRs.contains(nodeId) else { return }
+        postingReviewPRs.insert(nodeId)
+
+        Task {
+            defer { postingReviewPRs.remove(nodeId) }
+            do {
+                try await reviewer(pr.owner, pr.repo, pr.number, kind, body)
+                self.lastError = nil
+                self.refreshPR(pr)
             } catch {
                 self.lastError = error.localizedDescription
             }

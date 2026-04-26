@@ -104,6 +104,37 @@ actor GHClient {
         return result.stdoutString ?? ""
     }
 
+    /// Submit a review (approve / comment / request changes) on a PR.
+    /// Body can be empty for plain approvals; some workflows want a short
+    /// note even on approve (gh accepts an empty body string).
+    func postReview(
+        owner: String,
+        repo: String,
+        number: Int,
+        kind: ReviewActionKind,
+        body: String
+    ) async throws {
+        var args: [String] = [
+            "pr", "review", "\(number)",
+            "--repo", "\(owner)/\(repo)",
+            kind.ghFlag,
+        ]
+        if !body.isEmpty {
+            args.append(contentsOf: ["--body", body])
+        }
+
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: args
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+    }
+
     /// Merge a pull request. Throws GHError.execFailed on any non-zero exit
     /// (which includes "PR not mergeable" and "approval required" — gh's
     /// stderr text is descriptive and surfaces in lastError as-is).

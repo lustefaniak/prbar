@@ -7,6 +7,28 @@ enum PRRole: String, Codable, Sendable, Hashable, CaseIterable {
     case other
 }
 
+enum ReviewActionKind: String, Codable, Sendable, Hashable, CaseIterable {
+    case approve
+    case comment
+    case requestChanges = "request_changes"
+
+    var ghFlag: String {
+        switch self {
+        case .approve:        return "--approve"
+        case .comment:        return "--comment"
+        case .requestChanges: return "--request-changes"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .approve:        return "Approve"
+        case .comment:        return "Comment"
+        case .requestChanges: return "Request changes"
+        }
+    }
+}
+
 enum MergeMethod: String, Codable, Sendable, Hashable, CaseIterable {
     case squash
     case merge
