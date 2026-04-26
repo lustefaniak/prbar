@@ -133,14 +133,23 @@ enum ProcessRunner {
             }
 
             proc.terminationHandler = { p in
-                // Drain anything that's still buffered (final partial line
-                // without a trailing newline goes here).
+                // Drain anything still buffered. If the child wrote in
+                // one big chunk *after* we'd registered the readability
+                // handler but before we got to fire it (or wrote without
+                // flushing), this catches it. Critical: split the tail
+                // into complete lines BEFORE dumping the trailing
+                // partial — otherwise we'd emit "a\nb\nc" as one
+                // callback because flushTrailing doesn't split.
                 outPipe.fileHandleForReading.readabilityHandler = nil
                 errPipe.fileHandleForReading.readabilityHandler = nil
                 let tail = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
                 if !tail.isEmpty { captured.append(chunk: tail) }
                 let errTail = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
                 if !errTail.isEmpty { stderrBox.append(errTail) }
+                let lines = captured.takeCompleteLines()
+                for line in lines {
+                    _ = onStdoutLine(line)
+                }
                 if let trailing = captured.flushTrailing() {
                     _ = onStdoutLine(trailing)
                 }

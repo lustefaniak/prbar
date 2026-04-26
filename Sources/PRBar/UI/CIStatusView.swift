@@ -28,9 +28,20 @@ struct CIStatusView: View {
                     } label: {
                         let pending = checks.filter { $0.bucket == .pending }.count
                         let passed = checks.filter { $0.bucket == .passed }.count
+                        // Full-width tappable area — the default
+                        // DisclosureGroup label only treats the chevron
+                        // as a hit target. Whole-row toggling matches
+                        // the rest of the popover's interaction model.
                         Text(disclosureLabel(pending: pending, passed: passed))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    showAll.toggle()
+                                }
+                            }
                     }
                 }
             }
