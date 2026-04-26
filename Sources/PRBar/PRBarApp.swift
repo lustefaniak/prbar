@@ -7,5 +7,9 @@ struct PRBarApp: App {
             PopoverView()
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsRoot()
+        }
     }
 }

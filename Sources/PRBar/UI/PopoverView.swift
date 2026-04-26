@@ -1,44 +1,35 @@
 import SwiftUI
 
 struct PopoverView: View {
-    @AppStorage("launchAtLogin") private var launchAtLogin = false
-
     @State private var prs: [InboxPR] = []
     @State private var fetchError: String?
     @State private var isFetching = false
     @State private var lastFetchedAt: Date?
 
+    @State private var toolResults: [ToolProbeResult] = []
+    private let probedTools = ["gh", "claude", "git"]
+
+    private var missingTools: [ToolProbeResult] {
+        toolResults.filter { !$0.available }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
 
-            Divider()
-
-            ToolAvailabilityView()
-
-            Divider()
+            if !missingTools.isEmpty {
+                missingToolsBanner
+            }
 
             inboxSection
 
             Divider()
 
-            Toggle("Launch at login", isOn: $launchAtLogin)
-                .toggleStyle(.switch)
-                .onChange(of: launchAtLogin) { _, newValue in
-                    LaunchAtLogin.set(enabled: newValue)
-                }
-                .task { launchAtLogin = LaunchAtLogin.isEnabled }
-
-            HStack {
-                Spacer()
-                Button("Quit") {
-                    NSApplication.shared.terminate(nil)
-                }
-                .keyboardShortcut("q")
-            }
+            footer
         }
         .padding(16)
         .frame(width: 460)
+        .task { await probeTools() }
     }
 
     private var header: some View {
@@ -56,6 +47,24 @@ struct PopoverView: View {
                 .padding(.vertical, 2)
                 .background(.secondary.opacity(0.15), in: Capsule())
         }
+    }
+
+    private var missingToolsBanner: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Missing CLIs: \(missingTools.map(\.tool).joined(separator: ", "))")
+                    .font(.caption)
+                Text("Install them and refresh — see Diagnostics in Settings.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
@@ -111,6 +120,21 @@ struct PopoverView: View {
         }
     }
 
+    private var footer: some View {
+        HStack {
+            SettingsLink {
+                Label("Settings…", systemImage: "gearshape")
+                    .labelStyle(.titleAndIcon)
+            }
+            .keyboardShortcut(",", modifiers: .command)
+            Spacer()
+            Button("Quit") {
+                NSApplication.shared.terminate(nil)
+            }
+            .keyboardShortcut("q")
+        }
+    }
+
     private func fetch() {
         isFetching = true
         fetchError = nil
@@ -125,6 +149,14 @@ struct PopoverView: View {
             }
             self.isFetching = false
         }
+    }
+
+    private func probeTools() async {
+        let names = probedTools
+        let probed = await Task.detached(priority: .userInitiated) {
+            names.map(ToolProbe.probe)
+        }.value
+        self.toolResults = probed
     }
 }
 
