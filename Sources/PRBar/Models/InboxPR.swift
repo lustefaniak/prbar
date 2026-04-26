@@ -52,6 +52,28 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     let deleteBranchOnMerge: Bool
 
     var nameWithOwner: String { "\(owner)/\(repo)" }
+
+    /// True when this PR is genuinely click-to-merge ready: GitHub says
+    /// `mergeStateStatus == "CLEAN"` (no conflicts, required checks
+    /// passed, required reviews approved), it's not a draft, the row
+    /// represents one of *my* PRs (so I'm allowed to merge it), and at
+    /// least one merge method is allowed by repo policy.
+    var isReadyToMerge: Bool {
+        mergeStateStatus == "CLEAN"
+            && !isDraft
+            && !allowedMergeMethods.isEmpty
+            && (role == .authored || role == .both)
+    }
+
+    /// Default merge method for this PR — first allowed in the order
+    /// most teams converge on. Used as the primary action of the row's
+    /// split button when there's no per-repo "last used" override.
+    var preferredMergeMethod: MergeMethod? {
+        for m in [MergeMethod.squash, .rebase, .merge] where allowedMergeMethods.contains(m) {
+            return m
+        }
+        return nil
+    }
 }
 
 extension InboxPR {

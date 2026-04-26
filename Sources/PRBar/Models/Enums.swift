@@ -49,4 +49,13 @@ enum MergeMethod: String, Codable, Sendable, Hashable, CaseIterable {
         case .rebase: return "Rebase and merge"
         }
     }
+
+    /// Tight label for the row's split-button primary action.
+    var shortDisplayName: String {
+        switch self {
+        case .squash: return "Squash"
+        case .merge:  return "Merge"
+        case .rebase: return "Rebase"
+        }
+    }
 }
