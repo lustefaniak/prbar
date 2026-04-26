@@ -84,6 +84,10 @@ final class ProcessRunnerSmokeTests: XCTestCase {
         guard let gh = ExecutableResolver.find("gh") else {
             throw XCTSkip("gh not installed")
         }
+        let auth = try await ProcessRunner.run(executable: gh, args: ["auth", "status"])
+        guard auth.succeeded else {
+            throw XCTSkip("gh not authenticated; skipping smoke test.")
+        }
         // Smallest possible GraphQL request — just the viewer login.
         let result = try await ProcessRunner.run(
             executable: gh,
