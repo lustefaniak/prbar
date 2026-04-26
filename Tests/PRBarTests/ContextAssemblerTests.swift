@@ -1,0 +1,171 @@
+import XCTest
+@testable import PRBar
+
+@MainActor
+final class ContextAssemblerTests: XCTestCase {
+    func testMinimalModeMentionsToolBudgetAndCwd() throws {
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(),
+            subdiff: subdiff(subpath: "kernel-billing"),
+            diffText: "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n",
+            toolMode: .minimal,
+            workdir: URL(fileURLWithPath: "/tmp/wd")
+        )
+        XCTAssertTrue(bundle.userPrompt.contains("read-only access"))
+        XCTAssertTrue(bundle.userPrompt.contains("Hard cap"))
+        XCTAssertTrue(bundle.userPrompt.contains("cwd is set here"))
+        XCTAssertEqual(bundle.workdir, URL(fileURLWithPath: "/tmp/wd"))
+        XCTAssertEqual(bundle.subpath, "kernel-billing")
+    }
+
+    func testNoneModeForbidsTools() throws {
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(),
+            subdiff: subdiff(),
+            diffText: "diff",
+            toolMode: .none,
+            workdir: URL(fileURLWithPath: "/tmp/wd")
+        )
+        XCTAssertTrue(bundle.userPrompt.contains("no tool access"))
+        XCTAssertFalse(bundle.userPrompt.contains("WebFetch"))
+    }
+
+    func testEmptySubpathRendersAsRepoRoot() throws {
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(),
+            subdiff: subdiff(subpath: ""),
+            diffText: "diff",
+            toolMode: .minimal,
+            workdir: URL(fileURLWithPath: "/tmp")
+        )
+        XCTAssertTrue(bundle.userPrompt.contains("Repo root"))
+    }
+
+    func testFilesChangedShowsPerFileCounts() throws {
+        let s = Subdiff(
+            subpath: "kernel-x",
+            hunks: [
+                Hunk(filePath: "kernel-x/a.go", oldStart: 1, oldCount: 0, newStart: 1, newCount: 3,
+                     lines: [.added("foo"), .added("bar"), .added("baz")]),
+                Hunk(filePath: "kernel-x/b.go", oldStart: 1, oldCount: 2, newStart: 1, newCount: 1,
+                     lines: [.removed("old1"), .removed("old2"), .added("new")]),
+            ]
+        )
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(), subdiff: s, diffText: "<>",
+            toolMode: .none, workdir: URL(fileURLWithPath: "/tmp")
+        )
+        XCTAssertTrue(bundle.userPrompt.contains("`kernel-x/a.go` (+3 / -0)"))
+        XCTAssertTrue(bundle.userPrompt.contains("`kernel-x/b.go` (+1 / -2)"))
+    }
+
+    func testExistingCommentsRendered() throws {
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(),
+            subdiff: subdiff(),
+            diffText: "<>",
+            existingComments: [
+                ExistingReviewComment(author: "alice", body: "lgtm", isReview: true),
+                ExistingReviewComment(author: "bob",   body: "consider buffering", isReview: false),
+            ],
+            toolMode: .none,
+            workdir: URL(fileURLWithPath: "/tmp")
+        )
+        XCTAssertTrue(bundle.userPrompt.contains("Existing review comments"))
+        XCTAssertTrue(bundle.userPrompt.contains("@alice"))
+        XCTAssertTrue(bundle.userPrompt.contains("lgtm"))
+    }
+
+    func testCIStatusIconsMatchState() throws {
+        let pr = makePR(checks: [
+            CheckSummary(typename: "CheckRun", name: "build",  conclusion: "SUCCESS", status: "COMPLETED"),
+            CheckSummary(typename: "CheckRun", name: "lint",   conclusion: "FAILURE", status: "COMPLETED"),
+            CheckSummary(typename: "CheckRun", name: "deploy", conclusion: nil,        status: "IN_PROGRESS"),
+        ])
+        let bundle = try ContextAssembler.assemble(
+            pr: pr, subdiff: subdiff(), diffText: "<>",
+            toolMode: .none, workdir: URL(fileURLWithPath: "/tmp")
+        )
+        XCTAssertTrue(bundle.userPrompt.contains("✓ `build`"))
+        XCTAssertTrue(bundle.userPrompt.contains("✗ `lint`"))
+        XCTAssertTrue(bundle.userPrompt.contains("⏳ `deploy`"))
+    }
+
+    func testCIFailuresIncludedAfterStatus() throws {
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(),
+            subdiff: subdiff(),
+            diffText: "<>",
+            ciFailures: [
+                CIFailureLog(jobName: "test-billing", logTail: "FAIL: TestFoo\n  expected x got y"),
+            ],
+            toolMode: .none,
+            workdir: URL(fileURLWithPath: "/tmp")
+        )
+        XCTAssertTrue(bundle.userPrompt.contains("CI failures"))
+        XCTAssertTrue(bundle.userPrompt.contains("test-billing"))
+        XCTAssertTrue(bundle.userPrompt.contains("FAIL: TestFoo"))
+    }
+
+    func testDiffSectionIsLast() throws {
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(),
+            subdiff: subdiff(),
+            diffText: "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+new\n",
+            toolMode: .none,
+            workdir: URL(fileURLWithPath: "/tmp")
+        )
+        let promptIndex = bundle.userPrompt.range(of: "## Diff")!
+        // No headings should appear after the Diff section.
+        let afterDiff = bundle.userPrompt[promptIndex.upperBound...]
+        XCTAssertFalse(afterDiff.contains("\n##"))
+    }
+
+    func testLanguageOverrideAppliedToSystemPrompt() throws {
+        let goSubdiff = Subdiff(
+            subpath: "kernel-billing",
+            hunks: [Hunk(filePath: "kernel-billing/log.go", oldStart: 1, oldCount: 0, newStart: 1, newCount: 1,
+                         lines: [.added("// new")])]
+        )
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(), subdiff: goSubdiff, diffText: "<>",
+            toolMode: .minimal, workdir: URL(fileURLWithPath: "/tmp")
+        )
+        // Go override mentions goroutine leaks. Base prompt does not.
+        XCTAssertTrue(bundle.systemPrompt.contains("Goroutine leaks"))
+    }
+
+    // MARK: helpers
+
+    private func makePR(checks: [CheckSummary] = []) -> InboxPR {
+        InboxPR(
+            nodeId: "PR_1",
+            owner: "getsynq", repo: "cloud", number: 4821,
+            title: "feat: audit log",
+            body: "## Summary\nAdds audit log to billing.",
+            url: URL(string: "https://github.com/getsynq/cloud/pull/4821")!,
+            author: "alice",
+            headRef: "feat/audit", baseRef: "main",
+            isDraft: false,
+            role: .reviewRequested,
+            mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED",
+            reviewDecision: "REVIEW_REQUIRED",
+            checkRollupState: "PENDING",
+            totalAdditions: 312, totalDeletions: 47, changedFiles: 8,
+            hasAutoMerge: false, autoMergeEnabledBy: nil,
+            allCheckSummaries: checks,
+            allowedMergeMethods: [.squash, .rebase],
+            autoMergeAllowed: true, deleteBranchOnMerge: true
+        )
+    }
+
+    private func subdiff(subpath: String = "kernel-billing") -> Subdiff {
+        Subdiff(
+            subpath: subpath,
+            hunks: [
+                Hunk(filePath: "\(subpath)/file.go", oldStart: 1, oldCount: 1, newStart: 1, newCount: 2,
+                     lines: [.context("a"), .added("b")])
+            ]
+        )
+    }
+}
