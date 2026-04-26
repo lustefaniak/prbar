@@ -10,6 +10,11 @@ options:
   generateEmptyDirectories: true
   xcodeVersion: "15.0"
 
+packages:
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: "2.4.1"
+
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -32,6 +37,8 @@ targets:
         type: folder
       - path: Resources/Assets.xcassets
         buildPhase: resources
+    dependencies:
+      - package: MarkdownUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.lustefaniak.prbar

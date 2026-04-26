@@ -223,13 +223,10 @@ struct PRDetailView: View {
         }
     }
 
-    /// PR description rendered with inline markdown via Foundation's
-    /// built-in `AttributedString(markdown:)`. Bold, italic, inline
-    /// code, and links work; **block-level rendering (heading sizes,
-    /// fenced code blocks, blockquotes) does NOT** — Foundation's
-    /// markdown parser preserves block content as plain text. If real
-    /// PRs need richer rendering we'll add a dedicated markdown package
-    /// (MarkdownUI) — flagged in CLAUDE.md as a Phase 2/3 task.
+    /// PR description rendered as GitHub-flavored Markdown via
+    /// `MarkdownText` (which wraps `swift-markdown-ui`). Headings,
+    /// fenced code, lists, tables, blockquotes, task lists all
+    /// render as native SwiftUI.
     ///
     /// Collapsed to ~6 lines by default; "Show more / Show less"
     /// toggles full height. Body is selectable so users can copy.
@@ -257,17 +254,21 @@ struct PRDetailView: View {
             // (no selection); when expanded, switch to selectable text
             // (no tap, copy/paste works) and rely on "Show less".
             if descriptionExpanded {
-                descriptionMarkdown(pr.body)
+                MarkdownText(raw: pr.body)
                     .font(.callout)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
             } else {
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) {
                         descriptionExpanded = true
                     }
                 } label: {
-                    descriptionMarkdown(pr.body)
+                    // Collapsed preview uses inline-only AttributedString
+                    // so `lineLimit` + `.truncationMode(.tail)` clip
+                    // cleanly — `Markdown`'s per-block VStack layout
+                    // ignores `lineLimit` across blocks. The expanded
+                    // view is the real renderer.
+                    collapsedPreview(pr.body)
                         .font(.callout)
                         .lineLimit(6)
                         .truncationMode(.tail)
@@ -279,16 +280,9 @@ struct PRDetailView: View {
         }
     }
 
-    /// Try inline markdown parsing; fall back to plain text on parse
-    /// errors (Foundation's parser is forgiving but not infallible).
     @ViewBuilder
-    private func descriptionMarkdown(_ raw: String) -> some View {
+    private func collapsedPreview(_ raw: String) -> some View {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // `.inlineOnlyPreservingWhitespace` keeps newlines and parses
-        // just inline syntax (bold/italic/code/links). `.full` would
-        // strip block markers like `## heading` collapsing layout into
-        // one paragraph — worse for reading PR descriptions, which
-        // typically rely on bullets and section breaks.
         if let attr = try? AttributedString(
             markdown: trimmed,
             options: AttributedString.MarkdownParsingOptions(
@@ -507,10 +501,8 @@ struct PRDetailView: View {
                         .help("Tool calls used: \(agg.toolNamesUsed.joined(separator: ", "))")
                 }
             }
-            Text(agg.summaryMarkdown)
+            MarkdownText(raw: agg.summaryMarkdown)
                 .font(.callout)
-                .textSelection(.enabled)
-                .lineLimit(20)
             if !agg.annotations.isEmpty {
                 AnnotationsSummaryView(
                     annotations: agg.annotations,

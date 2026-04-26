@@ -58,9 +58,8 @@ struct SubreviewBreakdownView: View {
             .buttonStyle(.plain)
 
             if isOpen {
-                Text(outcome.result.summaryMarkdown)
+                MarkdownText(raw: outcome.result.summaryMarkdown)
                     .font(.callout)
-                    .textSelection(.enabled)
                     .padding(.leading, 18)
                     .padding(.bottom, 4)
             }
