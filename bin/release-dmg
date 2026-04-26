@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Build a universal (arm64 + x86_64) PRBar.app and wrap it in a DMG.
+# Output: build/PRBar-<version>.dmg
+#
+# Used by both `gh act`-style local testing and the
+# .github/workflows/release.yml on tag pushes. The app is ad-hoc signed
+# (the project uses CODE_SIGN_IDENTITY="-"); Gatekeeper users will need
+# to right-click → Open the first time. Notarization is a follow-up
+# (requires a Developer ID cert, AC API key, and notarytool steps).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+if [[ "$DEV_DIR" == */CommandLineTools* || -z "$DEV_DIR" ]]; then
+  cat >&2 <<'EOF'
+error: xcodebuild is using Command Line Tools, not full Xcode.
+Install Xcode from the App Store, then:
+  sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+EOF
+  exit 1
+fi
+
+# Pick up the marketing version straight from project.yml so DMGs are
+# named consistently with the in-app About box. Strips outer quotes.
+VERSION="$(awk -F': ' '/MARKETING_VERSION/ { gsub(/"/, "", $2); print $2; exit }' project.yml)"
+VERSION="${VERSION:-0.0.0-dev}"
+
+ARCHIVE="build/release/PRBar.xcarchive"
+APP_DIR="$ARCHIVE/Products/Applications"
+APP="$APP_DIR/PRBar.app"
+STAGING="build/release/dmg-staging"
+DMG="build/release/PRBar-$VERSION.dmg"
+
+rm -rf build/release
+mkdir -p build/release
+
+./bin/regen
+
+# `archive` builds Release + universal in one shot. We don't need
+# Apple's exportArchive step since the app is ad-hoc signed and the
+# .app inside the xcarchive is already runnable.
+xcodebuild \
+  -project PRBar.xcodeproj \
+  -scheme PRBar \
+  -configuration Release \
+  -destination "generic/platform=macOS" \
+  -archivePath "$ARCHIVE" \
+  -quiet \
+  ARCHS="arm64 x86_64" \
+  ONLY_ACTIVE_ARCH=NO \
+  archive
+
+if [[ ! -d "$APP" ]]; then
+  echo "error: expected app at $APP after archive" >&2
+  exit 1
+fi
+
+# Verify the binary really is universal — fast sanity check on CI.
+EXEC="$APP/Contents/MacOS/PRBar"
+if ! lipo -info "$EXEC" 2>/dev/null | grep -q "arm64"; then
+  echo "error: $EXEC missing arm64 slice" >&2
+  lipo -info "$EXEC" >&2 || true
+  exit 1
+fi
+if ! lipo -info "$EXEC" 2>/dev/null | grep -q "x86_64"; then
+  echo "error: $EXEC missing x86_64 slice" >&2
+  lipo -info "$EXEC" >&2 || true
+  exit 1
+fi
+
+# Stage the .app + a symlink to /Applications so the DMG drag-install
+# pattern works out of the box.
+mkdir -p "$STAGING"
+cp -R "$APP" "$STAGING/"
+ln -s /Applications "$STAGING/Applications"
+
+hdiutil create \
+  -volname "PRBar $VERSION" \
+  -srcfolder "$STAGING" \
+  -ov \
+  -format UDZO \
+  "$DMG" >/dev/null
+
+echo "Built: $DMG"
+echo "      $(du -h "$DMG" | cut -f1) (universal, ad-hoc signed)"

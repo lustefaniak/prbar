@@ -1,0 +1,59 @@
+name: release
+
+on:
+  # Tag push of the form v0.1.0 cuts a real GitHub Release.
+  push:
+    tags:
+      - "v*.*.*"
+  # Manual dispatch produces a DMG artifact only — useful for one-off
+  # builds without minting a tag.
+  workflow_dispatch:
+
+permissions:
+  contents: write   # for softprops/action-gh-release on tag pushes
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        # macos-14 ships multiple Xcodes; pin to a specific one so
+        # build hashes stay reproducible. Bump explicitly when we
+        # want a newer Xcode.
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Build universal DMG
+        run: ./bin/release-dmg
+
+      - name: Locate built DMG
+        id: artifact
+        run: |
+          DMG_PATH="$(ls -1 build/release/PRBar-*.dmg | head -n1)"
+          echo "path=$DMG_PATH" >>"$GITHUB_OUTPUT"
+          echo "name=$(basename "$DMG_PATH")" >>"$GITHUB_OUTPUT"
+
+      - name: Upload DMG as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.artifact.outputs.path }}
+          body: |
+            Universal (arm64 + x86_64), ad-hoc signed.
+
+            First launch will hit Gatekeeper — right-click the app and
+            choose Open, then confirm. Notarization is a follow-up;
+            this build is intended for personal / internal use.
+          fail_on_unmatched_files: true
