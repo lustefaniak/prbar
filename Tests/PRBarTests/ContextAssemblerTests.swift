@@ -146,6 +146,7 @@ final class ContextAssemblerTests: XCTestCase {
             url: URL(string: "https://github.com/getsynq/cloud/pull/4821")!,
             author: "alice",
             headRef: "feat/audit", baseRef: "main",
+            headSha: "abc123",
             isDraft: false,
             role: .reviewRequested,
             mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED",

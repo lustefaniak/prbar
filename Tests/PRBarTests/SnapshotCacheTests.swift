@@ -108,6 +108,7 @@ final class SnapshotCacheTests: XCTestCase {
             author: "a",
             headRef: "h",
             baseRef: "main",
+            headSha: "abc123",
             isDraft: false,
             role: .authored,
             mergeable: "MERGEABLE",

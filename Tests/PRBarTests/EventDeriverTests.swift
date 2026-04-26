@@ -102,6 +102,7 @@ final class EventDeriverTests: XCTestCase {
             author: "alice",
             headRef: "h",
             baseRef: "main",
+            headSha: "abc123",
             isDraft: isDraft,
             role: role,
             mergeable: "MERGEABLE",

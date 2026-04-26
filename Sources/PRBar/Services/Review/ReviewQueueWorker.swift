@@ -65,6 +65,12 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var diffFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
 
+    /// On-disk checkout manager. Used in `.minimal` tool mode to give the
+    /// AI a real workdir for `Read`/`Grep`. Nil → fall back to empty temp
+    /// dirs (which only makes sense in `.none` mode anyway).
+    @ObservationIgnored
+    var checkoutManager: RepoCheckoutManager?
+
     @ObservationIgnored
     private var inFlight: Int = 0
 
@@ -72,18 +78,24 @@ final class ReviewQueueWorker {
     private var pending: [InboxPR] = []
 
     init(
-        diffFetcher: @escaping @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
+        diffFetcher: @escaping @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String,
+        checkoutManager: RepoCheckoutManager? = nil
     ) {
         self.diffFetcher = diffFetcher
+        self.checkoutManager = checkoutManager
     }
 
-    /// Convenience: real GHClient-backed worker.
+    /// Convenience: real GHClient-backed worker with a real checkout manager.
     static func live() -> ReviewQueueWorker {
         let client = try? GHClient()
-        return ReviewQueueWorker(diffFetcher: { owner, repo, number in
-            let c = try client ?? GHClient()
-            return try await c.fetchDiff(owner: owner, repo: repo, number: number)
-        })
+        let checkout = RepoCheckoutManager()
+        return ReviewQueueWorker(
+            diffFetcher: { owner, repo, number in
+                let c = try client ?? GHClient()
+                return try await c.fetchDiff(owner: owner, repo: repo, number: number)
+            },
+            checkoutManager: checkout
+        )
     }
 
     /// Enqueue a PR for review. Idempotent — already-known PR is a no-op
@@ -155,11 +167,27 @@ final class ReviewQueueWorker {
                 return
             }
 
+            // For .minimal mode, provision one worktree at the PR's headSha
+            // and reuse it across all subreviews of this PR (they all
+            // reference the same SHA, just different subpaths).
+            let sharedHandle: RepoCheckoutManager.Handle?
+            if toolMode == .minimal, let mgr = checkoutManager {
+                sharedHandle = try await mgr.provision(
+                    owner: pr.owner, repo: pr.repo,
+                    headSha: pr.headSha, subpath: ""
+                )
+            } else {
+                sharedHandle = nil
+            }
+            defer {
+                if let h = sharedHandle, let mgr = checkoutManager {
+                    Task { await mgr.release(h) }
+                }
+            }
+
             var outcomes: [SubreviewOutcome] = []
             for subdiff in subdiffs {
-                let workdir = makeWorkdir(forSubpath: subdiff.subpath)
-                defer { try? FileManager.default.removeItem(at: workdir) }
-
+                let workdir = resolveWorkdir(handle: sharedHandle, subpath: subdiff.subpath)
                 let bundle = try ContextAssembler.assemble(
                     pr: pr,
                     subdiff: subdiff,
@@ -191,10 +219,16 @@ final class ReviewQueueWorker {
         }
     }
 
-    private func makeWorkdir(forSubpath subpath: String) -> URL {
-        // Phase 2 ships pure-prompt only; workdir is just an empty temp dir.
-        // Phase 2g (RepoCheckoutManager) plugs in here — that real checkout
-        // gives the AI a populated subfolder for `.minimal` mode.
+    /// Compute the cwd for a subreview. In `.minimal` mode with a shared
+    /// worktree, that's `<worktree>/<subpath>` (or worktree root for the
+    /// trivial single-subdiff case). In `.none` mode, just an empty temp
+    /// dir per subreview — there's nothing to read either way.
+    private func resolveWorkdir(handle: RepoCheckoutManager.Handle?, subpath: String) -> URL {
+        if let handle {
+            return subpath.isEmpty
+                ? handle.worktreePath
+                : handle.worktreePath.appendingPathComponent(subpath, isDirectory: true)
+        }
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("prbar-review-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)

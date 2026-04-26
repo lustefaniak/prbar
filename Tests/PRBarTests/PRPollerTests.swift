@@ -228,6 +228,7 @@ final class PRPollerTests: XCTestCase {
             author: "alice",
             headRef: "h",
             baseRef: "main",
+            headSha: "abc123",
             isDraft: false,
             role: .reviewRequested,
             mergeable: "MERGEABLE",

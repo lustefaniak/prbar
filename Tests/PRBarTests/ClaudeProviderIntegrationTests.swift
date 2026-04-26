@@ -104,6 +104,7 @@ final class ClaudeProviderIntegrationTests: XCTestCase {
             url: URL(string: "https://github.com/lustefaniak/prs/pull/1")!,
             author: "lustefaniak",
             headRef: "test/version", baseRef: "main",
+            headSha: "abc123",
             isDraft: false,
             role: .authored,
             mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",

@@ -134,7 +134,8 @@ final class ReviewQueueWorkerTests: XCTestCase {
         InboxPR(
             nodeId: nodeId, owner: "o", repo: "r", number: number,
             title: "t", body: "", url: URL(string: "https://github.com/o/r/pull/\(number)")!,
-            author: "a", headRef: "h", baseRef: "main", isDraft: false,
+            author: "a", headRef: "h", baseRef: "main",
+            headSha: "abc123", isDraft: false,
             role: role,
             mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", reviewDecision: nil,
             checkRollupState: "EMPTY",

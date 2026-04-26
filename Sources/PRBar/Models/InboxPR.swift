@@ -20,6 +20,7 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     let author: String
     let headRef: String
     let baseRef: String
+    let headSha: String           // commit SHA at the head — for diff cache + checkout
     let isDraft: Bool
     let role: PRRole
 
@@ -68,6 +69,7 @@ extension InboxPR {
         self.author = node.author?.login ?? ""
         self.headRef = node.headRefName
         self.baseRef = node.baseRefName
+        self.headSha = node.commits.nodes.first?.commit.oid ?? ""
         self.isDraft = node.isDraft
         self.mergeable = node.mergeable
         self.mergeStateStatus = node.mergeStateStatus
