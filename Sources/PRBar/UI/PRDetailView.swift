@@ -25,6 +25,19 @@ struct PRDetailView: View {
         queue.reviews[pr.nodeId]?.status
     }
 
+    /// True when the cached review was for an earlier commit than the
+    /// PR's current head — i.e. the AI's verdict is for a stale snapshot
+    /// and a fresh re-triage is appropriate.
+    private var isReviewStale: Bool {
+        guard let s = queue.reviews[pr.nodeId] else { return false }
+        guard case .completed = s.status else { return false }
+        return s.headSha != pr.headSha
+    }
+
+    private var cachedReviewedSha: String? {
+        queue.reviews[pr.nodeId]?.headSha
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             navHeader
@@ -129,6 +142,10 @@ struct PRDetailView: View {
                 }())
             }
 
+            if isReviewStale, let oldSha = cachedReviewedSha {
+                staleBanner(oldSha: oldSha)
+            }
+
             switch reviewStatus {
             case .none:
                 Text("No review yet — press Re-run to start one.")
@@ -159,6 +176,25 @@ struct PRDetailView: View {
                 completedReviewSection(agg)
             }
         }
+    }
+
+    @ViewBuilder
+    private func staleBanner(oldSha: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "clock.arrow.circlepath")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Review is for an earlier commit (\(String(oldSha.prefix(7)))).")
+                    .font(.caption)
+                Text("Press Re-run to triage the latest changes.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder

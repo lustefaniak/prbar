@@ -220,6 +220,8 @@ private struct RepoConfigEditor: View {
                             .textFieldStyle(.roundedBorder)
                     }
                     Toggle("Exclude (skip all PRs from these repos)", isOn: $config.excluded)
+                    Toggle("Auto-review draft PRs", isOn: $config.reviewDrafts)
+                        .help("Drafts churn a lot; off by default. Re-run is always available manually.")
                 }
 
                 section("Splitter") {

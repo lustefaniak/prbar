@@ -107,6 +107,15 @@ struct RepoConfig: Sendable, Hashable, Codable {
 
     var autoApprove: AutoApproveConfig = .off
 
+    // --- Filters ---
+
+    /// When false (default), the queue worker skips draft PRs entirely —
+    /// no auto-enqueue on review request, no review burned. The user can
+    /// still hit Re-run manually from the detail view if they want a
+    /// triage of a draft. Flip to true for repos where drafts get real
+    /// review activity.
+    var reviewDrafts: Bool = false
+
     /// Default for any repo not explicitly configured.
     static let `default` = RepoConfig(
         repoGlobs: ["*/*"],
@@ -122,7 +131,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         replaceBaseSystemPrompt: false,
         maxToolCallsPerSubreview: 10,
         maxCostUsdPerSubreview: 0.30,
-        autoApprove: .off
+        autoApprove: .off,
+        reviewDrafts: false
     )
 
     /// Bundled default for `getsynq/cloud`. Mirrors the actual top-level
@@ -146,7 +156,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         replaceBaseSystemPrompt: false,
         maxToolCallsPerSubreview: 10,
         maxCostUsdPerSubreview: 0.30,
-        autoApprove: .off
+        autoApprove: .off,
+        reviewDrafts: false
     )
 
     /// Pick the first config whose `repoGlobs` match (negations honored).

@@ -46,7 +46,7 @@ struct ProviderOptions: Sendable {
     var schema: Data
 }
 
-struct ProviderResult: Sendable {
+struct ProviderResult: Sendable, Codable {
     let verdict: ReviewVerdict
     let confidence: Double
     let summaryMarkdown: String

@@ -4,8 +4,8 @@ import Observation
 /// One pending or completed AI review keyed by PR node ID. Drives the
 /// per-row "review status" UI in the inbox and the AI section in the
 /// detail pane.
-struct ReviewState: Sendable, Hashable {
-    enum Status: Sendable, Hashable {
+struct ReviewState: Sendable, Hashable, Codable {
+    enum Status: Sendable, Hashable, Codable {
         case queued
         case running
         case completed(AggregatedReview)
@@ -27,6 +27,10 @@ struct ReviewState: Sendable, Hashable {
     }
 
     let prNodeId: String
+    /// Commit SHA the review ran against. Used to detect staleness on
+    /// subsequent polls — if the PR's headSha changes, the cached
+    /// review is for an older commit and we should re-triage.
+    let headSha: String
     let triggeredAt: Date
     var status: Status
     /// Cost spent on this review (sum across subreviews after completion;
@@ -85,6 +89,11 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     private var pending: [InboxPR] = []
 
+    /// Disk persistence. Loads on init, saves after every state mutation.
+    /// Nil disables persistence (used by tests).
+    @ObservationIgnored
+    var cache: ReviewCache?
+
     // MARK: - Auto-approve batch state
     //
     // Approvals stage here when `AutoApprovePolicy` says yes. The undo
@@ -129,10 +138,25 @@ final class ReviewQueueWorker {
 
     init(
         diffFetcher: @escaping @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String,
-        checkoutManager: RepoCheckoutManager? = nil
+        checkoutManager: RepoCheckoutManager? = nil,
+        cache: ReviewCache? = nil
     ) {
         self.diffFetcher = diffFetcher
         self.checkoutManager = checkoutManager
+        self.cache = cache
+        if let cache {
+            // Restore prior reviews so a relaunch doesn't wipe them.
+            // In-flight states from a crashed previous run are downgraded
+            // to .failed("interrupted") — the user can hit Re-run.
+            self.reviews = cache.load().mapValues { state in
+                if state.status.isInFlight {
+                    var s = state
+                    s.status = .failed("Interrupted by previous app exit. Press Re-run.")
+                    return s
+                }
+                return state
+            }
+        }
     }
 
     /// Convenience: real GHClient-backed worker with a real checkout manager.
@@ -144,8 +168,14 @@ final class ReviewQueueWorker {
                 let c = try client ?? GHClient()
                 return try await c.fetchDiff(owner: owner, repo: repo, number: number)
             },
-            checkoutManager: checkout
+            checkoutManager: checkout,
+            cache: ReviewCache()
         )
+    }
+
+    /// Save the current `reviews` map to disk if a cache is wired.
+    private func persist() {
+        cache?.save(reviews)
     }
 
     /// Enqueue a PR for review. Idempotent — already-known PR is a no-op
@@ -158,24 +188,33 @@ final class ReviewQueueWorker {
         if !force, let existing = reviews[pr.nodeId], !existing.status.isTerminal {
             return
         }
-        if !force, case .completed = reviews[pr.nodeId]?.status {
-            return
+        // Cache hit + same SHA → reuse the verdict. Cache hit + different
+        // SHA → auto re-triage (the PR moved). Cache miss → fresh run.
+        if !force, let existing = reviews[pr.nodeId], existing.status.isTerminal {
+            if existing.headSha == pr.headSha, case .completed = existing.status {
+                return   // already have a fresh verdict for this exact commit
+            }
+            // SHA mismatch or previously failed → fall through to re-queue.
         }
         if cumulativeSpend() >= dailyCostCap {
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
+                headSha: pr.headSha,
                 triggeredAt: Date(),
                 status: .failed("Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."),
                 costUsd: 0
             )
+            persist()
             return
         }
         reviews[pr.nodeId] = ReviewState(
             prNodeId: pr.nodeId,
+            headSha: pr.headSha,
             triggeredAt: Date(),
             status: .queued,
             costUsd: 0
         )
+        persist()
         pending.append(pr)
         drainIfPossible()
     }
@@ -185,6 +224,11 @@ final class ReviewQueueWorker {
     /// — repeat polls are no-ops.
     func enqueueNewReviewRequests(from prs: [InboxPR]) {
         for pr in prs where pr.role == .reviewRequested || pr.role == .both {
+            // Skip drafts unless the repo config opts in — drafts churn a
+            // lot and reviewing them burns cost on intermediate state.
+            if pr.isDraft && !configResolver(pr.owner, pr.repo).reviewDrafts {
+                continue
+            }
             enqueue(pr)
         }
     }
@@ -212,6 +256,7 @@ final class ReviewQueueWorker {
         }
 
         reviews[pr.nodeId]?.status = .running
+        persist()
 
         do {
             let config = configResolver(pr.owner, pr.repo)
@@ -276,9 +321,11 @@ final class ReviewQueueWorker {
             }
             reviews[pr.nodeId]?.status = .completed(aggregated)
             reviews[pr.nodeId]?.costUsd = aggregated.costUsd
+            persist()
             stageAutoApproveIfEligible(pr: pr, review: aggregated, config: config)
         } catch {
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
+            persist()
         }
     }
 

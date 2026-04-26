@@ -11,7 +11,7 @@ import Foundation
 ///   (subpath-prefixed) so the diff overlay can locate them globally.
 /// - `costUsd` = sum.
 /// - `toolCallCount` = sum; `toolNamesUsed` deduped union.
-struct AggregatedReview: Sendable, Hashable {
+struct AggregatedReview: Sendable, Hashable, Codable {
     let verdict: ReviewVerdict
     let confidence: Double
     let summaryMarkdown: String
@@ -27,7 +27,7 @@ struct AggregatedReview: Sendable, Hashable {
     let isSubscriptionAuth: Bool
 }
 
-struct SubreviewOutcome: Sendable, Hashable {
+struct SubreviewOutcome: Sendable, Hashable, Codable {
     let subpath: String           // empty = repo root
     let result: ProviderResult
 }
