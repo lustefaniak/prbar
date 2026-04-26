@@ -197,6 +197,29 @@ struct PRDetailView: View {
             if agg.perSubreview.count > 1 {
                 SubreviewBreakdownView(outcomes: agg.perSubreview)
             }
+            activityDisclosure(for: agg)
+        }
+    }
+
+    @ViewBuilder
+    private func activityDisclosure(for agg: AggregatedReview) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(agg.perSubreview.enumerated()), id: \.offset) { _, outcome in
+                    if agg.perSubreview.count > 1 {
+                        Text(outcome.subpath.isEmpty ? "(repo root)" : outcome.subpath)
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                    }
+                    let stream = String(data: outcome.result.rawJson, encoding: .utf8) ?? ""
+                    ReviewTraceView(trace: ReviewTraceParser.parse(stream))
+                }
+            }
+            .padding(.top, 4)
+        } label: {
+            Text("How the AI reviewed")
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
         }
     }
 
