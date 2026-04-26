@@ -15,12 +15,23 @@ final class PromptLibraryTests: XCTestCase {
         let data = try PromptLibrary.outputSchema()
 
         struct Schema: Decodable {
-            let title: String?
             let required: [String]?
         }
         let decoded = try JSONDecoder().decode(Schema.self, from: data)
-        XCTAssertEqual(decoded.title, "PRBarReviewOutput")
         XCTAssertEqual(decoded.required, ["verdict", "confidence", "summary", "annotations"])
+    }
+
+    func testOutputSchemaHasNoConstraintsClaudeRejects() throws {
+        // Claude rejects schemas with $schema, additionalProperties,
+        // minimum, maximum, maxLength constraints (it just hangs the
+        // request). Range validation is done client-side instead.
+        let data = try PromptLibrary.outputSchema()
+        let s = String(data: data, encoding: .utf8)!
+        XCTAssertFalse(s.contains("$schema"), "remove $schema — claude rejects")
+        XCTAssertFalse(s.contains("additionalProperties"), "remove additionalProperties — claude rejects")
+        XCTAssertFalse(s.contains("minimum"), "remove minimum — claude rejects")
+        XCTAssertFalse(s.contains("maximum"), "remove maximum — claude rejects")
+        XCTAssertFalse(s.contains("maxLength"), "remove maxLength — claude rejects")
     }
 
     func testLanguageDetectionByExtension() {

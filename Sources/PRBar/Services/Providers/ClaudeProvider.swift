@@ -51,6 +51,7 @@ struct ClaudeProvider: ReviewProvider {
 
         let args = Self.buildArgs(bundle: bundle, options: options)
         let cwd = Self.resolveCwd(bundle: bundle, options: options)
+        defer { Self.cleanupCwd(cwd, options: options) }
 
         // The user prompt goes via stdin (it's typically 5–20 KB and we
         // don't want to hit argv size limits).
@@ -83,16 +84,22 @@ struct ClaudeProvider: ReviewProvider {
 
         // Post-hoc budget check (live enforcement is a planned follow-up
         // that requires a streaming reader, not the current temp-file
-        // approach in ProcessRunner). For now we throw if the cap was
-        // exceeded so the result isn't silently kept.
+        // approach in ProcessRunner).
+        //
+        // Cost cap throws — that's real money, and users must opt-in to
+        // higher caps explicitly.
+        //
+        // Tool-call cap does NOT throw post-hoc. claude in plan mode can
+        // fire ambient tools (Skill, Monitor, MCP integrations) we don't
+        // enumerate in --disallowedTools, and they tend to make 1–2
+        // calls before settling. The count is recorded on the result so
+        // the user sees it; live enforcement (Phase 2e+) will SIGTERM
+        // mid-run if tool count balloons.
         let budget = ClaudeStreamParser.budgetVerdict(
             state: state,
             maxToolCalls: options.maxToolCalls,
             maxCostUsd: options.maxCostUsd
         )
-        if case .toolCallsExceeded(let count, let max) = budget {
-            throw ClaudeError.budgetExceeded("\(count) tool calls (cap \(max))")
-        }
         if case .costExceeded(let cost, let max) = budget {
             throw ClaudeError.budgetExceeded(String(format: "$%.4f spent (cap $%.2f)", cost, max))
         }
@@ -170,12 +177,21 @@ struct ClaudeProvider: ReviewProvider {
             return bundle.workdir
         case .none:
             // Fresh empty temp dir — even if a tool sneaks through there's
-            // nothing to read or write.
+            // nothing to read or write. Caller is responsible for cleanup
+            // via cleanupCwd(_:) below.
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("prbar-cwd-\(UUID().uuidString)", isDirectory: true)
             try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
             return tmp
         }
+    }
+
+    /// Removes a temp cwd created for `.none` mode. No-op when path doesn't
+    /// look like one we created (defensive).
+    static func cleanupCwd(_ url: URL?, options: ProviderOptions) {
+        guard options.toolMode == .none, let url else { return }
+        guard url.lastPathComponent.hasPrefix("prbar-cwd-") else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     // MARK: - structured_output decoding
