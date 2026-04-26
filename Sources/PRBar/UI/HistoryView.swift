@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Placeholder for the History tab. Phase 1d will start logging actions
-/// (merge, approve, comment, request-changes) into ActionLog and surface
-/// them here.
+/// Placeholder for the History tab. Phase 2+ will start logging actions
+/// (merge, approve, comment, request-changes) into a persisted ActionLog
+/// and surface them here.
 struct HistoryView: View {
     var body: some View {
         VStack(spacing: 8) {
@@ -11,7 +11,7 @@ struct HistoryView: View {
                 .foregroundStyle(.secondary)
             Text("No actions yet")
                 .font(.subheadline)
-            Text("Approvals, merges, and AI auto-actions will appear here once Phase 1d ships.")
+            Text("Merges, approvals, and AI auto-actions you take in PRBar will appear here.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
