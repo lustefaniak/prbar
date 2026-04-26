@@ -17,6 +17,8 @@ enum PRBarModelContainer {
         ReviewStateEntry.self,
         RepoConfigEntry.self,
         InboxSnapshotEntry.self,
+        DiffCacheEntry.self,
+        FailureLogCacheEntry.self,
     ])
 
     /// `~/Library/Application Support/io.synq.prbar/`.
