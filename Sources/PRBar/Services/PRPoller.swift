@@ -50,14 +50,31 @@ final class PRPoller {
     @ObservationIgnored
     weak var notifier: Notifier?
 
+    /// Optional snapshot cache for loading the last known state on launch
+    /// and persisting after each successful poll.
+    @ObservationIgnored
+    private let cache: SnapshotCache?
+
     init(
         fetcher: @Sendable @escaping () async throws -> [InboxPR],
         prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil,
-        prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)? = nil
+        prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)? = nil,
+        cache: SnapshotCache? = nil
     ) {
         self.fetcher = fetcher
         self.prRefresher = prRefresher
         self.prMerger = prMerger
+        self.cache = cache
+    }
+
+    /// Load the last persisted snapshot (if any) into `prs`. Idempotent —
+    /// no-op if `prs` is already populated. Call once early in app launch.
+    func loadCached() async {
+        guard prs.isEmpty, let cache else { return }
+        let cached = await cache.load()
+        if !cached.isEmpty {
+            self.prs = cached
+        }
     }
 
     /// Convenience constructor backed by a real `GHClient` that auto-starts
@@ -67,6 +84,7 @@ final class PRPoller {
         // Cache one client across calls — instantiation only does an
         // executable path lookup so it's cheap, but no need to repeat.
         let client: GHClient? = try? GHClient()
+        let snapshotCache = SnapshotCache()
         let poller = PRPoller(
             fetcher: {
                 let c = try client ?? GHClient()
@@ -79,8 +97,10 @@ final class PRPoller {
             prMerger: { owner, repo, number, method in
                 let c = try client ?? GHClient()
                 try await c.mergePR(owner: owner, repo: repo, number: number, method: method)
-            }
+            },
+            cache: snapshotCache
         )
+        Task { await poller.loadCached() }
         poller.start()
         return poller
     }
@@ -181,6 +201,11 @@ final class PRPoller {
             if !oldPRs.isEmpty, let notifier {
                 let events = EventDeriver.events(from: delta, oldPRs: oldPRs)
                 notifier.enqueue(events)
+            }
+
+            // Persist asynchronously; don't block the poll on disk I/O.
+            if let cache {
+                Task.detached { await cache.save(fetched) }
             }
         } catch {
             self.lastError = error.localizedDescription
