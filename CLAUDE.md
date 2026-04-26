@@ -28,32 +28,41 @@ xcodebuild -project PRBar.xcodeproj -scheme PRBar -configuration Debug \
 
 ## Architecture (high-level wiring)
 
-`PRBarApp.swift` is `@main`. It constructs and wires three things:
+`PRBarApp.swift` is `@main`. It constructs and wires three `@MainActor @Observable` classes, exposes them via `.environment(...)`, and views read with `@Environment(...)`:
 
-1. `PRPoller.live()` — auto-starts a 60s polling loop that calls `GHClient.fetchInbox()` and updates `prs: [InboxPR]`. Per-PR refresh and merge route through `GHClient.fetchPR` / `mergePR`. SnapshotCache is wired in for JSON persistence.
-2. `Notifier()` — coalesces events from the poller into 60s settling windows and delivers via `UNUserNotificationCenter`. Suppressed while popover is open.
-3. Wires them: `poller.notifier = notifier`. After every successful poll, the poller calls `EventDeriver.events(from: delta, oldPRs:)` (a pure function) and `notifier.enqueue(events)`.
-
-Both are `@MainActor @Observable` and exposed to views via `.environment(...)`. Views read state with `@Environment(PRPoller.self)` / `@Environment(Notifier.self)`.
+1. **`PRPoller.live()`** — 60s polling loop calling `GHClient.fetchInbox()`. Per-PR refresh / merge / postReview route through `GHClient` too. `SnapshotCache` (actor) persists `[InboxPR]` to `~/Library/Application Support/io.synq.prbar/inbox-snapshot.json` so launches show known state immediately. After each successful poll, calls `EventDeriver.events(from:, oldPRs:)` (pure function) and `notifier.enqueue(events)`.
+2. **`Notifier()`** — coalesces events into a 60s settling window, delivers via `UNUserNotificationCenter` (`UNNotificationDeliverer`). Suppressed while popover is open. Pluggable `NotificationDeliverer` protocol for tests.
+3. **`ReviewQueueWorker.live()`** — drains a queue of pending AI reviews. For each PR: `GHClient.fetchDiff` → `MonorepoSplitter.split` (trivial single-Subdiff for now; Phase 4 will multi) → optional `RepoCheckoutManager.provision` (only in `.minimal` mode) → `ContextAssembler.assemble` → `ClaudeProvider.review` → `ResultAggregator.aggregate` → store as `ReviewState.completed(AggregatedReview)`. `maxConcurrent=2`. Auto-enqueues review-requested PRs after each poll via `enqueueNewReviewRequests`.
 
 Subprocess + I/O actors:
-- `GHClient` (actor) wraps `gh`. Knows nothing about UI or polling cadence.
-- `ProcessRunner` (enum, static async) runs Foundation `Process` with **temp-file redirection** (not `Pipe()`) — pipes deadlock on output >64 KB and the inbox response can be ~110 KB.
-- `SnapshotCache` (actor) reads/writes JSON at `~/Library/Application Support/io.synq.prbar/inbox-snapshot.json`.
+- **`GHClient`** (actor) wraps `gh`: `fetchInbox` / `fetchPR` / `fetchDiff` / `mergePR` / `postReview`.
+- **`ProcessRunner`** (enum, static async) runs Foundation `Process` with **temp-file redirection** (not `Pipe()`). Pipes deadlock on output >64 KB; the inbox response is ~110 KB.
+- **`RepoCheckoutManager`** (actor) — bare clone per repo (`gh repo clone … -- --bare --depth=50 --filter=blob:none`) + transient sparse worktrees per (repo, headSha). Used in `.minimal` mode so the AI has a real cwd for `Read`/`Glob`/`Grep` and per-subfolder `CLAUDE.md` / `.mcp.json` resolves.
 
-Test seams (use these instead of mocking GHClient directly):
-- `PRPoller(fetcher:, prRefresher:, prMerger:, cache:)` — inject closures, not a real client.
-- `Notifier(deliverer: NotificationDeliverer)` — a `RecordingDeliverer` actor captures what would have been delivered.
+AI review pipeline:
+- **`ClaudeProvider`** (struct, `ReviewProvider`) — spawns `claude -p --output-format stream-json --verbose --json-schema {…}`. Two modes: `.none` (pure-prompt; everything in `--disallowedTools`; cwd is empty temp dir) and `.minimal` (Read/Glob/Grep + WebFetch/WebSearch allowed; cwd is the workdir from `RepoCheckoutManager`).
+- **`ClaudeStreamParser`** (enum, static) — JSONL event parser → `ClaudeStreamState`. Tolerant of unknown event types (`rate_limit_event`, etc.) and malformed lines. `budgetVerdict` checks tool-call cap (informational) and cost cap (fatal).
+- **`ContextAssembler`** (enum, static) — pure function: `(InboxPR, Subdiff, diffText, toolMode, workdir) → PromptBundle`. Builds the user prompt with PR meta / file list / existing comments / CI status / CI failures / diff sections. System prompt comes from `PromptLibrary.systemPrompt(for: language)`.
+- **`PromptLibrary`** (enum, static) — loads `Resources/schemas/review.json` + `Resources/prompts/{system-base,golang,typescript,swift}.md` from `Bundle.main`.
+
+Test seams (use these instead of mocking subprocess-y types directly):
+- `PRPoller(fetcher:, prRefresher:, prMerger:, prReviewer:, cache:)` — inject closures.
+- `Notifier(deliverer: NotificationDeliverer)` — `RecordingDeliverer` actor captures what would have been sent.
+- `ReviewQueueWorker(diffFetcher:, checkoutManager: nil)` — inject the diff source; `provider` is settable so tests use `StubProvider` / `SlowStubProvider` / `ThrowingStubProvider` (in `ReviewQueueWorkerTests`).
+- `ClaudeProvider.buildArgs(bundle:, options:)` is exposed for argv assertion without spawning claude.
 
 ## Testing patterns
 
 Three flavors, all run by `bin/test`:
 
-- **Fixture/unit** (e.g. `InboxResponseTests`, `PRPollerTests`, `EventDeriverTests`, `NotifierTests`, `SnapshotCacheTests`) — fast, no network, no subprocess. Hardcoded JSON or test-only `makePR` helpers.
+- **Fixture/unit** (most tests) — fast, no network, no subprocess. Hardcoded JSON or test-only `makePR` helpers.
 - **Subprocess smoke** (`ProcessRunnerSmokeTests`) — runs real `/bin/echo`, `gh --version`, etc. Catches subprocess regressions (deadlocks, stdin handling, signal handling) the moment they appear.
-- **Real-API integration** (`GHClientIntegrationTests`) — runs the production `gh api graphql` query and the schema introspection. Skips gracefully when `gh` is missing or unauthenticated (`throw XCTSkip(...)`). Locally always runs; in fresh CI it skips. This catches GraphQL schema drift the same hour GitHub ships a breaking change.
+- **Real-API integration**:
+  - **`GHClientIntegrationTests`** — runs `gh api graphql` + schema introspection. Skips when `gh` is missing/unauthenticated. Always runs locally; CI without secrets skips. Catches GraphQL schema drift the day GitHub ships a breaking change.
+  - **`ClaudeProviderIntegrationTests`** — gated by `touch /tmp/prbar-run-claude-tests` because each call costs real money (~$0.05–$0.20). `bin/test` always skips by default. xcodebuild env-var pass-through to the test runner doesn't work reliably, hence the sentinel file.
+  - **`RepoCheckoutManagerTests`** — uses a local fixture git repo (no network, no gh auth). Verifies the clone + worktree-add + worktree-remove lifecycle.
 
-When you add a field to `InboxPR`, update the `makePR` helpers in: `EventDeriverTests`, `PRPollerTests`, `SnapshotCacheTests`. The compiler will tell you which arguments are missing — just remember they're four separate files.
+When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: `EventDeriverTests`, `PRPollerTests`, `SnapshotCacheTests`, `ContextAssemblerTests`, `ReviewQueueWorkerTests`, `ClaudeProviderIntegrationTests`. The compiler tells you which.
 
 ## Conventions
 
@@ -66,11 +75,14 @@ When you add a field to `InboxPR`, update the `makePR` helpers in: `EventDeriver
 ## Gotchas worth not relearning
 
 - `xcodebuild` requires full Xcode, not Command Line Tools. If `xcode-select -p` returns `/Library/Developer/CommandLineTools`, run `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer`. `bin/build` detects this and exits early with the fix command.
-- `CheckRun.isRequired` in the inbox GraphQL query makes `gh` emit ~3 stderr "PR ID required" errors per PR (and exit 1). It's a `gh` quirk; the GitHub API itself accepts the field (verified via curl). Keep it out of the query; "required" will come from the REST branch-protection cache (Phase 2+).
+- `CheckRun.isRequired` in the inbox GraphQL query makes `gh` emit ~3 stderr "PR ID required" errors per PR (and exit 1). It's a `gh` quirk; the GitHub API itself accepts the field (verified via curl). Keep it out of the query; "required" will come from the REST branch-protection cache later.
+- `claude --json-schema` rejects schemas containing `$schema`, `description`, `additionalProperties`, `minimum`, `maximum`, or `maxLength` — it just hangs. Stick to `type`, `enum`, `required`, `properties`. `PromptLibraryTests.testOutputSchemaHasNoConstraintsClaudeRejects` is the regression net. Range/length validation moves client-side.
+- `claude` in plan mode fires 1–2 ambient tools (Skill, Monitor, MCP integrations) we can't enumerate in `--disallowedTools`. The tool-call cap is informational; the cost cap is fatal. Default `maxToolCalls = 10` is generous for this reason.
 - `involves:@me` returns PRs where the viewer is a *past* commenter or reviewer too. Those map to `PRRole.other` and intentionally don't appear in My PRs / Inbox tabs. Don't tighten the integration test to forbid `.other`.
 - GitHub returns `null` for context entries the viewer can't see. `InboxResponse.NullableNodeList<T>` allows `[T?]`; `InboxPR` mapping uses `compactMap` to drop them.
-- Foundation Pipe buffer is 64 KB on Darwin. Process redirects stdout to a temp file in `ProcessRunner` for this reason. Don't switch back.
+- Foundation Pipe buffer is 64 KB on Darwin. `ProcessRunner` redirects stdout to a temp file for this reason. Don't switch back.
 - `SMAppService.mainApp.register()` (launch-at-login) only works fully when the app is in `/Applications`. From a `bin/run` debug build it logs a warning — ignore during dev.
+- `xcodegen` resource bundling: use explicit subdirs (`path: Resources/schemas` + `path: Resources/prompts`, both with `type: folder`), not `path: Resources` — the latter nests as `Contents/Resources/Resources/...`.
 
 ## Don't
 
