@@ -5,6 +5,43 @@ struct CheckSummary: Sendable, Hashable, Codable {
     let name: String            // workflow/check name (or context for legacy)
     let conclusion: String?     // SUCCESS | FAILURE | NEUTRAL | … (CheckRun)
     let status: String?         // QUEUED | IN_PROGRESS | COMPLETED (CheckRun) or state (StatusContext)
+    /// Click-through link for the check — `detailsUrl` for CheckRuns,
+    /// `targetUrl` for legacy StatusContexts. Optional: some integrations
+    /// don't supply one.
+    let url: String?
+
+    /// Three coarse buckets for the UI: failed / pending / passed. Drives
+    /// sorting and icon choice in `CIStatusView`. Falls through to
+    /// `.unknown` when GraphQL didn't tell us anything useful.
+    var bucket: Bucket {
+        switch typename {
+        case "CheckRun":
+            switch (status ?? "").uppercased() {
+            case "QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED":
+                return .pending
+            default: break
+            }
+            switch (conclusion ?? "").uppercased() {
+            case "SUCCESS", "NEUTRAL", "SKIPPED": return .passed
+            case "FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE":
+                return .failed
+            default: return .unknown
+            }
+        case "StatusContext":
+            switch (status ?? "").uppercased() {
+            case "SUCCESS":             return .passed
+            case "PENDING", "EXPECTED": return .pending
+            case "FAILURE", "ERROR":    return .failed
+            default:                    return .unknown
+            }
+        default:
+            return .unknown
+        }
+    }
+
+    enum Bucket: Sendable, Hashable {
+        case failed, pending, passed, unknown
+    }
 }
 
 struct InboxPR: Identifiable, Sendable, Hashable, Codable {
@@ -128,7 +165,8 @@ extension InboxPR {
                 typename: ctx.typename,
                 name: ctx.name ?? ctx.context ?? "(unknown)",
                 conclusion: ctx.conclusion,
-                status: ctx.status ?? ctx.state
+                status: ctx.status ?? ctx.state,
+                url: ctx.detailsUrl ?? ctx.targetUrl
             )
         }
     }

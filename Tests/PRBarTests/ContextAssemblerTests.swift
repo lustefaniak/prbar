@@ -78,9 +78,9 @@ final class ContextAssemblerTests: XCTestCase {
 
     func testCIStatusIconsMatchState() throws {
         let pr = makePR(checks: [
-            CheckSummary(typename: "CheckRun", name: "build",  conclusion: "SUCCESS", status: "COMPLETED"),
-            CheckSummary(typename: "CheckRun", name: "lint",   conclusion: "FAILURE", status: "COMPLETED"),
-            CheckSummary(typename: "CheckRun", name: "deploy", conclusion: nil,        status: "IN_PROGRESS"),
+            CheckSummary(typename: "CheckRun", name: "build",  conclusion: "SUCCESS", status: "COMPLETED", url: nil),
+            CheckSummary(typename: "CheckRun", name: "lint",   conclusion: "FAILURE", status: "COMPLETED", url: nil),
+            CheckSummary(typename: "CheckRun", name: "deploy", conclusion: nil,        status: "IN_PROGRESS", url: nil),
         ])
         let bundle = try ContextAssembler.assemble(
             pr: pr, subdiff: subdiff(), diffText: "<>",

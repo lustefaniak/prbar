@@ -38,6 +38,15 @@ struct PRDetailView: View {
         queue.reviews[pr.nodeId]?.headSha
     }
 
+    /// Approve / Comment / Request-changes only make sense when the user
+    /// is being asked to review. GitHub blocks self-review on PRs you
+    /// authored anyway, so hiding the buttons removes a click-then-fail
+    /// path. `.both` (author + asked to review) keeps them — that's a
+    /// genuine cross-team setup.
+    private var showsReviewActions: Bool {
+        pr.role == .reviewRequested || pr.role == .both
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             navHeader
@@ -50,11 +59,17 @@ struct PRDetailView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    if !pr.allCheckSummaries.isEmpty {
+                        CIStatusView(checks: pr.allCheckSummaries)
+                        Divider()
+                    }
                     aiSection
                     Divider()
                     diffSection
-                    Divider()
-                    actionsSection
+                    if showsReviewActions {
+                        Divider()
+                        actionsSection
+                    }
                 }
             }
         }
