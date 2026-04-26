@@ -57,6 +57,11 @@ final class PRPoller {
     @ObservationIgnored
     weak var notifier: Notifier?
 
+    /// Action history sink. When set, `postReview` and `mergePR` record
+    /// one entry per attempt (success and failure both logged).
+    @ObservationIgnored
+    weak var actionLog: ActionLogStore?
+
     /// Fires after every successful poll with the latest inbox. Used by
     /// `ReadinessCoordinator` to track which review-requested PRs are
     /// waiting on AI triage versus already ready for the user.
@@ -200,9 +205,18 @@ final class PRPoller {
             do {
                 try await reviewer(pr.owner, pr.repo, pr.number, kind, body)
                 self.lastError = nil
+                self.actionLog?.record(
+                    kind: kind.actionLogKind, outcome: .success, pr: pr,
+                    detail: body.isEmpty ? nil : body
+                )
                 self.refreshPR(pr)
             } catch {
                 self.lastError = error.localizedDescription
+                self.actionLog?.record(
+                    kind: kind.actionLogKind, outcome: .failure, pr: pr,
+                    errorMessage: error.localizedDescription,
+                    detail: body.isEmpty ? nil : body
+                )
             }
         }
     }
@@ -228,9 +242,18 @@ final class PRPoller {
             do {
                 try await merger(owner, repo, number, method)
                 self.lastError = nil
+                self.actionLog?.record(
+                    kind: .merge, outcome: .success, pr: pr,
+                    detail: method.rawValue
+                )
                 self.refreshPR(pr)
             } catch {
                 self.lastError = error.localizedDescription
+                self.actionLog?.record(
+                    kind: .merge, outcome: .failure, pr: pr,
+                    errorMessage: error.localizedDescription,
+                    detail: method.rawValue
+                )
             }
         }
     }

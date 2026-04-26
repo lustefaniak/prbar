@@ -202,6 +202,12 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var onReviewSettled: (@MainActor (_ prNodeId: String, _ isWorkerSettled: Bool) -> Void)?
 
+    /// Action history sink. When set, `fireBatch()` records one entry
+    /// per auto-approved PR so the History tab can show what shipped
+    /// (or what failed) without the user having to scroll review traces.
+    @ObservationIgnored
+    weak var actionLog: ActionLogStore?
+
     struct PendingAutoApprove: Sendable, Hashable {
         let pr: InboxPR
         let review: AggregatedReview
@@ -569,8 +575,26 @@ final class ReviewQueueWorker {
         batchUndoDeadline = nil
         for entry in toApprove {
             let body = "Auto-approved by PRBar (\(formatConfidence(entry.review.confidence)) confidence)."
-            Task { [poster = approvePoster] in
-                try? await poster(entry.pr, body)
+            Task { [poster = approvePoster, weak self] in
+                do {
+                    try await poster(entry.pr, body)
+                    await MainActor.run {
+                        self?.actionLog?.record(
+                            kind: .autoApprove, outcome: .success, pr: entry.pr,
+                            detail: body, headSha: entry.pr.headSha,
+                            costUsd: entry.review.costUsd
+                        )
+                    }
+                } catch {
+                    await MainActor.run {
+                        self?.actionLog?.record(
+                            kind: .autoApprove, outcome: .failure, pr: entry.pr,
+                            errorMessage: error.localizedDescription,
+                            detail: body, headSha: entry.pr.headSha,
+                            costUsd: entry.review.costUsd
+                        )
+                    }
+                }
             }
         }
     }

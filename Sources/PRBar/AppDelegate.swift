@@ -60,6 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rc = RepoConfigStore()
         let coord = ReadinessCoordinator(notifier: n)
         let log = ActionLogStore.live()
+        p.actionLog = log
+        q.actionLog = log
         q.configResolver = rc.makeResolver()
         // Resolve the persisted default provider. Stored value can be
         // "auto" (probe-and-pick at launch) or a concrete ProviderID

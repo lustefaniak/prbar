@@ -74,6 +74,14 @@ enum ReviewActionKind: String, Codable, Sendable, Hashable, CaseIterable {
         case .requestChanges: return "Request changes"
         }
     }
+
+    var actionLogKind: ActionLogKind {
+        switch self {
+        case .approve:        return .approve
+        case .comment:        return .comment
+        case .requestChanges: return .requestChanges
+        }
+    }
 }
 
 enum MergeMethod: String, Codable, Sendable, Hashable, CaseIterable {
