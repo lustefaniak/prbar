@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+if [[ "$DEV_DIR" == */CommandLineTools* || -z "$DEV_DIR" ]]; then
+  echo "error: install Xcode and run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer" >&2
+  exit 1
+fi
+
+./bin/regen
+
+xcodebuild \
+  -project PRBar.xcodeproj \
+  -scheme PRBar \
+  -configuration Debug \
+  -destination 'platform=macOS' \
+  -quiet \
+  CONFIGURATION_BUILD_DIR="$(pwd)/build/Debug" \
+  test

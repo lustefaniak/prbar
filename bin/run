@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+./bin/build
+
+APP="$(pwd)/build/Debug/PRBar.app"
+if [[ ! -d "$APP" ]]; then
+  echo "error: built app not found at $APP" >&2
+  exit 1
+fi
+
+# Kill any prior instance so the new build takes over cleanly
+pkill -x PRBar 2>/dev/null || true
+sleep 0.3
+
+open "$APP"
+echo "Launched: $APP"
+echo "Look for the PRBar icon (text.bubble) in the menu bar."

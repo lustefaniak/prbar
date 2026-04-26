@@ -1,0 +1,33 @@
+# XcodeGen-generated project (regenerate with `bin/regen`)
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+
+# Build artifacts
+build/
+.build/
+
+# Swift Package Manager (if added later)
+Package.resolved
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Swift / debug symbols
+*.dSYM
+*.dSYM.zip
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Generated Info.plist (we use GENERATE_INFOPLIST_FILE = YES)
+Generated/
+
+# Local junk
+tmp/
+.tmp/

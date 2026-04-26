@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# Verify xcodebuild points at full Xcode, not Command Line Tools
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+if [[ "$DEV_DIR" == */CommandLineTools* || -z "$DEV_DIR" ]]; then
+  cat >&2 <<'EOF'
+error: xcodebuild is using Command Line Tools, not full Xcode.
+
+Install Xcode from the App Store, then run:
+  sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+
+EOF
+  exit 1
+fi
+
+./bin/regen
+
+xcodebuild \
+  -project PRBar.xcodeproj \
+  -scheme PRBar \
+  -configuration Debug \
+  -destination 'platform=macOS' \
+  -quiet \
+  CONFIGURATION_BUILD_DIR="$(pwd)/build/Debug" \
+  build
