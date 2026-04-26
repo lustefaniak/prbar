@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+if [[ "$DEV_DIR" == */CommandLineTools* || -z "$DEV_DIR" ]]; then
+  echo "error: install Xcode and run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer" >&2
+  exit 1
+fi
+
+./bin/regen
+
+ARCH="$(uname -m)"
+
+echo "Rendering screenshots → docs/screenshots/" >&2
+xcodebuild \
+  -project PRBar.xcodeproj \
+  -scheme PRBar \
+  -configuration Debug \
+  -destination "platform=macOS,arch=${ARCH}" \
+  -only-testing:PRBarTests/ScreenshotTests \
+  -quiet \
+  test
+
+echo
+echo "Generated:"
+ls -1 docs/screenshots/*.png
