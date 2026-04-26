@@ -8,6 +8,7 @@ struct PopoverView: View {
     @State private var selectedTab: Tab = .myPRs
     @State private var selectedPR: InboxPR?
     @State private var toolResults: [ToolProbeResult] = []
+    @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
     private let probedTools = ["gh", "claude", "git"]
 
     enum Tab: String, CaseIterable, Identifiable, Hashable {
@@ -31,7 +32,11 @@ struct PopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let selected = selectedPR {
-                PRDetailView(pr: selected, onBack: { selectedPR = nil })
+                PRDetailView(
+                    pr: selected,
+                    onBack: { selectedPR = nil },
+                    onPostedAction: { advanceOrClose(after: selected) }
+                )
             } else {
                 listContent
             }
@@ -149,6 +154,36 @@ struct PopoverView: View {
         case .myPRs:  return myPRsCount > 0  ? "\(tab.rawValue)  \(myPRsCount)"  : tab.rawValue
         case .inbox:  return inboxCount > 0  ? "\(tab.rawValue)  \(inboxCount)"  : tab.rawValue
         case .history: return tab.rawValue
+        }
+    }
+
+    /// Pick the next ready PR after the user actioned the current one.
+    /// "Ready" = role is reviewRequested or both, not the same PR, and
+    /// (AI triage is terminal OR the repo has AI off OR no review state
+    /// recorded). Falls back to closing the detail view when there's
+    /// nothing left or the toggle is off.
+    private func advanceOrClose(after current: InboxPR) {
+        guard sequentialFocusMode else {
+            selectedPR = nil
+            return
+        }
+        let candidates = poller.prs.filter { pr in
+            guard pr.nodeId != current.nodeId else { return false }
+            guard pr.role == .reviewRequested || pr.role == .both else { return false }
+            guard !pr.isDraft else { return false }
+            // Skip already-handled (the user approved, or someone else did).
+            if pr.reviewDecision == "APPROVED" { return false }
+            // Treat "no review state yet" as ready too — repos with AI off
+            // never enqueue, so they'd otherwise be skipped here.
+            switch queue.reviews[pr.nodeId]?.status {
+            case .none, .completed, .failed: return true
+            case .queued, .running: return false
+            }
+        }
+        if let next = candidates.first {
+            selectedPR = next
+        } else {
+            selectedPR = nil
         }
     }
 

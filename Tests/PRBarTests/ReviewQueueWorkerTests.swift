@@ -34,6 +34,37 @@ final class ReviewQueueWorkerTests: XCTestCase {
         XCTAssertEqual(stubProvider.callCount, 1, "duplicate enqueues should not re-run")
     }
 
+    func testRetriageOnSHAChangeCapturesPriorReview() async throws {
+        let provider = StubProvider(verdict: .comment, summary: "first", cost: 0.05)
+        let worker = makeWorker(provider: provider, diffText: makeDiff())
+
+        // First triage on old SHA.
+        let oldPR = makePR(nodeId: "PR_1", number: 1, headSha: "oldSha1")
+        worker.enqueue(oldPR)
+        try await waitUntil { self.isCompleted(worker.reviews["PR_1"]?.status) }
+        XCTAssertNil(worker.reviews["PR_1"]?.priorReview,
+            "first triage shouldn't have a priorReview yet")
+
+        // PR head moves — re-enqueue with a slow provider so we can
+        // observe the .running state while priorReview is attached.
+        let newPR = makePR(nodeId: "PR_1", number: 1, headSha: "newSha2")
+        let slow = SlowStubProvider(verdict: .approve)
+        worker.provider = slow
+        worker.enqueue(newPR)
+
+        try await waitUntil {
+            if case .running = worker.reviews["PR_1"]?.status { return true }
+            return false
+        }
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReview?.headSha, "oldSha1")
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReview?.aggregated.summaryMarkdown, "first")
+        XCTAssertEqual(worker.reviews["PR_1"]?.headSha, "newSha2")
+
+        try await waitUntil { self.isCompleted(worker.reviews["PR_1"]?.status) }
+        XCTAssertNil(worker.reviews["PR_1"]?.priorReview,
+            "successful retriage should clear the priorReview")
+    }
+
     func testForceReRunReevaluatesCompletedPR() async throws {
         let pr = makePR(nodeId: "PR_1", number: 1)
         let stubProvider = StubProvider(verdict: .approve, summary: "first", cost: 0.05)
@@ -130,12 +161,17 @@ final class ReviewQueueWorkerTests: XCTestCase {
         return w
     }
 
-    private func makePR(nodeId: String, number: Int, role: PRRole = .reviewRequested) -> InboxPR {
+    private func makePR(
+        nodeId: String,
+        number: Int,
+        role: PRRole = .reviewRequested,
+        headSha: String = "abc123"
+    ) -> InboxPR {
         InboxPR(
             nodeId: nodeId, owner: "o", repo: "r", number: number,
             title: "t", body: "", url: URL(string: "https://github.com/o/r/pull/\(number)")!,
             author: "a", headRef: "h", baseRef: "main",
-            headSha: "abc123", isDraft: false,
+            headSha: headSha, isDraft: false,
             role: role,
             mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", reviewDecision: nil,
             checkRollupState: "EMPTY",
@@ -198,7 +234,11 @@ private final class StubProvider: ReviewProvider, @unchecked Sendable {
 
     func availability() async -> ProviderAvailability { .ready }
 
-    func review(bundle: PromptBundle, options: ProviderOptions) async throws -> ProviderResult {
+    func review(
+        bundle: PromptBundle,
+        options: ProviderOptions,
+        onProgress: (@Sendable (ReviewProgress) -> Void)?
+    ) async throws -> ProviderResult {
         callCount += 1
         return ProviderResult(
             verdict: verdict, confidence: 0.9, summaryMarkdown: summary,
@@ -218,8 +258,15 @@ private final class SlowStubProvider: ReviewProvider, @unchecked Sendable {
 
     func availability() async -> ProviderAvailability { .ready }
 
-    func review(bundle: PromptBundle, options: ProviderOptions) async throws -> ProviderResult {
+    func review(
+        bundle: PromptBundle,
+        options: ProviderOptions,
+        onProgress: (@Sendable (ReviewProgress) -> Void)?
+    ) async throws -> ProviderResult {
         callCount += 1
+        // Emit a progress event so workers wiring liveProgress have
+        // something to observe during the in-flight window.
+        onProgress?(ReviewProgress(toolCallCount: 1, toolNamesUsed: ["Read"], costUsdSoFar: nil, lastAssistantText: nil))
         try await Task.sleep(for: .milliseconds(80))
         return ProviderResult(
             verdict: verdict, confidence: 0.8, summaryMarkdown: "slow",
@@ -238,7 +285,11 @@ private final class ThrowingStubProvider: ReviewProvider, @unchecked Sendable {
 
     func availability() async -> ProviderAvailability { .ready }
 
-    func review(bundle: PromptBundle, options: ProviderOptions) async throws -> ProviderResult {
+    func review(
+        bundle: PromptBundle,
+        options: ProviderOptions,
+        onProgress: (@Sendable (ReviewProgress) -> Void)?
+    ) async throws -> ProviderResult {
         throw error
     }
 }

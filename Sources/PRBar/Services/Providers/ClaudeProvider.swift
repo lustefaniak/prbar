@@ -44,7 +44,11 @@ struct ClaudeProvider: ReviewProvider {
         return .ready
     }
 
-    func review(bundle: PromptBundle, options: ProviderOptions) async throws -> ProviderResult {
+    func review(
+        bundle: PromptBundle,
+        options: ProviderOptions,
+        onProgress: (@Sendable (ReviewProgress) -> Void)? = nil
+    ) async throws -> ProviderResult {
         guard let claudePath = ExecutableResolver.find("claude") else {
             throw ClaudeError.notInstalled
         }
@@ -57,12 +61,31 @@ struct ClaudeProvider: ReviewProvider {
         // don't want to hit argv size limits).
         let stdin = Data(bundle.userPrompt.utf8)
 
-        let result = try await ProcessRunner.run(
+        // Per-line state — updated from the readability handler thread,
+        // so guard with a lock. Cost cap is checked after every event
+        // and triggers an in-band SIGTERM when exceeded.
+        let live = LiveState(maxCostUsd: options.maxCostUsd)
+        let result = try await ProcessRunner.runStreaming(
             executable: claudePath,
             args: args,
             cwd: cwd,
             stdin: stdin
-        )
+        ) { line in
+            let progress = live.consume(line: line)
+            onProgress?(progress)
+            return live.shouldKill ? .kill : .keepRunning
+        }
+
+        // Even if we sent SIGTERM the child still produces a partial
+        // stream — parse what we got and surface budget-exceeded as the
+        // primary error. This keeps the user-visible message accurate
+        // ("budget exceeded") rather than the secondary exec failure.
+        let stream = result.stdoutString ?? ""
+        let state = ClaudeStreamParser.parseFull(stream)
+
+        if let detail = live.budgetExceededDetail {
+            throw ClaudeError.budgetExceeded(detail)
+        }
 
         guard result.succeeded else {
             throw ClaudeError.execFailed(
@@ -70,9 +93,6 @@ struct ClaudeProvider: ReviewProvider {
                 exitCode: result.exitCode
             )
         }
-
-        let stream = result.stdoutString ?? ""
-        let state = ClaudeStreamParser.parseFull(stream)
 
         guard state.receivedResult else {
             throw ClaudeError.noResultEvent
@@ -82,19 +102,10 @@ struct ClaudeProvider: ReviewProvider {
             throw ClaudeError.isError(reason: reason)
         }
 
-        // Post-hoc budget check (live enforcement is a planned follow-up
-        // that requires a streaming reader, not the current temp-file
-        // approach in ProcessRunner).
-        //
-        // Cost cap throws — that's real money, and users must opt-in to
-        // higher caps explicitly.
-        //
-        // Tool-call cap does NOT throw post-hoc. claude in plan mode can
-        // fire ambient tools (Skill, Monitor, MCP integrations) we don't
-        // enumerate in --disallowedTools, and they tend to make 1–2
-        // calls before settling. The count is recorded on the result so
-        // the user sees it; live enforcement (Phase 2e+) will SIGTERM
-        // mid-run if tool count balloons.
+        // Tool-call cap is informational only — claude in plan mode
+        // fires ambient tools we don't enumerate (Skill, Monitor, MCP).
+        // Cost cap is enforced live above; this is the post-hoc safety
+        // net for any race where the SIGTERM didn't land in time.
         let budget = ClaudeStreamParser.budgetVerdict(
             state: state,
             maxToolCalls: options.maxToolCalls,
@@ -193,6 +204,44 @@ struct ClaudeProvider: ReviewProvider {
         guard options.toolMode == .none, let url else { return }
         guard url.lastPathComponent.hasPrefix("prbar-cwd-") else { return }
         try? FileManager.default.removeItem(at: url)
+    }
+
+    // MARK: - live streaming state
+
+    /// Lock-guarded mutable state for the streaming run. Per-event
+    /// callbacks fire from the readability handler thread; we serialise
+    /// updates here and emit a `ReviewProgress` snapshot for each event.
+    private final class LiveState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var state = ClaudeStreamState()
+        private let maxCostUsd: Double
+        private(set) var shouldKill: Bool = false
+        private(set) var budgetExceededDetail: String? = nil
+
+        init(maxCostUsd: Double) {
+            self.maxCostUsd = maxCostUsd
+        }
+
+        func consume(line: String) -> ReviewProgress {
+            lock.lock()
+            defer { lock.unlock() }
+            ClaudeStreamParser.parseEvent(line: line, into: &state)
+            // Cost cap is the only fatal mid-stream check. Tool-call cap
+            // is informational (ambient plan-mode tools we can't filter).
+            if let cost = state.costUsd, cost > maxCostUsd, !shouldKill {
+                shouldKill = true
+                budgetExceededDetail = String(
+                    format: "$%.4f spent (cap $%.2f) — terminated mid-stream",
+                    cost, maxCostUsd
+                )
+            }
+            return ReviewProgress(
+                toolCallCount: state.toolCallCount,
+                toolNamesUsed: state.toolNamesUsed,
+                costUsdSoFar: state.costUsd,
+                lastAssistantText: state.resultText
+            )
+        }
     }
 
     // MARK: - structured_output decoding

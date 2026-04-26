@@ -2,13 +2,15 @@ import XCTest
 @testable import PRBar
 
 final class EventDeriverTests: XCTestCase {
-    func testNewReviewRequestEmitsEvent() {
+    func testReviewRequestNoLongerEmittedByEventDeriver() {
+        // .newReviewRequest events are now produced by ReadinessCoordinator
+        // so it can apply per-repo NotifyPolicy / aiReviewEnabled. The
+        // EventDeriver covers author-side transitions only.
         let pr = makePR(nodeId: "P1", role: .reviewRequested)
         let delta = PollDelta(added: [pr], removed: [], changed: [])
 
         let events = EventDeriver.events(from: delta, oldPRs: [])
-        XCTAssertEqual(events.map(\.kind), [.newReviewRequest])
-        XCTAssertEqual(events.first?.prNodeId, "P1")
+        XCTAssertTrue(events.isEmpty)
     }
 
     func testAddedAuthoredAlreadyMergeableEmitsReadyToMerge() {
@@ -68,6 +70,8 @@ final class EventDeriverTests: XCTestCase {
     }
 
     func testReviewRequestForReviewerOnlyDoesNotEmitMergeReady() {
+        // Reviewer-only PRs go through ReadinessCoordinator; EventDeriver
+        // shouldn't emit anything for them.
         let pr = makePR(
             nodeId: "P1",
             role: .reviewRequested,
@@ -76,8 +80,8 @@ final class EventDeriverTests: XCTestCase {
         )
         let delta = PollDelta(added: [pr], removed: [], changed: [])
         let events = EventDeriver.events(from: delta, oldPRs: [])
-        XCTAssertEqual(events.map(\.kind), [.newReviewRequest],
-            "I'm not the author — readyToMerge shouldn't fire")
+        XCTAssertTrue(events.isEmpty,
+            "I'm not the author — readyToMerge shouldn't fire, and review requests now come from ReadinessCoordinator")
     }
 
     // MARK: helpers

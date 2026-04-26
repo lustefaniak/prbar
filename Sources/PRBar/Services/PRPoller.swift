@@ -57,6 +57,12 @@ final class PRPoller {
     @ObservationIgnored
     weak var notifier: Notifier?
 
+    /// Fires after every successful poll with the latest inbox. Used by
+    /// `ReadinessCoordinator` to track which review-requested PRs are
+    /// waiting on AI triage versus already ready for the user.
+    @ObservationIgnored
+    var onPollSuccess: (@MainActor (_ prs: [InboxPR]) -> Void)?
+
     /// Optional snapshot cache for loading the last known state on launch
     /// and persisting after each successful poll.
     @ObservationIgnored
@@ -229,6 +235,14 @@ final class PRPoller {
         }
     }
 
+    /// Test/preview only: directly assign the inbox without going
+    /// through the polling loop. Used by ScreenshotTests to render
+    /// deterministic fixture states.
+    func _setPRsForScreenshot(_ prs: [InboxPR]) {
+        self.prs = prs
+        self.lastFetchedAt = Date()
+    }
+
     private func poll() async {
         isFetching = true
         defer { isFetching = false }
@@ -249,6 +263,11 @@ final class PRPoller {
                 let events = EventDeriver.events(from: delta, oldPRs: oldPRs)
                 notifier.enqueue(events)
             }
+
+            // Always fire — the coordinator owns its own first-poll logic
+            // and needs to see every poll to track membership transitions
+            // (PR drops out of inbox).
+            onPollSuccess?(fetched)
 
             // Persist asynchronously; don't block the poll on disk I/O.
             if let cache {

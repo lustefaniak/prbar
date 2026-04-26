@@ -36,6 +36,21 @@ struct ReviewState: Sendable, Hashable, Codable {
     /// Cost spent on this review (sum across subreviews after completion;
     /// 0 while running).
     var costUsd: Double
+
+    /// When retriaging because the PR's head moved, the prior completed
+    /// review is preserved here so the UI keeps showing the previous
+    /// verdict (with a stale banner) and the new run can frame its
+    /// prompt as "did the new commits address prior concerns?". Cleared
+    /// when the new review completes successfully; on failure the prior
+    /// remains so the user doesn't lose their last good triage.
+    var priorReview: PriorReview? = nil
+}
+
+/// Snapshot of a completed AI review for an earlier commit, captured
+/// when the worker re-queues a PR after its head moves.
+struct PriorReview: Sendable, Hashable, Codable {
+    let headSha: String
+    let aggregated: AggregatedReview
 }
 
 /// Actor (well, @MainActor @Observable class) that drains a queue of
@@ -45,6 +60,13 @@ struct ReviewState: Sendable, Hashable, Codable {
 @Observable
 final class ReviewQueueWorker {
     private(set) var reviews: [String: ReviewState] = [:]
+
+    /// Live snapshot from the running provider, keyed by PR node ID.
+    /// Cleared when a review reaches a terminal state. Tools used /
+    /// cost-so-far / last assistant text — drives the in-progress UI in
+    /// `PRDetailView` so the user sees something happening instead of
+    /// a bare spinner.
+    private(set) var liveProgress: [String: ReviewProgress] = [:]
 
     /// Hard cap on parallel reviews. Each review is one or more provider
     /// calls (one per Subdiff); 2 concurrent calls = ~$0.40 burst at the
@@ -130,6 +152,13 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     private var batchTimer: Task<Void, Never>?
 
+    /// Fired every time a review reaches a terminal state (`.completed`
+    /// / `.failed`). The `ReadinessCoordinator` listens here to flip its
+    /// "AI-pending" → "ready for human" bit per PR. `isWorkerSettled` is
+    /// true when no review is still queued or running after this one.
+    @ObservationIgnored
+    var onReviewSettled: (@MainActor (_ prNodeId: String, _ isWorkerSettled: Bool) -> Void)?
+
     struct PendingAutoApprove: Sendable, Hashable {
         let pr: InboxPR
         let review: AggregatedReview
@@ -173,6 +202,18 @@ final class ReviewQueueWorker {
         )
     }
 
+    /// Test/preview only: pre-populate the reviews map without going
+    /// through the queue. Used by ScreenshotTests.
+    func _setReviewsForScreenshot(_ reviews: [String: ReviewState]) {
+        self.reviews = reviews
+    }
+
+    /// Test/preview only: pre-seed live progress so screenshots can
+    /// capture the in-flight UI deterministically.
+    func _setLiveProgressForScreenshot(_ progress: [String: ReviewProgress]) {
+        self.liveProgress = progress
+    }
+
     /// Save the current `reviews` map to disk if a cache is wired.
     private func persist() {
         cache?.save(reviews)
@@ -196,13 +237,27 @@ final class ReviewQueueWorker {
             }
             // SHA mismatch or previously failed → fall through to re-queue.
         }
+        // If we already had a completed review for an earlier SHA, keep
+        // it as `priorReview` on the new entry. The UI surfaces it with a
+        // stale banner during the retriage; the assembler folds the
+        // previous verdict + summary into the prompt so the AI knows the
+        // PR has been updated since.
+        let prior: PriorReview? = {
+            guard let existing = reviews[pr.nodeId],
+                  case .completed(let agg) = existing.status,
+                  existing.headSha != pr.headSha
+            else { return nil }
+            return PriorReview(headSha: existing.headSha, aggregated: agg)
+        }()
+
         if cumulativeSpend() >= dailyCostCap {
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
                 headSha: pr.headSha,
                 triggeredAt: Date(),
                 status: .failed("Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."),
-                costUsd: 0
+                costUsd: 0,
+                priorReview: prior
             )
             persist()
             return
@@ -212,7 +267,8 @@ final class ReviewQueueWorker {
             headSha: pr.headSha,
             triggeredAt: Date(),
             status: .queued,
-            costUsd: 0
+            costUsd: 0,
+            priorReview: prior
         )
         persist()
         pending.append(pr)
@@ -224,11 +280,13 @@ final class ReviewQueueWorker {
     /// — repeat polls are no-ops.
     func enqueueNewReviewRequests(from prs: [InboxPR]) {
         for pr in prs where pr.role == .reviewRequested || pr.role == .both {
+            let cfg = configResolver(pr.owner, pr.repo)
+            // Repo opted out of AI triage entirely → ReadinessCoordinator
+            // marks these as "ready" immediately on the human side.
+            if !cfg.aiReviewEnabled { continue }
             // Skip drafts unless the repo config opts in — drafts churn a
             // lot and reviewing them burns cost on intermediate state.
-            if pr.isDraft && !configResolver(pr.owner, pr.repo).reviewDrafts {
-                continue
-            }
+            if pr.isDraft && !cfg.reviewDrafts { continue }
             enqueue(pr)
         }
     }
@@ -253,6 +311,11 @@ final class ReviewQueueWorker {
         defer {
             inFlight -= 1
             drainIfPossible()
+            // Fire after the in-flight counter is decremented so listeners
+            // see the post-decrement settled state. "Settled" means the
+            // queue is fully idle — no in-flight, no pending.
+            let settled = inFlight == 0 && pending.isEmpty
+            onReviewSettled?(pr.nodeId, settled)
         }
 
         reviews[pr.nodeId]?.status = .running
@@ -290,6 +353,8 @@ final class ReviewQueueWorker {
                 }
             }
 
+            let prior = reviews[pr.nodeId]?.priorReview
+            let prNodeId = pr.nodeId
             var outcomes: [SubreviewOutcome] = []
             for subdiff in subdiffs {
                 let workdir = resolveWorkdir(handle: sharedHandle, subpath: subdiff.subpath)
@@ -300,7 +365,8 @@ final class ReviewQueueWorker {
                     toolMode: effectiveToolMode,
                     workdir: workdir,
                     customSystemPrompt: config.customSystemPrompt,
-                    replaceBaseSystemPrompt: config.replaceBaseSystemPrompt
+                    replaceBaseSystemPrompt: config.replaceBaseSystemPrompt,
+                    priorReview: prior
                 )
                 let options = ProviderOptions(
                     model: nil,
@@ -311,9 +377,21 @@ final class ReviewQueueWorker {
                     timeout: .seconds(120),
                     schema: try PromptLibrary.outputSchema()
                 )
-                let result = try await provider.review(bundle: bundle, options: options)
+                let result = try await provider.review(
+                    bundle: bundle,
+                    options: options,
+                    onProgress: { progress in
+                        // Hop to the main actor since liveProgress is
+                        // observed by SwiftUI views.
+                        Task { @MainActor [weak self] in
+                            self?.liveProgress[prNodeId] = progress
+                        }
+                    }
+                )
                 outcomes.append(SubreviewOutcome(subpath: subdiff.subpath, result: result))
             }
+            // Clear live progress once outcomes are aggregated below.
+            liveProgress[prNodeId] = nil
 
             guard let aggregated = ResultAggregator.aggregate(outcomes) else {
                 reviews[pr.nodeId]?.status = .failed("No subreviews aggregated.")
@@ -321,10 +399,13 @@ final class ReviewQueueWorker {
             }
             reviews[pr.nodeId]?.status = .completed(aggregated)
             reviews[pr.nodeId]?.costUsd = aggregated.costUsd
+            // Successful retriage replaces the prior review.
+            reviews[pr.nodeId]?.priorReview = nil
             persist()
             stageAutoApproveIfEligible(pr: pr, review: aggregated, config: config)
         } catch {
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
+            liveProgress[pr.nodeId] = nil
             persist()
         }
     }

@@ -76,6 +76,23 @@ struct ProviderResult: Sendable, Codable {
     var isSubscriptionAuth: Bool = false
 }
 
+/// Snapshot of an in-flight review. Surfaced to callers via the
+/// `onProgress` closure on `ReviewProvider.review` so the UI can render
+/// "AI is reading X.swift" / "$0.04 spent so far" while the run executes.
+struct ReviewProgress: Sendable, Hashable {
+    /// Cumulative tool invocations the AI has made so far.
+    var toolCallCount: Int = 0
+    /// Names in invocation order (deduped). Last entry is the most recent
+    /// tool the AI used.
+    var toolNamesUsed: [String] = []
+    /// Cumulative cost-so-far (claude reports `total_cost_usd` on the
+    /// terminal `result` event; `nil` until then). Nil while running.
+    var costUsdSoFar: Double? = nil
+    /// Last assistant text snippet (truncated), if any. Useful to show
+    /// "AI is thinking about X…" in the UI.
+    var lastAssistantText: String? = nil
+}
+
 protocol ReviewProvider: Sendable {
     /// Stable identifier ("claude" / "codex" / "gemini").
     var id: String { get }
@@ -88,6 +105,20 @@ protocol ReviewProvider: Sendable {
     func availability() async -> ProviderAvailability
 
     /// Run one review. Throws on any unrecoverable error (CLI missing,
-    /// timeout, schema-validation failure, budget exceeded).
-    func review(bundle: PromptBundle, options: ProviderOptions) async throws -> ProviderResult
+    /// timeout, schema-validation failure, budget exceeded). The optional
+    /// `onProgress` closure is invoked from a background context every
+    /// time the provider has new state to share — providers that don't
+    /// stream may simply call it once before returning.
+    func review(
+        bundle: PromptBundle,
+        options: ProviderOptions,
+        onProgress: (@Sendable (ReviewProgress) -> Void)?
+    ) async throws -> ProviderResult
+}
+
+extension ReviewProvider {
+    /// Convenience: most callers don't care about progress.
+    func review(bundle: PromptBundle, options: ProviderOptions) async throws -> ProviderResult {
+        try await review(bundle: bundle, options: options, onProgress: nil)
+    }
 }

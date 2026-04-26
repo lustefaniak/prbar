@@ -13,6 +13,21 @@ enum UnmatchedStrategy: String, Codable, Sendable, Hashable, CaseIterable {
     case groupAsOther
 }
 
+/// When to fire a "ready for human review" notification for a repo's
+/// incoming review requests. Default `.batchSettled` collapses multiple
+/// PRs (and their AI triage waits) into one user interruption per cycle.
+enum NotifyPolicy: String, Codable, Sendable, Hashable, CaseIterable {
+    /// Fire a notification as soon as each PR becomes ready for the user
+    /// (current behaviour pre-coordinator). Best for repos where review
+    /// latency matters more than batching.
+    case eachReady
+    /// Hold notifications until every in-flight AI triage settles, then
+    /// fire one grouped notification listing every PR ready for review.
+    /// Repos with `aiReviewEnabled = false` count as "instantly ready"
+    /// and ride the same batch.
+    case batchSettled
+}
+
 /// Whether to fan a PR's diff out across subfolder roots or review the
 /// whole thing as one unit.
 enum SplitMode: String, Codable, Sendable, Hashable, CaseIterable {
@@ -116,6 +131,17 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// review activity.
     var reviewDrafts: Bool = false
 
+    /// Master switch for AI triage on this repo. When false, the queue
+    /// worker never auto-enqueues PRs from matching repos and they go
+    /// straight to "ready for human" — no waiting on AI. Manual Re-run
+    /// from the detail view still bypasses this.
+    var aiReviewEnabled: Bool = true
+
+    /// When (and how) to interrupt the user with "ready for review"
+    /// notifications. See `NotifyPolicy`. Default batches across the
+    /// whole inbox to minimise context switches.
+    var notifyPolicy: NotifyPolicy = .batchSettled
+
     /// Default for any repo not explicitly configured.
     static let `default` = RepoConfig(
         repoGlobs: ["*/*"],
@@ -132,7 +158,9 @@ struct RepoConfig: Sendable, Hashable, Codable {
         maxToolCallsPerSubreview: 10,
         maxCostUsdPerSubreview: 0.30,
         autoApprove: .off,
-        reviewDrafts: false
+        reviewDrafts: false,
+        aiReviewEnabled: true,
+        notifyPolicy: .batchSettled
     )
 
     /// Bundled default for `getsynq/cloud`. Mirrors the actual top-level
@@ -157,7 +185,9 @@ struct RepoConfig: Sendable, Hashable, Codable {
         maxToolCallsPerSubreview: 10,
         maxCostUsdPerSubreview: 0.30,
         autoApprove: .off,
-        reviewDrafts: false
+        reviewDrafts: false,
+        aiReviewEnabled: true,
+        notifyPolicy: .batchSettled
     )
 
     /// Pick the first config whose `repoGlobs` match (negations honored).

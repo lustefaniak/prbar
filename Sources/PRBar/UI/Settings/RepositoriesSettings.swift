@@ -192,14 +192,29 @@ struct RepositoriesSettings: View {
 
 // MARK: - editor
 
-private struct RepoConfigEditor: View {
+/// Internal so `ScreenshotTests` can render just the editor pane (the
+/// SwiftUI `HSplitView` from `RepositoriesSettings` is AppKit-backed
+/// and `ImageRenderer` can't capture it).
+struct RepoConfigEditor: View {
     @Binding var config: RepoConfig
     let isUserConfig: Bool
     let onPromoteToUser: () -> Void
+    /// When true, drops the outer `ScrollView` so `ImageRenderer` (used
+    /// by `ScreenshotTests`) captures every section instead of clipping
+    /// to the proposed frame.
+    var screenshotMode: Bool = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+        if screenshotMode {
+            editorContent
+        } else {
+            ScrollView { editorContent }
+        }
+    }
+
+    @ViewBuilder
+    private var editorContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
                 if !isUserConfig {
                     HStack {
                         Image(systemName: "info.circle")
@@ -257,6 +272,9 @@ private struct RepoConfigEditor: View {
                 }
 
                 section("AI") {
+                    Toggle("Enable AI triage on this repo",
+                           isOn: $config.aiReviewEnabled)
+                        .help("When off, PRs go straight to 'ready for review' — the AI never runs. Manual Re-run still works from the detail view.")
                     Picker("Tool mode", selection: toolModeBinding) {
                         Text("(use global default)").tag("default")
                         Text("Minimal — read-only code exploration").tag("minimal")
@@ -301,7 +319,6 @@ private struct RepoConfigEditor: View {
                     .opacity(config.autoApprove.enabled ? 1 : 0.5)
                 }
             }
-        }
     }
 
     @ViewBuilder

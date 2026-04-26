@@ -6,6 +6,15 @@ import AppKit
 struct PRDetailView: View {
     let pr: InboxPR
     let onBack: () -> Void
+    /// Called after the user posts a review action. The popover decides
+    /// whether to advance to the next ready PR or fall back to `onBack`
+    /// based on the user's "Advance to next ready PR" preference. Default
+    /// no-op so previews / fallback callers don't need to wire it.
+    var onPostedAction: () -> Void = {}
+    /// When true, swap the inner ScrollView for a flat VStack so
+    /// `ImageRenderer` can capture every section in one frame for
+    /// `ScreenshotTests`. Production callers leave this false.
+    var screenshotMode: Bool = false
 
     @Environment(PRPoller.self) private var poller
     @Environment(ReviewQueueWorker.self) private var queue
@@ -23,11 +32,21 @@ struct PRDetailView: View {
         if case .completed(let agg) = queue.reviews[pr.nodeId]?.status {
             return agg
         }
-        return nil
+        // While retriaging, surface the prior review so annotations stay
+        // visible against the diff. The new run replaces this on success;
+        // on failure the user keeps their last good triage.
+        return queue.reviews[pr.nodeId]?.priorReview?.aggregated
     }
 
     private var reviewStatus: ReviewState.Status? {
         queue.reviews[pr.nodeId]?.status
+    }
+
+    /// Prior completed review captured when the PR's head moved. Drives
+    /// the retriage banner + lets us keep showing the previous verdict
+    /// while the new run is in flight.
+    private var priorReview: PriorReview? {
+        queue.reviews[pr.nodeId]?.priorReview
     }
 
     /// True when the cached review was for an earlier commit than the
@@ -53,6 +72,15 @@ struct PRDetailView: View {
     }
 
     var body: some View {
+        if screenshotMode {
+            screenshotBody
+        } else {
+            productionBody
+        }
+    }
+
+    @ViewBuilder
+    private var productionBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             navHeader
 
@@ -100,6 +128,32 @@ struct PRDetailView: View {
         }
         .onAppear { diffStore.ensureLoaded(for: pr) }
         .onChange(of: pr.headSha) { _, _ in diffStore.ensureLoaded(for: pr) }
+    }
+
+    /// Flat-layout body used when `screenshotMode == true`. Mirrors the
+    /// production sections (PR header, CI, AI verdict, annotations,
+    /// diff, actions) but skips the nav chrome and the ScrollView
+    /// wrapper — `ImageRenderer` clips ScrollView content to the
+    /// proposed size, so a flat tree is what marketing screenshots
+    /// (and visual regression diffs) need.
+    @ViewBuilder
+    private var screenshotBody: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            prHeader
+            Divider()
+            if !pr.allCheckSummaries.isEmpty {
+                CIStatusView(checks: pr.allCheckSummaries)
+                Divider()
+            }
+            aiSection
+            Divider()
+            diffSection
+            if showsReviewActions {
+                Divider()
+                actionsSection
+            }
+        }
+        .padding(16)
     }
 
     // MARK: - sections
@@ -193,29 +247,95 @@ struct PRDetailView: View {
                     .foregroundStyle(.secondary)
 
             case .queued:
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Queued").font(.caption).foregroundStyle(.secondary)
-                }
+                retriageInProgressView(label: "Queued — retriaging the new commits…")
 
             case .running:
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Reviewing…").font(.caption).foregroundStyle(.secondary)
-                }
+                retriageInProgressView(label: "Reviewing the new commits…")
 
             case .failed(let msg):
-                Text("Review failed: \(msg)")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(4)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Review failed: \(msg)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(4)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    if let prior = priorReview {
+                        priorReviewBanner(prior)
+                        completedReviewSection(prior.aggregated)
+                    }
+                }
 
             case .completed(let agg):
                 completedReviewSection(agg)
             }
         }
+    }
+
+    /// In-flight retriage shows: the spinner + label + the prior review
+    /// kept visible underneath. Avoids the "blank AI section" gap that
+    /// happens when the user re-runs and loses their last verdict.
+    @ViewBuilder
+    private func retriageInProgressView(label: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(label).font(.caption).foregroundStyle(.secondary)
+            }
+            if let progress = queue.liveProgress[pr.nodeId] {
+                liveProgressView(progress)
+            }
+            if let prior = priorReview {
+                priorReviewBanner(prior)
+                completedReviewSection(prior.aggregated)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func liveProgressView(_ progress: ReviewProgress) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if progress.toolCallCount > 0 {
+                    Label("\(progress.toolCallCount) tool\(progress.toolCallCount == 1 ? "" : "s")",
+                          systemImage: "wrench.and.screwdriver")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help("Tools used so far: \(progress.toolNamesUsed.joined(separator: ", "))")
+                }
+                if let cost = progress.costUsdSoFar {
+                    Text(String(format: "$%.4f", cost))
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                if let last = progress.toolNamesUsed.last {
+                    Text("· running `\(last)`")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func priorReviewBanner(_ prior: PriorReview) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "clock.arrow.circlepath")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Showing previous review for `\(String(prior.headSha.prefix(7)))`.")
+                    .font(.caption)
+                Text("New review will incorporate prior verdict + summary as context.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
@@ -382,14 +502,29 @@ struct PRDetailView: View {
                 .font(.subheadline.bold())
 
             // Optional comment body when the chosen action wants one.
-            TextEditor(text: $bodyDraft)
-                .font(.system(.caption, design: .monospaced))
-                .frame(minHeight: 60, maxHeight: 120)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(.secondary.opacity(0.2))
-                )
-                .help("Optional body for Approve/Comment/Request changes.")
+            // ImageRenderer can't render an NSTextView, so screenshot
+            // mode swaps in a static placeholder that visually matches
+            // the rounded-border editor.
+            if screenshotMode {
+                Text("Optional body for Approve / Comment / Request changes…")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
+                    .padding(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(.secondary.opacity(0.2))
+                    )
+            } else {
+                TextEditor(text: $bodyDraft)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(minHeight: 60, maxHeight: 120)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(.secondary.opacity(0.2))
+                    )
+                    .help("Optional body for Approve/Comment/Request changes.")
+            }
 
             HStack(spacing: 6) {
                 let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
@@ -397,6 +532,7 @@ struct PRDetailView: View {
                 Button {
                     poller.postReview(pr, kind: .approve, body: bodyDraft)
                     bodyDraft = ""
+                    onPostedAction()
                 } label: {
                     Label("Approve", systemImage: "hand.thumbsup")
                 }
@@ -405,6 +541,7 @@ struct PRDetailView: View {
                 Button {
                     poller.postReview(pr, kind: .comment, body: bodyDraft)
                     bodyDraft = ""
+                    onPostedAction()
                 } label: {
                     Label("Comment", systemImage: "bubble.left")
                 }
@@ -414,6 +551,7 @@ struct PRDetailView: View {
                 Button {
                     poller.postReview(pr, kind: .requestChanges, body: bodyDraft)
                     bodyDraft = ""
+                    onPostedAction()
                 } label: {
                     Label("Request changes", systemImage: "hand.thumbsdown")
                 }
@@ -462,6 +600,7 @@ struct PRDetailView: View {
         if showsReviewActions, let action {
             Button {
                 poller.postReview(pr, kind: action, body: summary)
+                onPostedAction()
             } label: {
                 pill
             }

@@ -19,21 +19,15 @@ enum EventDeriver {
     /// Pure function: given a poll delta and the old list of PRs, return
     /// the user-facing events worth notifying about. This is the only
     /// place that defines what "actionable change" means.
+    ///
+    /// Note: `.newReviewRequest` events are NOT emitted here anymore —
+    /// `ReadinessCoordinator` owns that signal so it can apply the
+    /// per-repo `NotifyPolicy` (immediate vs. wait-for-AI-to-settle).
+    /// EventDeriver still handles author-side state transitions
+    /// (ready-to-merge, CI failures).
     static func events(from delta: PollDelta, oldPRs: [InboxPR]) -> [NotificationEvent] {
         var events: [NotificationEvent] = []
         let oldByID = Dictionary(uniqueKeysWithValues: oldPRs.map { ($0.nodeId, $0) })
-
-        // New review requests where I'm asked to review.
-        for pr in delta.added where pr.role == .reviewRequested || pr.role == .both {
-            events.append(.init(
-                kind: .newReviewRequest,
-                prNodeId: pr.nodeId,
-                prTitle: pr.title,
-                prRepo: pr.nameWithOwner,
-                prNumber: pr.number,
-                prURL: pr.url
-            ))
-        }
 
         // PRs I authored that just became ready-to-merge (transition).
         for pr in delta.changed where pr.role == .authored || pr.role == .both {

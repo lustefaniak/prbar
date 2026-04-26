@@ -64,6 +64,12 @@ final class DiffStore {
         }
     }
 
+    /// Test/preview only: pre-populate parsed hunks so screenshots can
+    /// render the diff section without a real `gh pr diff` call.
+    func _setLoadedForScreenshot(pr: InboxPR, hunks: [Hunk]) {
+        statuses[key(for: pr)] = .loaded(hunks)
+    }
+
     /// Drop the cached diff (e.g. on Re-run after a force-push).
     func invalidate(for pr: InboxPR) {
         statuses[key(for: pr)] = .idle

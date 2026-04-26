@@ -13,6 +13,8 @@ struct PRListView: View {
     let onRefreshPR: (InboxPR) -> Void
     let onMergePR: (InboxPR, MergeMethod) -> Void
     let onSelect: (InboxPR) -> Void
+    /// Forwarded to `PRRowView`. See `PRRowView.screenshotMode`.
+    var screenshotMode: Bool = false
 
     private let visibleLimit = 12
 
@@ -37,7 +39,8 @@ struct PRListView: View {
                         isRefreshing: refreshingPRs.contains(pr.nodeId),
                         isMerging: mergingPRs.contains(pr.nodeId),
                         onRefresh: { onRefreshPR(pr) },
-                        onMerge: { method in onMergePR(pr, method) }
+                        onMerge: { method in onMergePR(pr, method) },
+                        screenshotMode: screenshotMode
                     )
                     .contentShape(Rectangle())
                     .onTapGesture { onSelect(pr) }

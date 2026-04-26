@@ -28,12 +28,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let queue: ReviewQueueWorker
     let diffStore: DiffStore
     let repoConfigs: RepoConfigStore
+    let readiness: ReadinessCoordinator
 
     // MARK: - Menu-bar state
 
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var rightClickMenu: NSMenu!
+
+    /// UserDefaults keys mirror @AppStorage in GeneralSettings so the two
+    /// stay in sync.
+    private static let kBadgeReadyToMerge   = "badgeShowReadyToMerge"
+    private static let kBadgeReviewRequested = "badgeShowReviewRequested"
+    private static let kBadgeCIFailed       = "badgeShowCIFailed"
 
     override init() {
         // Single-instance is checked from PRBarApp.init before the App
@@ -44,10 +51,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let q = ReviewQueueWorker.live()
         let d = DiffStore.sharing(q)
         let rc = RepoConfigStore()
+        let coord = ReadinessCoordinator(notifier: n)
         q.configResolver = rc.makeResolver()
         rc.onChange = { [weak q, weak rc] in
             guard let q, let rc else { return }
             q.configResolver = rc.makeResolver()
+        }
+        // Hand AI-triage settlement to the coordinator so it can flip the
+        // per-PR ready bit and (when the queue idles) flush a batched
+        // "ready for review" notification.
+        q.onReviewSettled = { [weak coord] prNodeId, isWorkerSettled in
+            coord?.noteReviewSettled(prNodeId: prNodeId, isWorkerSettled: isWorkerSettled)
+        }
+        // Feed each successful poll into the coordinator so it can spot
+        // newly-arrived review-requested PRs and forget ones that left
+        // the inbox.
+        p.onPollSuccess = { [weak coord, weak rc, weak q] prs in
+            guard let coord, let rc else { return }
+            coord.track(prs: prs, configResolver: rc.resolve(owner:repo:))
+            // Worker auto-enqueue still happens here so AI triage starts
+            // immediately after a poll discovers a new review request.
+            q?.enqueueNewReviewRequests(from: prs)
         }
         p.notifier = n
         self.poller = p
@@ -55,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.queue = q
         self.diffStore = d
         self.repoConfigs = rc
+        self.readiness = coord
         super.init()
         Task { await n.requestAuthorization() }
         if let mgr = q.checkoutManager {
@@ -66,6 +91,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installStatusItem()
         installPopover()
         installRightClickMenu()
+        startBadgeObservation()
+        // Settings UI flips UserDefaults; re-render immediately when the
+        // user changes a toggle even though `poller.prs` hasn't moved.
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshBadge() }
+        }
     }
 
     /// Programmatically open Settings — used by the right-click menu.
@@ -92,9 +126,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let image = NSImage(named: "MenuBarIcon")
         image?.isTemplate = true
         button.image = image
+        // Image hugs the left, count text reads to its right. AppKit
+        // inverts both for the active/highlighted state automatically
+        // because the image is template-rendered.
+        button.imagePosition = .imageLeft
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.target = self
         button.action = #selector(statusItemClicked(_:))
+    }
+
+    /// Observe `poller.prs` via the Observation framework — every time
+    /// the inbox changes, recompute the badge count. Re-arms itself
+    /// inside the change handler since `withObservationTracking` only
+    /// fires once per registration.
+    private func startBadgeObservation() {
+        refreshBadge()
+        observePollerOnce()
+    }
+
+    private func observePollerOnce() {
+        withObservationTracking {
+            _ = poller.prs
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.refreshBadge()
+                self.observePollerOnce()
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshBadge() {
+        let defaults = UserDefaults.standard
+        // Default each toggle to true if the key has never been set so
+        // a fresh install lights up the badge instead of staying silent.
+        let sources = BadgeCounter.Sources(
+            readyToMerge:   defaults.object(forKey: Self.kBadgeReadyToMerge) as? Bool ?? true,
+            reviewRequested: defaults.object(forKey: Self.kBadgeReviewRequested) as? Bool ?? true,
+            ciFailed:       defaults.object(forKey: Self.kBadgeCIFailed) as? Bool ?? true
+        )
+        let title = BadgeCounter.title(prs: poller.prs, sources: sources)
+        guard let button = statusItem?.button else { return }
+        // A leading hair-space (U+200A) keeps the count from kissing the
+        // glyph; AppKit doesn't auto-pad image+title status items.
+        button.title = title.isEmpty ? "" : "\u{200A}\(title)"
     }
 
     private func installPopover() {
@@ -115,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(queue)
             .environment(diffStore)
             .environment(repoConfigs)
+            .environment(readiness)
         popover.contentViewController = NSHostingController(rootView: root)
     }
 

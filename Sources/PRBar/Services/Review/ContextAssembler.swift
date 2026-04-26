@@ -29,7 +29,8 @@ enum ContextAssembler {
         toolMode: ToolMode,
         workdir: URL,
         customSystemPrompt: String? = nil,
-        replaceBaseSystemPrompt: Bool = false
+        replaceBaseSystemPrompt: Bool = false,
+        priorReview: PriorReview? = nil
     ) throws -> PromptBundle {
         let language = subdiff.dominantLanguage
         let basePrompt = try PromptLibrary.systemPrompt(for: language)
@@ -49,7 +50,8 @@ enum ContextAssembler {
             diffText: diffText,
             existingComments: existingComments,
             ciFailures: ciFailures,
-            toolMode: toolMode
+            toolMode: toolMode,
+            priorReview: priorReview
         )
         return PromptBundle(
             systemPrompt: systemPrompt,
@@ -68,7 +70,8 @@ enum ContextAssembler {
         diffText: String,
         existingComments: [ExistingReviewComment],
         ciFailures: [CIFailureLog],
-        toolMode: ToolMode
+        toolMode: ToolMode,
+        priorReview: PriorReview? = nil
     ) -> String {
         var out = ""
         out += "# Pull Request Review\n\n"
@@ -80,6 +83,10 @@ enum ContextAssembler {
             out += "## PR description\n\n"
             out += pr.body.trimmingCharacters(in: .whitespacesAndNewlines)
             out += "\n\n"
+        }
+        if let prior = priorReview {
+            out += priorReviewSection(prior, currentSha: pr.headSha)
+            out += "\n"
         }
         out += subfolderSection(subdiff: subdiff, toolMode: toolMode)
         out += "\n"
@@ -97,6 +104,36 @@ enum ContextAssembler {
         }
         out += diffSection(diffText)
         return out
+    }
+
+    /// Frame the retriage so the AI can decide whether prior concerns
+    /// were addressed by the new commits, and avoid re-litigating
+    /// non-blockers it already flagged.
+    private static func priorReviewSection(_ prior: PriorReview, currentSha: String) -> String {
+        let oldShort = String(prior.headSha.prefix(7))
+        let newShort = String(currentSha.prefix(7))
+        var s = "## Previous review (commit `\(oldShort)` → now `\(newShort)`)\n\n"
+        s += "You reviewed an earlier version of this PR. The author has pushed new commits since. "
+        s += "Use the previous verdict + summary as context — call out whether prior concerns were addressed, "
+        s += "and avoid repeating non-blocking suggestions you already gave.\n\n"
+        s += "- **Previous verdict**: `\(prior.aggregated.verdict.rawValue)` "
+        s += "(confidence \(String(format: "%.0f%%", prior.aggregated.confidence * 100)))\n"
+        let summary = prior.aggregated.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !summary.isEmpty {
+            s += "- **Previous summary**:\n\n"
+            for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
+                s += "  > \(line)\n"
+            }
+        }
+        let blockers = prior.aggregated.annotations.filter { $0.severity.isBlocking }
+        if !blockers.isEmpty {
+            s += "\n- **Previous blocking annotations** (verify each was addressed):\n"
+            for ann in blockers.prefix(10) {
+                let title = ann.displayTitle.replacingOccurrences(of: "\n", with: " ")
+                s += "  - `\(ann.path):\(ann.lineStart)` — \(title)\n"
+            }
+        }
+        return s
     }
 
     private static func toolModeIntro(_ mode: ToolMode) -> String {
