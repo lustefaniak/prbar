@@ -53,25 +53,28 @@ struct AnnotationsSummaryView: View {
     private func row(idx: Int, annotation: DiffAnnotation) -> some View {
         let isOpen = expanded.contains(idx)
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Button {
-                    if isOpen { expanded.remove(idx) } else { expanded.insert(idx) }
-                } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Circle()
-                            .fill(severityColor(annotation.severity))
-                            .frame(width: 8, height: 8)
-                        Text(annotation.displayTitle)
-                            .font(.callout)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .contentShape(Rectangle())
+            // Title gets the full row width — long monorepo paths
+            // (e.g. `kernel-billing/internal/foo/bar.go:123-127`) used
+            // to push the title into ellipsis. Now the path + locate
+            // button sit on a second line under the title.
+            Button {
+                if isOpen { expanded.remove(idx) } else { expanded.insert(idx) }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Circle()
+                        .fill(severityColor(annotation.severity))
+                        .frame(width: 8, height: 8)
+                    Text(annotation.displayTitle)
+                        .font(.callout)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
-                Spacer()
-
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if let onLocate {
                     Button {
                         onLocate(annotation)
@@ -79,6 +82,8 @@ struct AnnotationsSummaryView: View {
                         HStack(spacing: 2) {
                             Text(locationLabel(annotation))
                                 .font(.system(.caption2, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                             Image(systemName: "arrow.down.right.square")
                                 .font(.caption2)
                         }
@@ -91,8 +96,12 @@ struct AnnotationsSummaryView: View {
                     Text(locationLabel(annotation))
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
+                Spacer()
             }
+            .padding(.leading, 14) // Indent under the severity dot.
 
             if isOpen {
                 Text(annotation.body)
