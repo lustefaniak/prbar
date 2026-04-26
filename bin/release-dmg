@@ -20,16 +20,19 @@ EOF
   exit 1
 fi
 
-# Pick up the marketing version straight from project.yml so DMGs are
-# named consistently with the in-app About box. Strips outer quotes.
-VERSION="$(awk -F': ' '/MARKETING_VERSION/ { gsub(/"/, "", $2); print $2; exit }' project.yml)"
-VERSION="${VERSION:-0.0.0-dev}"
+# Version + build come from git via bin/version. DMG filename uses the
+# richer `git describe` form so dev builds don't all collide on
+# PRBar-0.0.0.dmg — tagged builds stay clean ("v0.1.0"), in-between
+# builds disambiguate ("v0.1.0-3-g1a2b3c4-dirty").
+MARKETING_VERSION="$(./bin/version marketing)"
+BUILD_NUMBER="$(./bin/version build)"
+VERSION_SUFFIX="$(./bin/version describe)"
 
 ARCHIVE="build/release/PRBar.xcarchive"
 APP_DIR="$ARCHIVE/Products/Applications"
 APP="$APP_DIR/PRBar.app"
 STAGING="build/release/dmg-staging"
-DMG="build/release/PRBar-$VERSION.dmg"
+DMG="build/release/PRBar-${VERSION_SUFFIX}.dmg"
 
 rm -rf build/release
 mkdir -p build/release
@@ -48,6 +51,8 @@ xcodebuild \
   -quiet \
   ARCHS="arm64 x86_64" \
   ONLY_ACTIVE_ARCH=NO \
+  MARKETING_VERSION="$MARKETING_VERSION" \
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   archive
 
 if [[ ! -d "$APP" ]]; then
@@ -75,7 +80,7 @@ cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
 hdiutil create \
-  -volname "PRBar $VERSION" \
+  -volname "PRBar $MARKETING_VERSION" \
   -srcfolder "$STAGING" \
   -ov \
   -format UDZO \
@@ -83,3 +88,4 @@ hdiutil create \
 
 echo "Built: $DMG"
 echo "      $(du -h "$DMG" | cut -f1) (universal, ad-hoc signed)"
+echo "      version $MARKETING_VERSION (build $BUILD_NUMBER, $VERSION_SUFFIX)"

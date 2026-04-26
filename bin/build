@@ -19,6 +19,13 @@ fi
 
 ARCH="$(uname -m)"
 
+# Pull version from git so the About tab + DMG filename + Sparkle (when
+# it lands) all stay in sync without an extra bump-and-commit step.
+# project.yml's MARKETING_VERSION/CURRENT_PROJECT_VERSION still apply
+# as fallbacks if these args are dropped.
+MARKETING_VERSION="$(./bin/version marketing)"
+BUILD_NUMBER="$(./bin/version build)"
+
 xcodebuild \
   -project PRBar.xcodeproj \
   -scheme PRBar \
@@ -26,4 +33,6 @@ xcodebuild \
   -destination "platform=macOS,arch=${ARCH}" \
   -quiet \
   CONFIGURATION_BUILD_DIR="$(pwd)/build/Debug" \
+  MARKETING_VERSION="$MARKETING_VERSION" \
+  CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   build

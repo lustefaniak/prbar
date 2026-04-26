@@ -67,7 +67,11 @@ struct AboutView: View {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "0.0.0"
         let build = info?["CFBundleVersion"] as? String ?? "1"
-        return version == build ? version : "\(version) (\(build))"
+        // Marketing version is the latest git tag (sans `v`); build
+        // number is the commit count of HEAD. Showing both makes dev
+        // builds vs tagged releases instantly recognisable in the
+        // About box.
+        return "\(version) (build \(build))"
     }
 
     private var copyright: String {
