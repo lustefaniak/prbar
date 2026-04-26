@@ -37,6 +37,19 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
 
     let allCheckSummaries: [CheckSummary]
 
+    /// Merge methods the repo allows (driven by repo settings + branch
+    /// protection's requiresLinearHistory, both applied server-side by
+    /// GitHub). Use this to filter the merge menu so we don't offer
+    /// e.g. "Create merge commit" on a repo that requires linear history.
+    let allowedMergeMethods: Set<MergeMethod>
+
+    /// Whether the repo allows enabling auto-merge on PRs. Phase 2+ feature.
+    let autoMergeAllowed: Bool
+
+    /// Whether the repo deletes the head branch automatically on merge.
+    /// Drives the default value of --delete-branch on `gh pr merge`.
+    let deleteBranchOnMerge: Bool
+
     var nameWithOwner: String { "\(owner)/\(repo)" }
 }
 
@@ -64,6 +77,14 @@ extension InboxPR {
         self.changedFiles = node.changedFiles
         self.hasAutoMerge = node.autoMergeRequest != nil
         self.autoMergeEnabledBy = node.autoMergeRequest?.enabledBy?.login
+
+        var methods: Set<MergeMethod> = []
+        if node.repository.squashMergeAllowed { methods.insert(.squash) }
+        if node.repository.mergeCommitAllowed { methods.insert(.merge) }
+        if node.repository.rebaseMergeAllowed { methods.insert(.rebase) }
+        self.allowedMergeMethods = methods
+        self.autoMergeAllowed = node.repository.autoMergeAllowed
+        self.deleteBranchOnMerge = node.repository.deleteBranchOnMerge
 
         let isAuthor = (node.author?.login == viewerLogin)
         let reviewerLogins = node.reviewRequests.nodes.compactMap { $0.requestedReviewer?.login }

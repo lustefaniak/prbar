@@ -20,7 +20,14 @@ final class InboxResponseTests: XCTestCase {
                     "additions": 120,
                     "deletions": 10,
                     "changedFiles": 5,
-                    "repository": { "nameWithOwner": "getsynq/cloud" },
+                    "repository": {
+                      "nameWithOwner": "getsynq/cloud",
+                      "mergeCommitAllowed": false,
+                      "squashMergeAllowed": true,
+                      "rebaseMergeAllowed": true,
+                      "autoMergeAllowed": true,
+                      "deleteBranchOnMerge": true
+                    },
                     "author": { "login": "alice" },
                     "headRefName": "feat/audit",
                     "baseRefName": "main",
@@ -88,6 +95,12 @@ final class InboxResponseTests: XCTestCase {
         XCTAssertEqual(pr.allCheckSummaries[0].name, "Test Suite")
         XCTAssertEqual(pr.allCheckSummaries[0].typename, "CheckRun")
         XCTAssertFalse(pr.hasAutoMerge)
+
+        // getsynq/cloud requires linear history — merge commits disabled.
+        XCTAssertEqual(pr.allowedMergeMethods, [.squash, .rebase])
+        XCTAssertFalse(pr.allowedMergeMethods.contains(.merge))
+        XCTAssertTrue(pr.autoMergeAllowed)
+        XCTAssertTrue(pr.deleteBranchOnMerge)
     }
 
     func testRoleAuthoredWhenViewerIsAuthor() throws {
@@ -188,7 +201,14 @@ final class InboxResponseTests: XCTestCase {
           "url": "https://github.com/o/r/pull/1",
           "isDraft": false,
           "additions": 1, "deletions": 0, "changedFiles": 1,
-          "repository": { "nameWithOwner": "o/r" },
+          "repository": {
+            "nameWithOwner": "o/r",
+            "mergeCommitAllowed": true,
+            "squashMergeAllowed": true,
+            "rebaseMergeAllowed": true,
+            "autoMergeAllowed": false,
+            "deleteBranchOnMerge": false
+          },
           "author": { "login": "\(authorLogin)" },
           "headRefName": "h", "baseRefName": "main",
           "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": null,

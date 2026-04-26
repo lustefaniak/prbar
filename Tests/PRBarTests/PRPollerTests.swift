@@ -119,6 +119,31 @@ final class PRPollerTests: XCTestCase {
         XCTAssertTrue(poller.mergingPRs.isEmpty, "should clear after merge")
     }
 
+    func testMergePRRefusesDisallowedMethod() async throws {
+        // Repo configured to disallow merge commits (e.g. linear history).
+        let pr = makePR(
+            nodeId: "PR_a", number: 7, title: "linear-only",
+            allowedMergeMethods: [.squash, .rebase]
+        )
+        let mergeRecorder = AsyncRecorder()
+        let poller = PRPoller(
+            fetcher: { [pr] },
+            prMerger: { owner, repo, number, method in
+                await mergeRecorder.record("\(owner)/\(repo)#\(number) [\(method.rawValue)]")
+            }
+        )
+        poller.pollNow()
+        try await waitUntil { poller.prs.count == 1 }
+
+        poller.mergePR(pr, method: .merge)   // disallowed
+        try await waitUntil { poller.lastError != nil }
+
+        let calls = await mergeRecorder.calls
+        XCTAssertTrue(calls.isEmpty, "merger must not be called for a disallowed method")
+        XCTAssertNotNil(poller.lastError)
+        XCTAssertTrue(poller.lastError!.contains("disabled"))
+    }
+
     func testMergePRSurfacesError() async throws {
         struct StubError: Error, LocalizedError {
             var errorDescription: String? { "PR not in mergeable state" }
@@ -186,7 +211,12 @@ final class PRPollerTests: XCTestCase {
 
     // MARK: - helpers
 
-    private func makePR(nodeId: String, number: Int, title: String) -> InboxPR {
+    private func makePR(
+        nodeId: String,
+        number: Int,
+        title: String,
+        allowedMergeMethods: Set<MergeMethod> = [.squash, .rebase]
+    ) -> InboxPR {
         InboxPR(
             nodeId: nodeId,
             owner: "o",
@@ -209,7 +239,10 @@ final class PRPollerTests: XCTestCase {
             changedFiles: 1,
             hasAutoMerge: false,
             autoMergeEnabledBy: nil,
-            allCheckSummaries: []
+            allCheckSummaries: [],
+            allowedMergeMethods: allowedMergeMethods,
+            autoMergeAllowed: true,
+            deleteBranchOnMerge: true
         )
     }
 

@@ -8,7 +8,14 @@ enum GraphQLQueries {
     private static let prFieldsFragment: String = """
     fragment PRFields on PullRequest {
       id number title body url isDraft additions deletions changedFiles
-      repository { nameWithOwner }
+      repository {
+        nameWithOwner
+        mergeCommitAllowed
+        squashMergeAllowed
+        rebaseMergeAllowed
+        autoMergeAllowed
+        deleteBranchOnMerge
+      }
       author { login }
       headRefName baseRefName
       mergeable mergeStateStatus reviewDecision

@@ -119,7 +119,10 @@ final class SnapshotCacheTests: XCTestCase {
             changedFiles: 1,
             hasAutoMerge: false,
             autoMergeEnabledBy: nil,
-            allCheckSummaries: []
+            allCheckSummaries: [],
+            allowedMergeMethods: [.squash, .rebase],
+            autoMergeAllowed: true,
+            deleteBranchOnMerge: true
         )
     }
 }

@@ -57,6 +57,11 @@ struct InboxResponse: Decodable, Sendable {
 
     struct Repository: Decodable, Sendable {
         let nameWithOwner: String
+        let mergeCommitAllowed: Bool
+        let squashMergeAllowed: Bool
+        let rebaseMergeAllowed: Bool
+        let autoMergeAllowed: Bool
+        let deleteBranchOnMerge: Bool
     }
 
     struct Author: Decodable, Sendable {

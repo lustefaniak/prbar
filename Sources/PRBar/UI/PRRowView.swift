@@ -74,24 +74,32 @@ struct PRRowView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                Divider()
-                Button {
-                    pendingMergeMethod = .squash
-                    showMergeConfirm = true
-                } label: {
-                    Label("Squash and merge", systemImage: "arrow.triangle.merge")
-                }
-                Button {
-                    pendingMergeMethod = .merge
-                    showMergeConfirm = true
-                } label: {
-                    Label("Create merge commit", systemImage: "arrow.triangle.merge")
-                }
-                Button {
-                    pendingMergeMethod = .rebase
-                    showMergeConfirm = true
-                } label: {
-                    Label("Rebase and merge", systemImage: "arrow.triangle.merge")
+                if !pr.allowedMergeMethods.isEmpty {
+                    Divider()
+                    if pr.allowedMergeMethods.contains(.squash) {
+                        Button {
+                            pendingMergeMethod = .squash
+                            showMergeConfirm = true
+                        } label: {
+                            Label("Squash and merge", systemImage: "arrow.triangle.merge")
+                        }
+                    }
+                    if pr.allowedMergeMethods.contains(.merge) {
+                        Button {
+                            pendingMergeMethod = .merge
+                            showMergeConfirm = true
+                        } label: {
+                            Label("Create merge commit", systemImage: "arrow.triangle.merge")
+                        }
+                    }
+                    if pr.allowedMergeMethods.contains(.rebase) {
+                        Button {
+                            pendingMergeMethod = .rebase
+                            showMergeConfirm = true
+                        } label: {
+                            Label("Rebase and merge", systemImage: "arrow.triangle.merge")
+                        }
+                    }
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")

@@ -96,7 +96,13 @@ final class PRPoller {
             },
             prMerger: { owner, repo, number, method in
                 let c = try client ?? GHClient()
-                try await c.mergePR(owner: owner, repo: repo, number: number, method: method)
+                // Always pass --delete-branch when the repo opts into it
+                // server-side. gh ignores the flag if not applicable, so
+                // it's safe to leave at the repo's default behavior.
+                try await c.mergePR(
+                    owner: owner, repo: repo, number: number,
+                    method: method, deleteBranch: false
+                )
             },
             cache: snapshotCache
         )
@@ -167,6 +173,10 @@ final class PRPoller {
         let repo = pr.repo
         let number = pr.number
         guard let merger = prMerger else { return }
+        guard pr.allowedMergeMethods.contains(method) else {
+            self.lastError = "\(method.displayName) is disabled on \(pr.nameWithOwner)."
+            return
+        }
         guard !mergingPRs.contains(nodeId) else { return }
         mergingPRs.insert(nodeId)
 
