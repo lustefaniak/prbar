@@ -27,6 +27,10 @@ struct ReviewState: Sendable, Hashable, Codable {
     }
 
     let prNodeId: String
+    /// Which AI backend produced (or is producing) this review. Surfaced
+    /// in the UI so the user can tell whether they're looking at a
+    /// claude verdict vs a codex verdict.
+    var providerId: ProviderID = .claude
     /// Commit SHA the review ran against. Used to detect staleness on
     /// subsequent polls — if the PR's headSha changes, the cached
     /// review is for an older commit and we should re-triage.
@@ -79,9 +83,27 @@ final class ReviewQueueWorker {
     /// menu-bar app that gets restarted often).
     var dailyCostCap: Double = 5.0
 
-    /// AI provider. Pluggable; v1 ships `ClaudeProvider`.
+    /// Default AI provider. Used when `providerLookup` is nil (mostly in
+    /// tests that pass a single stub via `worker.provider = …`).
+    /// Production wiring uses `providerLookup` so per-repo / per-run
+    /// `ProviderID`s map to the right backend.
     @ObservationIgnored
     var provider: ReviewProvider = ClaudeProvider()
+
+    /// Resolves `ProviderID` → concrete `ReviewProvider`. When set, the
+    /// worker uses this instead of `provider` for every run. Production
+    /// wires `{ .claude → ClaudeProvider, .codex → CodexProvider }`.
+    @ObservationIgnored
+    var providerLookup: (@Sendable (ProviderID) -> ReviewProvider)? = { id in
+        switch id {
+        case .claude: return ClaudeProvider()
+        case .codex:  return CodexProvider()
+        }
+    }
+
+    /// App-level default provider. Per-repo `RepoConfig.providerOverride`
+    /// wins over this; per-run override (set on enqueue) wins over both.
+    var defaultProviderId: ProviderID = .claude
 
     /// What tool-access mode the provider runs in.
     var toolMode: ToolMode = .none
@@ -109,7 +131,15 @@ final class ReviewQueueWorker {
     private var inFlight: Int = 0
 
     @ObservationIgnored
-    private var pending: [InboxPR] = []
+    private var pending: [PendingItem] = []
+
+    /// One queued review. Carries an optional per-run provider override
+    /// captured at enqueue time so PRDetailView's "Re-run with codex"
+    /// can dispatch to a non-default backend just for that run.
+    private struct PendingItem {
+        let pr: InboxPR
+        let providerOverride: ProviderID?
+    }
 
     /// Disk persistence. Loads on init, saves after every state mutation.
     /// Nil disables persistence (used by tests).
@@ -220,8 +250,10 @@ final class ReviewQueueWorker {
     }
 
     /// Enqueue a PR for review. Idempotent — already-known PR is a no-op
-    /// unless `force = true` (re-run).
-    func enqueue(_ pr: InboxPR, force: Bool = false) {
+    /// unless `force = true` (re-run). `providerOverride` lets a single
+    /// run target a non-default backend (e.g. PRDetailView "Re-run with
+    /// codex"); nil falls back to the repo + app defaults.
+    func enqueue(_ pr: InboxPR, force: Bool = false, providerOverride: ProviderID? = nil) {
         // Repo-level exclusion — silent skip, no review state recorded.
         if configResolver(pr.owner, pr.repo).excluded {
             return
@@ -250,9 +282,17 @@ final class ReviewQueueWorker {
             return PriorReview(headSha: existing.headSha, aggregated: agg)
         }()
 
+        // Resolve provider at enqueue time so UI can show "Reviewing
+        // with codex…" while the run is queued. Per-run override > repo
+        // override > app default.
+        let resolvedProviderId = providerOverride
+            ?? configResolver(pr.owner, pr.repo).providerOverride
+            ?? defaultProviderId
+
         if cumulativeSpend() >= dailyCostCap {
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
+                providerId: resolvedProviderId,
                 headSha: pr.headSha,
                 triggeredAt: Date(),
                 status: .failed("Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."),
@@ -264,6 +304,7 @@ final class ReviewQueueWorker {
         }
         reviews[pr.nodeId] = ReviewState(
             prNodeId: pr.nodeId,
+            providerId: resolvedProviderId,
             headSha: pr.headSha,
             triggeredAt: Date(),
             status: .queued,
@@ -271,7 +312,7 @@ final class ReviewQueueWorker {
             priorReview: prior
         )
         persist()
-        pending.append(pr)
+        pending.append(PendingItem(pr: pr, providerOverride: providerOverride))
         drainIfPossible()
     }
 
@@ -303,11 +344,12 @@ final class ReviewQueueWorker {
         while inFlight < maxConcurrent, let next = pending.first {
             pending.removeFirst()
             inFlight += 1
-            Task { await self.run(pr: next) }
+            Task { await self.run(item: next) }
         }
     }
 
-    private func run(pr: InboxPR) async {
+    private func run(item: PendingItem) async {
+        let pr = item.pr
         defer {
             inFlight -= 1
             drainIfPossible()
@@ -355,6 +397,16 @@ final class ReviewQueueWorker {
 
             let prior = reviews[pr.nodeId]?.priorReview
             let prNodeId = pr.nodeId
+            // Provider resolution: per-run override > repo override > app default.
+            let chosenProviderId = item.providerOverride
+                ?? config.providerOverride
+                ?? defaultProviderId
+            let chosenProvider: ReviewProvider
+            if let lookup = providerLookup {
+                chosenProvider = lookup(chosenProviderId)
+            } else {
+                chosenProvider = provider
+            }
             var outcomes: [SubreviewOutcome] = []
             for subdiff in subdiffs {
                 let workdir = resolveWorkdir(handle: sharedHandle, subpath: subdiff.subpath)
@@ -377,7 +429,7 @@ final class ReviewQueueWorker {
                     timeout: .seconds(120),
                     schema: try PromptLibrary.outputSchema()
                 )
-                let result = try await provider.review(
+                let result = try await chosenProvider.review(
                     bundle: bundle,
                     options: options,
                     onProgress: { progress in

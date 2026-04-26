@@ -22,6 +22,7 @@ struct PRDetailView: View {
 
     @State private var bodyDraft: String = ""
     @State private var showActionPicker: Bool = false
+    @State private var descriptionExpanded: Bool = false
 
     /// Set when the user clicks an annotation row → drives scroll +
     /// expand-bubble in the diff. Cleared after a short delay so the
@@ -96,6 +97,10 @@ struct PRDetailView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             // Anchor target for the scroll-to-top button.
                             Color.clear.frame(height: 0).id("top")
+                            if !pr.body.isEmpty {
+                                descriptionSection
+                                Divider()
+                            }
                             if !pr.allCheckSummaries.isEmpty {
                                 CIStatusView(checks: pr.allCheckSummaries)
                                 Divider()
@@ -141,6 +146,10 @@ struct PRDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             prHeader
             Divider()
+            if !pr.body.isEmpty {
+                descriptionSection
+                Divider()
+            }
             if !pr.allCheckSummaries.isEmpty {
                 CIStatusView(checks: pr.allCheckSummaries)
                 Divider()
@@ -214,26 +223,92 @@ struct PRDetailView: View {
         }
     }
 
+    /// PR description rendered with inline markdown via Foundation's
+    /// built-in `AttributedString(markdown:)`. Bold, italic, inline
+    /// code, and links work; **block-level rendering (heading sizes,
+    /// fenced code blocks, blockquotes) does NOT** — Foundation's
+    /// markdown parser preserves block content as plain text. If real
+    /// PRs need richer rendering we'll add a dedicated markdown package
+    /// (MarkdownUI) — flagged in CLAUDE.md as a Phase 2/3 task.
+    ///
+    /// Collapsed to ~6 lines by default; "Show more / Show less"
+    /// toggles full height. Body is selectable so users can copy.
+    @ViewBuilder
+    private var descriptionSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Description")
+                    .font(.subheadline.bold())
+                Spacer()
+                Button(descriptionExpanded ? "Show less" : "Show more") {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        descriptionExpanded.toggle()
+                    }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            descriptionMarkdown(pr.body)
+                .font(.callout)
+                .lineLimit(descriptionExpanded ? nil : 6)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    // Tap-to-expand on the body too, not just the
+                    // button — the button is small and easy to miss.
+                    if !descriptionExpanded {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            descriptionExpanded = true
+                        }
+                    }
+                }
+        }
+    }
+
+    /// Try inline markdown parsing; fall back to plain text on parse
+    /// errors (Foundation's parser is forgiving but not infallible).
+    @ViewBuilder
+    private func descriptionMarkdown(_ raw: String) -> some View {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // `.inlineOnlyPreservingWhitespace` keeps newlines and parses
+        // just inline syntax (bold/italic/code/links). `.full` would
+        // strip block markers like `## heading` collapsing layout into
+        // one paragraph — worse for reading PR descriptions, which
+        // typically rely on bullets and section breaks.
+        if let attr = try? AttributedString(
+            markdown: trimmed,
+            options: AttributedString.MarkdownParsingOptions(
+                allowsExtendedAttributes: false,
+                interpretedSyntax: .inlineOnlyPreservingWhitespace,
+                failurePolicy: .returnPartiallyParsedIfPossible
+            )
+        ) {
+            Text(attr)
+        } else {
+            Text(trimmed)
+        }
+    }
+
     @ViewBuilder
     private var aiSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("AI Review")
                     .font(.subheadline.bold())
-                Spacer()
-                Button {
-                    queue.enqueue(pr, force: true)
-                } label: {
-                    Label("Re-run", systemImage: "arrow.clockwise")
-                        .labelStyle(.titleAndIcon)
-                        .font(.caption)
+                if let providerId = queue.reviews[pr.nodeId]?.providerId {
+                    Text(providerId.displayName)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(.secondary.opacity(0.12), in: Capsule())
+                        .help("AI provider that ran this review")
                 }
-                .buttonStyle(.borderless)
-                .disabled({
-                    if case .running = reviewStatus { return true }
-                    if case .queued  = reviewStatus { return true }
-                    return false
-                }())
+                Spacer()
+                rerunMenu
             }
 
             if isReviewStale, let oldSha = cachedReviewedSha {
@@ -336,6 +411,38 @@ struct PRDetailView: View {
         }
         .padding(8)
         .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Re-run as a split menu: primary click re-runs with the
+    /// repo/app default provider; the dropdown lets the user pick a
+    /// specific provider for this single run (e.g. "compare claude
+    /// against codex on this PR"). Disabled while in flight.
+    @ViewBuilder
+    private var rerunMenu: some View {
+        let inFlight: Bool = {
+            if case .running = reviewStatus { return true }
+            if case .queued  = reviewStatus { return true }
+            return false
+        }()
+        Menu {
+            ForEach(ProviderID.allCases, id: \.self) { provider in
+                Button {
+                    queue.enqueue(pr, force: true, providerOverride: provider)
+                } label: {
+                    Label("Re-run with \(provider.displayName)", systemImage: "sparkles")
+                }
+            }
+        } label: {
+            Label("Re-run", systemImage: "arrow.clockwise")
+                .labelStyle(.titleAndIcon)
+                .font(.caption)
+        } primaryAction: {
+            queue.enqueue(pr, force: true)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.borderless)
+        .fixedSize()
+        .disabled(inFlight)
     }
 
     @ViewBuilder

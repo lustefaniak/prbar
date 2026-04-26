@@ -275,6 +275,13 @@ struct RepoConfigEditor: View {
                     Toggle("Enable AI triage on this repo",
                            isOn: $config.aiReviewEnabled)
                         .help("When off, PRs go straight to 'ready for review' — the AI never runs. Manual Re-run still works from the detail view.")
+                    Picker("Provider", selection: providerOverrideBinding) {
+                        Text("(use app default)").tag("default")
+                        ForEach(ProviderID.allCases, id: \.self) { p in
+                            Text(p.displayName).tag(p.rawValue)
+                        }
+                    }
+                    .help("Overrides the app-wide default for this repo. Per-PR \"Re-run with…\" can still override this for a single run.")
                     Picker("Tool mode", selection: toolModeBinding) {
                         Text("(use global default)").tag("default")
                         Text("Minimal — read-only code exploration").tag("minimal")
@@ -352,6 +359,15 @@ struct RepoConfigEditor: View {
                     .split(separator: ",")
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
+            }
+        )
+    }
+
+    private var providerOverrideBinding: Binding<String> {
+        Binding(
+            get: { config.providerOverride?.rawValue ?? "default" },
+            set: { tag in
+                config.providerOverride = ProviderID(rawValue: tag)
             }
         )
     }

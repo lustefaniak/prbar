@@ -137,6 +137,12 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// from the detail view still bypasses this.
     var aiReviewEnabled: Bool = true
 
+    /// Which `ReviewProvider` runs reviews for this repo. Nil → fall
+    /// back to the app-level default (UserDefaults `defaultProviderId`,
+    /// itself default `.claude`). PRDetailView's "Re-run with…" menu
+    /// can also override this for a single run.
+    var providerOverride: ProviderID? = nil
+
     /// When (and how) to interrupt the user with "ready for review"
     /// notifications. See `NotifyPolicy`. Default batches across the
     /// whole inbox to minimise context switches.

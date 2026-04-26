@@ -65,6 +65,46 @@ final class ReviewQueueWorkerTests: XCTestCase {
             "successful retriage should clear the priorReview")
     }
 
+    func testProviderResolutionPriorityPerRunOverridesRepoOverridesDefault() async throws {
+        // Build a worker whose providerLookup returns ID-tagged stubs so
+        // we can assert which one ran for each scenario.
+        let recorder = ProviderCallRecorder()
+        let worker = makeWorker(
+            provider: StubProvider(verdict: .approve, summary: "default", cost: 0),
+            diffText: makeDiff()
+        )
+        worker.providerLookup = { id in
+            recorder.lastUsed = id
+            return StubProvider(verdict: .approve, summary: id.rawValue, cost: 0)
+        }
+        worker.defaultProviderId = .claude
+
+        // 1. No overrides → app default (claude).
+        worker.configResolver = { _, _ in RepoConfig.default }
+        worker.enqueue(makePR(nodeId: "P1", number: 1))
+        try await waitUntil { self.isCompleted(worker.reviews["P1"]?.status) }
+        XCTAssertEqual(recorder.lastUsed, .claude)
+        XCTAssertEqual(worker.reviews["P1"]?.providerId, .claude)
+
+        // 2. Repo override = codex → codex.
+        worker.configResolver = { _, _ in
+            var c = RepoConfig.default
+            c.providerOverride = .codex
+            return c
+        }
+        worker.enqueue(makePR(nodeId: "P2", number: 2))
+        try await waitUntil { self.isCompleted(worker.reviews["P2"]?.status) }
+        XCTAssertEqual(recorder.lastUsed, .codex)
+        XCTAssertEqual(worker.reviews["P2"]?.providerId, .codex)
+
+        // 3. Repo says codex but per-run override = claude → claude wins.
+        worker.enqueue(makePR(nodeId: "P3", number: 3), providerOverride: .claude)
+        try await waitUntil { self.isCompleted(worker.reviews["P3"]?.status) }
+        XCTAssertEqual(recorder.lastUsed, .claude,
+            "per-run override should beat repo override")
+        XCTAssertEqual(worker.reviews["P3"]?.providerId, .claude)
+    }
+
     func testForceReRunReevaluatesCompletedPR() async throws {
         let pr = makePR(nodeId: "PR_1", number: 1)
         let stubProvider = StubProvider(verdict: .approve, summary: "first", cost: 0.05)
@@ -158,6 +198,10 @@ final class ReviewQueueWorkerTests: XCTestCase {
     private func makeWorker(provider: ReviewProvider, diffText: String) -> ReviewQueueWorker {
         let w = ReviewQueueWorker(diffFetcher: { _, _, _ in diffText })
         w.provider = provider
+        // Clear the production providerLookup so the legacy single-stub
+        // path (worker.provider = stub) drives the run; tests that
+        // exercise per-ID dispatch re-set this themselves.
+        w.providerLookup = nil
         return w
     }
 
@@ -274,6 +318,14 @@ private final class SlowStubProvider: ReviewProvider, @unchecked Sendable {
             rawJson: Data()
         )
     }
+}
+
+/// Tracks which `ProviderID` the worker dispatched to. Used by the
+/// provider-resolution priority test. `@unchecked Sendable` since the
+/// providerLookup closure isn't main-actor-isolated; we only ever
+/// touch this from MainActor in the tests anyway.
+private final class ProviderCallRecorder: @unchecked Sendable {
+    var lastUsed: ProviderID?
 }
 
 private final class ThrowingStubProvider: ReviewProvider, @unchecked Sendable {

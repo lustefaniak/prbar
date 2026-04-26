@@ -9,7 +9,7 @@ struct PopoverView: View {
     @State private var selectedPR: InboxPR?
     @State private var toolResults: [ToolProbeResult] = []
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
-    private let probedTools = ["gh", "claude", "git"]
+    private let probedTools = ["gh", "claude", "codex", "git"]
 
     enum Tab: String, CaseIterable, Identifiable, Hashable {
         case myPRs = "My PRs"

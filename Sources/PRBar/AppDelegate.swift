@@ -53,6 +53,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rc = RepoConfigStore()
         let coord = ReadinessCoordinator(notifier: n)
         q.configResolver = rc.makeResolver()
+        // Pull the persisted default provider from UserDefaults (the
+        // General Settings @AppStorage key). Falls back to .claude on
+        // first run / unrecognised values.
+        if let raw = UserDefaults.standard.string(forKey: "defaultProviderId"),
+           let id = ProviderID(rawValue: raw) {
+            q.defaultProviderId = id
+        }
         rc.onChange = { [weak q, weak rc] in
             guard let q, let rc else { return }
             q.configResolver = rc.makeResolver()

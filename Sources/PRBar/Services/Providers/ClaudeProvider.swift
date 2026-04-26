@@ -119,9 +119,9 @@ struct ClaudeProvider: ReviewProvider {
             throw ClaudeError.missingStructuredOutput
         }
 
-        let decoded: StructuredOutput
+        let decoded: ProviderStructuredOutput
         do {
-            decoded = try JSONDecoder().decode(StructuredOutput.self, from: soData)
+            decoded = try JSONDecoder().decode(ProviderStructuredOutput.self, from: soData)
         } catch {
             throw ClaudeError.decodeFailed(String(describing: error))
         }
@@ -244,12 +244,6 @@ struct ClaudeProvider: ReviewProvider {
         }
     }
 
-    // MARK: - structured_output decoding
-
-    private struct StructuredOutput: Decodable {
-        let verdict: ReviewVerdict
-        let confidence: Double
-        let summary: String
-        let annotations: [DiffAnnotation]
-    }
+    // structured_output decoding lives in ProviderStructuredOutput.swift —
+    // shared between ClaudeProvider and CodexProvider.
 }

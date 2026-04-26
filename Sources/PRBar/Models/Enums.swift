@@ -1,5 +1,30 @@
 import Foundation
 
+/// Which AI CLI runs the review. Pluggable via the `ReviewProvider`
+/// protocol; resolution priority is per-run override (set from
+/// PRDetailView "Re-run with…") > per-repo `RepoConfig.providerOverride`
+/// > app-wide default (UserDefaults `defaultProviderId`, default
+/// `.claude`).
+enum ProviderID: String, Codable, Sendable, Hashable, CaseIterable {
+    case claude
+    case codex
+
+    var displayName: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex:  return "Codex"
+        }
+    }
+
+    /// CLI binary name resolved via `ExecutableResolver.find(_:)`.
+    var binaryName: String {
+        switch self {
+        case .claude: return "claude"
+        case .codex:  return "codex"
+        }
+    }
+}
+
 enum PRRole: String, Codable, Sendable, Hashable, CaseIterable {
     case authored
     case reviewRequested
