@@ -241,7 +241,7 @@ struct PRDetailView: View {
     private func completedReviewSection(_ agg: AggregatedReview) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                verdictBadge(agg.verdict)
+                verdictBadge(agg.verdict, summary: agg.summaryMarkdown)
                 Text(String(format: "%.0f%% confident", agg.confidence * 100))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -434,15 +434,53 @@ struct PRDetailView: View {
         }
     }
 
+    /// The verdict badge under "AI Review" doubles as a one-click way
+    /// to post that exact verdict back to GitHub with the AI's summary
+    /// as the body. Only fires when (a) we're allowed to review this PR
+    /// (not own-only) and (b) the verdict maps to an actual review action
+    /// (`abstain` does not). On unauthorised cases it renders as a plain
+    /// label so the user still sees what the AI said.
     @ViewBuilder
-    private func verdictBadge(_ verdict: ReviewVerdict) -> some View {
+    private func verdictBadge(_ verdict: ReviewVerdict, summary: String) -> some View {
         let (label, color) = verdictAppearance(verdict)
-        Text(label)
-            .font(.caption.bold())
-            .foregroundStyle(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(color, in: Capsule())
+        let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
+        let action = reviewAction(for: verdict)
+
+        let pill = HStack(spacing: 4) {
+            Text(label)
+            if showsReviewActions, action != nil {
+                Image(systemName: "paperplane.fill")
+                    .font(.caption2)
+            }
+        }
+        .font(.caption.bold())
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(color, in: Capsule())
+
+        if showsReviewActions, let action {
+            Button {
+                poller.postReview(pr, kind: action, body: summary)
+            } label: {
+                pill
+            }
+            .buttonStyle(.plain)
+            .disabled(isPosting)
+            .opacity(isPosting ? 0.5 : 1)
+            .help("Post this AI review to GitHub as \(action.displayName)")
+        } else {
+            pill
+        }
+    }
+
+    private func reviewAction(for verdict: ReviewVerdict) -> ReviewActionKind? {
+        switch verdict {
+        case .approve:        return .approve
+        case .comment:        return .comment
+        case .requestChanges: return .requestChanges
+        case .abstain:        return nil
+        }
     }
 
     private func verdictAppearance(_ v: ReviewVerdict) -> (String, Color) {

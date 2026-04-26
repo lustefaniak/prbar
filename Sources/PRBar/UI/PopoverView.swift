@@ -69,6 +69,21 @@ struct PopoverView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+        // Bottom-right Settings affordance — same place macOS apps put
+        // gear icons in popovers. Right-click on the menu-bar icon also
+        // works; this is the discoverable in-popover entry point.
+        HStack {
+            Spacer()
+            SettingsLink {
+                Image(systemName: "gearshape")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(",", modifiers: .command)
+            .help("Settings")
+        }
     }
 
     private var header: some View {
