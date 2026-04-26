@@ -15,7 +15,7 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # bin/version uses git describe + rev-list count; the shallow
           # clone GitHub uses by default would skew the build number.
