@@ -87,6 +87,23 @@ actor GHClient {
         )
     }
 
+    /// Fetch the unified diff for a PR via `gh pr diff`. Returns the raw
+    /// diff text; caller is responsible for parsing. Cache key should be
+    /// (owner, repo, number, headSha).
+    func fetchDiff(owner: String, repo: String, number: Int) async throws -> String {
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: ["pr", "diff", "\(number)", "--repo", "\(owner)/\(repo)"]
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+        return result.stdoutString ?? ""
+    }
+
     /// Merge a pull request. Throws GHError.execFailed on any non-zero exit
     /// (which includes "PR not mergeable" and "approval required" — gh's
     /// stderr text is descriptive and surfaces in lastError as-is).
