@@ -16,7 +16,9 @@ struct MyPRsView: View {
             isFetching: poller.isFetching,
             lastError: poller.lastError,
             refreshingPRs: poller.refreshingPRs,
-            onRefreshPR: { poller.refreshPR($0) }
+            mergingPRs: poller.mergingPRs,
+            onRefreshPR: { poller.refreshPR($0) },
+            onMergePR: { pr, method in poller.mergePR(pr, method: method) }
         )
     }
 

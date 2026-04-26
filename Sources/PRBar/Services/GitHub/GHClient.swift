@@ -86,4 +86,35 @@ actor GHClient {
             viewerLogin: response.data.viewer.login
         )
     }
+
+    /// Merge a pull request. Throws GHError.execFailed on any non-zero exit
+    /// (which includes "PR not mergeable" and "approval required" — gh's
+    /// stderr text is descriptive and surfaces in lastError as-is).
+    func mergePR(
+        owner: String,
+        repo: String,
+        number: Int,
+        method: MergeMethod,
+        deleteBranch: Bool = false
+    ) async throws {
+        var args: [String] = [
+            "pr", "merge", "\(number)",
+            "--repo", "\(owner)/\(repo)",
+            method.ghFlag,
+        ]
+        if deleteBranch {
+            args.append("--delete-branch")
+        }
+
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: args
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+    }
 }

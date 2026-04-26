@@ -9,7 +9,9 @@ struct PRListView: View {
     let isFetching: Bool
     let lastError: String?
     let refreshingPRs: Set<String>
+    let mergingPRs: Set<String>
     let onRefreshPR: (InboxPR) -> Void
+    let onMergePR: (InboxPR, MergeMethod) -> Void
 
     private let visibleLimit = 12
 
@@ -32,7 +34,9 @@ struct PRListView: View {
                     PRRowView(
                         pr: pr,
                         isRefreshing: refreshingPRs.contains(pr.nodeId),
-                        onRefresh: { onRefreshPR(pr) }
+                        isMerging: mergingPRs.contains(pr.nodeId),
+                        onRefresh: { onRefreshPR(pr) },
+                        onMerge: { method in onMergePR(pr, method) }
                     )
                 }
                 if prs.count > visibleLimit {

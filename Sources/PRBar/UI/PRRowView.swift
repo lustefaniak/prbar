@@ -1,11 +1,16 @@
 import SwiftUI
+import AppKit
 
 struct PRRowView: View {
     let pr: InboxPR
     let isRefreshing: Bool
+    let isMerging: Bool
     let onRefresh: () -> Void
+    let onMerge: (MergeMethod) -> Void
 
     @State private var isHovering = false
+    @State private var showMergeConfirm = false
+    @State private var pendingMergeMethod: MergeMethod = .squash
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -28,20 +33,75 @@ struct PRRowView: View {
                 }
             }
             Spacer()
-            if isRefreshing {
-                ProgressView().controlSize(.small)
-            } else if isHovering {
-                Button(action: onRefresh) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption2)
-                }
-                .buttonStyle(.borderless)
-                .help("Refresh this PR")
-            }
+            trailingControl
         }
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .help(tooltip)
+        .confirmationDialog(
+            "\(pendingMergeMethod.displayName) #\(pr.number)?",
+            isPresented: $showMergeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(pendingMergeMethod.displayName, role: .destructive) {
+                onMerge(pendingMergeMethod)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(pr.title)\n\(pr.nameWithOwner) → \(pr.baseRef)")
+        }
+    }
+
+    @ViewBuilder
+    private var trailingControl: some View {
+        if isMerging {
+            ProgressView()
+                .controlSize(.small)
+                .help("Merging…")
+        } else if isRefreshing {
+            ProgressView()
+                .controlSize(.small)
+                .help("Refreshing…")
+        } else if isHovering {
+            Menu {
+                Button {
+                    NSWorkspace.shared.open(pr.url)
+                } label: {
+                    Label("Open in browser", systemImage: "safari")
+                }
+                Button {
+                    onRefresh()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                Divider()
+                Button {
+                    pendingMergeMethod = .squash
+                    showMergeConfirm = true
+                } label: {
+                    Label("Squash and merge", systemImage: "arrow.triangle.merge")
+                }
+                Button {
+                    pendingMergeMethod = .merge
+                    showMergeConfirm = true
+                } label: {
+                    Label("Create merge commit", systemImage: "arrow.triangle.merge")
+                }
+                Button {
+                    pendingMergeMethod = .rebase
+                    showMergeConfirm = true
+                } label: {
+                    Label("Rebase and merge", systemImage: "arrow.triangle.merge")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.caption)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Actions")
+        }
     }
 
     private var tooltip: String {

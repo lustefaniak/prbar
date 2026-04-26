@@ -144,5 +144,5 @@ struct PopoverView: View {
 
 #Preview {
     PopoverView()
-        .environment(PRPoller(fetcher: { [] }, prRefresher: nil))
+        .environment(PRPoller(fetcher: { [] }))
 }

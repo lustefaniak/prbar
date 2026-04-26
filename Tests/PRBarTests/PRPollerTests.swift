@@ -95,6 +95,49 @@ final class PRPollerTests: XCTestCase {
         XCTAssertEqual(poller.lastError, "rate limited")
     }
 
+    func testMergePRCallsMergerThenRefreshes() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "ready")
+        let updated = makePR(nodeId: "PR_a", number: 7, title: "merged")
+
+        let mergeRecorder = AsyncRecorder()
+
+        let poller = PRPoller(
+            fetcher: { [pr] },
+            prRefresher: { _, _, _ in updated },
+            prMerger: { owner, repo, number, method in
+                await mergeRecorder.record("\(owner)/\(repo)#\(number) [\(method.rawValue)]")
+            }
+        )
+        poller.pollNow()
+        try await waitUntil { poller.prs.first?.title == "ready" }
+
+        poller.mergePR(pr, method: .squash)
+        try await waitUntil { poller.prs.first?.title == "merged" }
+
+        let calls = await mergeRecorder.calls
+        XCTAssertEqual(calls, ["o/r#7 [squash]"])
+        XCTAssertTrue(poller.mergingPRs.isEmpty, "should clear after merge")
+    }
+
+    func testMergePRSurfacesError() async throws {
+        struct StubError: Error, LocalizedError {
+            var errorDescription: String? { "PR not in mergeable state" }
+        }
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "blocked")
+        let poller = PRPoller(
+            fetcher: { [pr] },
+            prMerger: { _, _, _, _ in throw StubError() }
+        )
+        poller.pollNow()
+        try await waitUntil { poller.prs.count == 1 }
+
+        poller.mergePR(pr, method: .squash)
+        try await waitUntil { poller.lastError != nil }
+
+        XCTAssertEqual(poller.lastError, "PR not in mergeable state")
+        XCTAssertEqual(poller.prs.first?.title, "blocked")
+    }
+
     func testRefreshPRWithoutRefresherFallsBackToPollNow() async throws {
         let counter = AsyncCounter()
         let pr = makePR(nodeId: "PR_a", number: 1, title: "x")
@@ -188,4 +231,9 @@ final class PRPollerTests: XCTestCase {
 private actor AsyncCounter {
     private(set) var value: Int = 0
     func increment() { value += 1 }
+}
+
+private actor AsyncRecorder {
+    private(set) var calls: [String] = []
+    func record(_ s: String) { calls.append(s) }
 }

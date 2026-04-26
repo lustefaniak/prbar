@@ -33,18 +33,26 @@ final class PRPoller {
     /// can show a per-row spinner while a refresh is in flight.
     private(set) var refreshingPRs: Set<String> = []
 
+    /// Tracks PRs currently being merged. Same purpose as refreshingPRs.
+    private(set) var mergingPRs: Set<String> = []
+
     @ObservationIgnored
     private let fetcher: @Sendable () async throws -> [InboxPR]
 
     @ObservationIgnored
     private let prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)?
 
+    @ObservationIgnored
+    private let prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)?
+
     init(
         fetcher: @Sendable @escaping () async throws -> [InboxPR],
-        prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil
+        prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil,
+        prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)? = nil
     ) {
         self.fetcher = fetcher
         self.prRefresher = prRefresher
+        self.prMerger = prMerger
     }
 
     /// Convenience constructor backed by a real `GHClient` that auto-starts
@@ -62,6 +70,10 @@ final class PRPoller {
             prRefresher: { owner, repo, number in
                 let c = try client ?? GHClient()
                 return try await c.fetchPR(owner: owner, repo: repo, number: number)
+            },
+            prMerger: { owner, repo, number, method in
+                let c = try client ?? GHClient()
+                try await c.mergePR(owner: owner, repo: repo, number: number, method: method)
             }
         )
         poller.start()
@@ -115,6 +127,30 @@ final class PRPoller {
                 if let idx = self.prs.firstIndex(where: { $0.nodeId == nodeId }) {
                     self.prs[idx] = updated
                 }
+            } catch {
+                self.lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Merge a PR via gh, then refresh it so the UI reflects the new state
+    /// (closed, mergeStateStatus, etc.). On failure, surfaces error text in
+    /// `lastError` and the row stays in the list.
+    func mergePR(_ pr: InboxPR, method: MergeMethod = .squash) {
+        let nodeId = pr.nodeId
+        let owner = pr.owner
+        let repo = pr.repo
+        let number = pr.number
+        guard let merger = prMerger else { return }
+        guard !mergingPRs.contains(nodeId) else { return }
+        mergingPRs.insert(nodeId)
+
+        Task {
+            defer { mergingPRs.remove(nodeId) }
+            do {
+                try await merger(owner, repo, number, method)
+                self.lastError = nil
+                self.refreshPR(pr)
             } catch {
                 self.lastError = error.localizedDescription
             }
