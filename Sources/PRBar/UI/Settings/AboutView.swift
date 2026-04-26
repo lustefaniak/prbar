@@ -45,7 +45,7 @@ struct AboutView: View {
                 Link(destination: URL(string: "https://github.com/lustefaniak")!) {
                     Label("@lustefaniak", systemImage: "person.crop.circle")
                 }
-                Link(destination: URL(string: "https://github.com/lustefaniak/prs")!) {
+                Link(destination: URL(string: "https://github.com/lustefaniak/prbar")!) {
                     Label("Source", systemImage: "chevron.left.forwardslash.chevron.right")
                 }
             }

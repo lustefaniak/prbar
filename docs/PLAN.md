@@ -2,7 +2,7 @@
 
 A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysitting CI on PRs I authored* and *(2) burning context on shallow PR reviews other people send me*. It reuses my existing `gh` auth and my Claude Max subscription via the `claude` CLI — no GitHub OAuth, no API keys.
 
-> Working dir: `/Users/lustefaniak/getsynq/prs`. Remote: `github.com/lustefaniak/prs` (private). App bundle id: `dev.lustefaniak.prbar`.
+> Working dir: `/Users/lustefaniak/getsynq/prbar`. Remote: `github.com/lustefaniak/prbar` (private). App bundle id: `dev.lustefaniak.prbar`.
 
 ---
 

@@ -101,7 +101,7 @@ final class ClaudeProviderIntegrationTests: XCTestCase {
             owner: "lustefaniak", repo: "prs", number: 1,
             title: "Add Version constant",
             body: "Just adds a version string for the tests.",
-            url: URL(string: "https://github.com/lustefaniak/prs/pull/1")!,
+            url: URL(string: "https://github.com/lustefaniak/prbar/pull/1")!,
             author: "lustefaniak",
             headRef: "test/version", baseRef: "main",
             headSha: "abc123",
