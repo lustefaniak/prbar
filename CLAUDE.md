@@ -67,6 +67,8 @@ Three flavors, all run by `bin/test`:
 
 When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: `EventDeriverTests`, `PRPollerTests`, `SnapshotCacheTests`, `ContextAssemblerTests`, `ReviewQueueWorkerTests`, `ClaudeProviderIntegrationTests`. The compiler tells you which.
 
+**Adding a new env-injected `@Observable` service** (e.g. a new `*Store`) means updating *all* of: the service file, `AppDelegate` (property + init + popover env), `PRBarApp.body` (Settings env), plus `ScreenshotFixtures` struct, `environments(_:)`, and `makeFixtures()` in `ScreenshotTests.swift`. Miss the ScreenshotTests trio and `bin/build` passes but the screenshot suite crashes — the noisy LSP false positives make the gap hard to spot from squigglies alone.
+
 ## Conventions
 
 - **Swift 6 strict concurrency** (`SWIFT_STRICT_CONCURRENCY = complete`). Use actors for mutable shared state crossed by Sendable values. `@MainActor @Observable` for view-state classes.
@@ -86,6 +88,7 @@ When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: 
 - `SMAppService.mainApp.register()` (launch-at-login) only works fully when the app is in `/Applications`. From a `bin/run` debug build it logs a warning — ignore during dev.
 - `xcodegen` resource bundling: use explicit subdirs (`path: Resources/schemas` + `path: Resources/prompts`, both with `type: folder`), not `path: Resources` — the latter nests as `Contents/Resources/Resources/...`.
 - **SourceKit/LSP diagnostics in this project are unreliable** — cascading "Cannot find type X" / "Generic parameter could not be inferred" errors on cross-file references are frequent and almost always false. Trust `bin/build` and `bin/test` as authoritative; don't chase the LSP squigglies.
+- **Failed Actions job logs**: `gh api repos/{owner}/{repo}/actions/jobs/{jobId}/logs` returns the plain-text log (gh follows the 302 → signed URL automatically). Job ID is parseable from a CheckRun's `detailsUrl` (`.../actions/runs/<runId>/job/<jobId>`); legacy StatusContext URLs don't have a job ID and can't get logs. Tail aggressively — full logs are megabytes; `CIFailureLogTail.tail` keeps the last ~200 lines and strips the `2024-…Z ` timestamp prefix every Actions line carries.
 - **claude vs codex schema constraints are *opposite*.** Claude rejects schemas with `$schema` / `description` / `additionalProperties` / `minimum` / `maximum` / `maxLength`. Codex (OpenAI strict mode) *requires* `additionalProperties: false` on every object. The shared `Resources/schemas/review.json` stays minimal (claude-style); `CodexProvider.addStrictAdditionalProperties(_:)` injects the strict markers on the way out.
 - **`ImageRenderer` can't capture `ScrollView` content, `Menu`, `HSplitView`, or NSControl-backed `Form` widgets** (Toggle / Slider / TextField / TextEditor / Picker render as the yellow placeholder). Production views that need to be screenshottable grow an opt-in `screenshotMode: Bool = false` parameter that swaps `ScrollView`→flat `VStack` and `Menu`→plain `Button`. Pattern lives on `PRDetailView`, `PRRowView`, `PRListView`, `RepoConfigEditor`. Settings panes are intentionally not in `ScreenshotTests` — capture manually via `screencapture -wo` against the running app.
 - **`textSelection(.enabled)` fights `onTapGesture`** — every click drops a caret instead of triggering the gesture, and dragging starts a selection. Resolution pattern: branch on state — `Button` when you need tap behaviour (e.g. collapsed-to-expand), selectable `Text` when not (e.g. expanded copy/paste).
@@ -107,3 +110,4 @@ When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: 
 - Don't add `Bash` / `Edit` / `Write` / `Task` / `Agent` to the AI's `--allowedTools` list. Those are deliberately disallowed; the AI is a judge, not a fixer.
 - Don't drop `--quiet` from `bin/build` (test output is silenced there on purpose) or *add* it to `bin/test` (we want test pass/fail visible).
 - Don't merge work without `bin/test` green locally. Integration tests catch real schema drift; ignoring them defeats the purpose.
+- Don't bake company-specific or repo-specific defaults into `RepoConfig.builtins`. Repo layouts belong with the repo (planned `.prbar.yml`) or in the user's `RepoConfigStore` overrides, not in app source.
