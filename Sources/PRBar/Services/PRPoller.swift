@@ -45,6 +45,11 @@ final class PRPoller {
     @ObservationIgnored
     private let prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)?
 
+    /// Optional Notifier; when set, the poller forwards derived events
+    /// after each successful poll. Tests typically don't wire one.
+    @ObservationIgnored
+    weak var notifier: Notifier?
+
     init(
         fetcher: @Sendable @escaping () async throws -> [InboxPR],
         prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil,
@@ -165,9 +170,18 @@ final class PRPoller {
             let fetched = try await fetcher()
             let oldPRs = self.prs
             self.prs = fetched
-            self.lastDelta = Self.computeDelta(old: oldPRs, new: fetched)
+            let delta = Self.computeDelta(old: oldPRs, new: fetched)
+            self.lastDelta = delta
             self.lastFetchedAt = Date()
             self.lastError = nil
+
+            // Skip notifications on the very first successful poll — we
+            // don't want to wake the user with "5 PRs are ready to merge!"
+            // every time the app launches.
+            if !oldPRs.isEmpty, let notifier {
+                let events = EventDeriver.events(from: delta, oldPRs: oldPRs)
+                notifier.enqueue(events)
+            }
         } catch {
             self.lastError = error.localizedDescription
         }

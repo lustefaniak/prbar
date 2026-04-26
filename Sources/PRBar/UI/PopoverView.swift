@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PopoverView: View {
     @Environment(PRPoller.self) private var poller
+    @Environment(Notifier.self) private var notifier
 
     @State private var selectedTab: Tab = .myPRs
     @State private var toolResults: [ToolProbeResult] = []
@@ -53,6 +54,8 @@ struct PopoverView: View {
         .frame(width: 480)
         .task { await probeTools() }
         .task { poller.pollNow() }   // refresh whenever the popover opens
+        .onAppear { notifier.setPopoverVisible(true) }
+        .onDisappear { notifier.setPopoverVisible(false) }
     }
 
     private var header: some View {
@@ -145,4 +148,10 @@ struct PopoverView: View {
 #Preview {
     PopoverView()
         .environment(PRPoller(fetcher: { [] }))
+        .environment(Notifier(deliverer: NoopDeliverer()))
+}
+
+private struct NoopDeliverer: NotificationDeliverer {
+    func requestAuthorization() async {}
+    func deliver(_ events: [NotificationEvent]) async {}
 }
