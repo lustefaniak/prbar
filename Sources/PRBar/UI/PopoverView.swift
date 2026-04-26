@@ -72,7 +72,7 @@ struct PopoverView: View {
 
         Divider()
 
-        footer
+        rightClickHint
     }
 
     private var header: some View {
@@ -141,18 +141,15 @@ struct PopoverView: View {
         }
     }
 
-    private var footer: some View {
+    private var rightClickHint: some View {
         HStack {
-            SettingsLink {
-                Label("Settings…", systemImage: "gearshape")
-                    .labelStyle(.titleAndIcon)
-            }
-            .keyboardShortcut(",", modifiers: .command)
+            Image(systemName: "cursorarrow.click.2")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("Right-click the menu-bar icon for Settings or Quit")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             Spacer()
-            Button("Quit") {
-                NSApplication.shared.terminate(nil)
-            }
-            .keyboardShortcut("q")
         }
     }
 

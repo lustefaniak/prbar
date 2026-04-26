@@ -8,20 +8,42 @@ A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysit
 
 ## Status
 
-**Phases 0, 1, 2, 3, 4, and 6 are shipped end to end.** 152 tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
+**Phases 0, 1, 2, 3, 4, and 6 are shipped end to end. Persistence + several UX rounds beyond the original plan are in too.** 166 tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
 
 The AI review pipeline works end to end in both `.none` (pure-prompt, default) and `.minimal` (read-only tools, scoped per subfolder) modes. `RepoCheckoutManager` provisions bare-clone-backed sparse worktrees per (repo, headSha), `ReviewQueueWorker` orchestrates the splitter → checkout → assembler → provider → aggregator pipeline, and `PRDetailView` shows the verdict + summary + cost + tool count alongside the unified diff with AI annotations rendered inline (severity-colored bars, click-to-expand bodies). Approve/Comment/Request-changes buttons post back via `gh pr review`.
 
 `RepoConfig` (renamed from `MonorepoConfig`) is now the unified per-repo settings struct: exclusion, splitter shape (`.perSubfolder` / `.single`), `collapseAboveSubreviewCount` threshold, custom system prompt with `replaceBaseSystemPrompt` toggle, tool-mode override, per-subreview budget caps, and an `AutoApproveConfig` (enabled / minConfidence / requireZeroBlockingAnnotations / maxAdditions). `RepoConfigStore` persists user overrides to `repo-configs.json`; the Settings → Repositories tab is a sidebar+detail editor with built-in suggestions and an "Add from inbox" picker. Auto-approve fires through a *batched* 30-second undo banner that only appears once *every* enqueued review has settled — explicit design choice to collapse N PRs' worth of context switches into one.
 
-What's left vs the original plan:
-- **Phase 5** — pure-prompt mode polish (already mostly there since `.none` mode works).
-- **Phase 7** — polish (history, cost dashboard, etc.).
-- Notification action buttons (small follow-up to Phase 1e).
-- SwiftData migration (still using JSON for snapshot + repo configs).
-- Live SIGTERM budget enforcement (currently post-hoc only).
-- Sparse-checkout per the splitter's identified subpaths (`RepoCheckoutManager` checks out the full SHA today).
-- Bare-clone LRU eviction (manual Prune button shipped; automatic 5 GB cap not yet wired).
+### What's shipped beyond the original plan
+
+- **Per-repo settings** (`RepoConfig` ← `MonorepoConfig`): exclusion, splitMode (`.perSubfolder` / `.single`), `collapseAboveSubreviewCount` (sprawling-PR fallback), `customSystemPrompt` + `replaceBaseSystemPrompt`, draft filter (`reviewDrafts`, default off), per-subreview tool/cost caps, `AutoApproveConfig`. Persisted as JSON; sidebar+detail editor under Settings → Repositories with an "Add from inbox" picker.
+- **Review persistence** (`ReviewCache` → `reviews.json`): AI verdicts survive relaunch, keyed by `(prNodeId, headSha)`. Stale detection re-queues automatically when the PR's head moves; `PRDetailView` shows an orange "review is for SHA …" banner while the new triage runs. Crashed-mid-run states downgrade to `.failed("Interrupted")` with a Re-run hint.
+- **Activity trace** (`ReviewTraceParser` + `ReviewTraceView`): re-derives the AI's full timeline from `rawJson` — assistant text, tool calls (with one-line summaries + expandable JSON inputs), tool result previews, rate-limit pings, final verdict. Disclosure under the AI section. Helps build user confidence + debug prompts.
+- **Annotation titles + summary list** (`AnnotationsSummaryView`): each annotation now carries a short glanceable title; sorted-by-severity list appears directly under the verdict. Click the location label to jump the inline diff to that line and pop the bubble open (`focusedDiffKey` + `ScrollViewReader`).
+- **Diff persistence** (`DiffStore`, in-memory): cached parsed `[Hunk]` per `(prNodeId, headSha)` so detail re-opens are instant. Disk persistence is the next obvious extension.
+- **Subscription detection**: `ClaudeStreamParser` reads `apiKeySource` from claude's init event; cost label grays out on subscription auth (the `total_cost_usd` is API-equivalent / informational, not actually billed).
+- **CI status panel** (`CIStatusView`): failed checks pinned with red shield header, pending+passed under disclosure, click-through to GitHub when `detailsUrl` / `targetUrl` available.
+- **Split merge button**: replaces the hover-only `…` menu when a PR is `isReadyToMerge`. Primary action is the per-repo last-used method (UserDefaults), chevron exposes alternatives.
+- **Single-instance enforcement**: bundle-ID + PID check in `PRBarApp.init`; XCTest hosts exempted.
+- **Right-click menu** (Settings + Quit): replaced `MenuBarExtra(.window)` with an `NSStatusItem` driven by `AppDelegate`. Left-click toggles the SwiftUI popover (still SwiftUI via `NSHostingController`); right-click opens an `NSMenu`.
+- **Worktree sweep**: `RepoCheckoutManager.sweepStaleWorktrees()` runs at launch and removes worktree dirs > 1 h old (catches leaks from crashed previous runs). Diagnostics shows total bare-clone bytes + manual Prune button.
+- **Custom app icon + status-bar icon**: rasterized from SVG into Asset Catalog (`AppIcon.appiconset`, `MenuBarIcon.imageset` template-rendered, `PopoverIcon.imageset`).
+
+### Still missing vs the original plan
+
+- **Phase 5** — pure-prompt mode polish: in `.none` mode the assembler still doesn't inline `<subpath>/CLAUDE.md` (capped at 8 KB) the way the spec called for.
+- **Phase 7** — `History` tab (action log) and cost dashboard (per day/week broken out by repo / tool-mode) are still placeholders.
+- **Notification action buttons** — categories are wired; the routing delegate that turns "Merge all" / "Open" taps into actions isn't implemented.
+- **SwiftData migration** — still using JSON for inbox snapshot, repo configs, and reviews. Acceptable for personal use; SwiftData lands when we want the History tab and cost dashboard.
+- **Live SIGTERM budget enforcement** — post-hoc only today (cost cap throws after the fact). Live kill-on-overrun needs streaming reads instead of `ProcessRunner`'s temp-file redirection.
+- **Sparse-checkout** — `RepoCheckoutManager` checks out the full SHA today. Sparse-by-subpath is small but ties into the per-PR exclude list.
+- **Bare-clone LRU eviction** — manual Prune button shipped; automatic 5 GB cap not yet wired.
+- **Branch-protection cache** — no `BranchProtectionCache.swift` yet; the inbox query also drops `CheckRun.isRequired` because of a `gh` quirk, so "required" filtering is missing.
+- **Failed-job log fetch** — `gh run view --log-failed` plumbing exists in spec but not implemented; the AI's "## CI failures" prompt section is currently empty.
+- **Bigger PR detail window** — separate `Window` scene with the existing `PRDetailView` at full size for big PRs (popover stays for triage).
+- **Delta-diff prompt on retriage** — when SHA changes we re-review from scratch instead of feeding "## Previous review" + the commits-since-last-review delta diff. Cheap to add via `gh api compare/{old}...{new}`.
+- **Dynamic menu-bar icon by state** — icon stays static; spec called for tinted accent + state changes when actionable items appear.
+- **Auto-approve notification action buttons** — banner only shows when popover is open; out-of-popover signaling not wired.
 
 Notable divergences from the original spec, tracked here so they don't get lost:
 
