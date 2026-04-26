@@ -83,56 +83,47 @@ struct PRRowView: View {
             ProgressView()
                 .controlSize(.small)
                 .help("Refreshing…")
-        } else if pr.isReadyToMerge {
-            mergeSplitButton
-        } else if isHovering {
-            Menu {
-                Button {
-                    NSWorkspace.shared.open(pr.url)
-                } label: {
-                    Label("Open in browser", systemImage: "safari")
-                }
-                Button {
-                    onRefresh()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
+        } else {
+            HStack(spacing: 4) {
                 if pr.isReadyToMerge {
-                    Divider()
-                    if pr.allowedMergeMethods.contains(.squash) {
-                        Button {
-                            pendingMergeMethod = .squash
-                            showMergeConfirm = true
-                        } label: {
-                            Label("Squash and merge", systemImage: "arrow.triangle.merge")
-                        }
-                    }
-                    if pr.allowedMergeMethods.contains(.merge) {
-                        Button {
-                            pendingMergeMethod = .merge
-                            showMergeConfirm = true
-                        } label: {
-                            Label("Create merge commit", systemImage: "arrow.triangle.merge")
-                        }
-                    }
-                    if pr.allowedMergeMethods.contains(.rebase) {
-                        Button {
-                            pendingMergeMethod = .rebase
-                            showMergeConfirm = true
-                        } label: {
-                            Label("Rebase and merge", systemImage: "arrow.triangle.merge")
-                        }
-                    }
+                    mergeSplitButton
                 }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .font(.caption)
+                // Always make the secondary actions reachable. When ready
+                // to merge, the … sits next to the prominent merge button
+                // so the user can still hit "Open in browser" / "Refresh"
+                // without losing it. Hover-only for non-ready rows so it
+                // doesn't clutter the inbox.
+                if isHovering || pr.isReadyToMerge {
+                    secondaryActionsMenu
+                }
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Actions")
         }
+    }
+
+    /// Hover-only "…" menu — Open in browser + Refresh. Merge actions
+    /// were promoted to the split button on ready-to-merge rows; on
+    /// non-ready rows merge isn't an option anyway (GitHub would refuse).
+    @ViewBuilder
+    private var secondaryActionsMenu: some View {
+        Menu {
+            Button {
+                NSWorkspace.shared.open(pr.url)
+            } label: {
+                Label("Open in browser", systemImage: "safari")
+            }
+            Button {
+                onRefresh()
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Actions")
     }
 
     /// SwiftUI Menu in `primaryAction:` mode renders as a split button:
@@ -157,12 +148,17 @@ struct PRRowView: View {
         } label: {
             Label(primary.shortDisplayName, systemImage: "arrow.triangle.merge")
                 .labelStyle(.titleAndIcon)
-                .font(.caption)
+                .font(.callout.weight(.semibold))
         } primaryAction: {
             pendingMergeMethod = primary
             showMergeConfirm = true
         }
-        .menuStyle(.borderlessButton)
+        // .borderedProminent + green tint reads as "primary action" not
+        // "subtle hint". Tinted green to mirror GitHub's own merge button
+        // and to stand out against the row's monochrome metadata.
+        .menuStyle(.button)
+        .buttonStyle(.borderedProminent)
+        .tint(.green)
         .controlSize(.small)
         .fixedSize()
         .help("\(primary.displayName) #\(pr.numberString) — click chevron for alternatives")
