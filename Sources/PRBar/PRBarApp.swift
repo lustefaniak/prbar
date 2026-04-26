@@ -36,13 +36,16 @@ struct PRBarApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("PRBar", systemImage: "text.bubble") {
+        MenuBarExtra {
             PopoverView()
                 .environment(poller)
                 .environment(notifier)
                 .environment(queue)
                 .environment(diffStore)
                 .environment(repoConfigs)
+        } label: {
+            Image("MenuBarIcon")
+                .renderingMode(.template)
         }
         .menuBarExtraStyle(.window)
 

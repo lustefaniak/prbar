@@ -77,8 +77,11 @@ struct PopoverView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: "text.bubble")
-                .font(.title3)
+            Image("MenuBarIcon")
+                .renderingMode(.template)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(height: 18)
                 .foregroundStyle(.tint)
             Text("PRBar")
                 .font(.headline)

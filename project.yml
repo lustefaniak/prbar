@@ -30,6 +30,8 @@ targets:
       - path: Resources/prompts
         buildPhase: resources
         type: folder
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.lustefaniak.prbar
@@ -46,6 +48,7 @@ targets:
         INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
         INFOPLIST_KEY_CFBundleDisplayName: PRBar
         INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright Lukasz Stefaniak"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
   PRBarTests:
     type: bundle.unit-test
