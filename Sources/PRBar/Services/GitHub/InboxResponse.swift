@@ -104,12 +104,15 @@ struct InboxResponse: Decodable, Sendable {
 
     struct CheckContext: Decodable, Sendable {
         let typename: String
+        // Common across both branches (resolved per-branch below).
+        let isRequired: Bool?
+        // CheckRun branch.
         let name: String?
         let conclusion: String?
         let status: String?
-        let workflowName: String?
         let detailsUrl: String?
         let summary: String?
+        // StatusContext branch.
         let context: String?
         let state: String?
         let targetUrl: String?
@@ -117,7 +120,8 @@ struct InboxResponse: Decodable, Sendable {
 
         enum CodingKeys: String, CodingKey {
             case typename = "__typename"
-            case name, conclusion, status, workflowName, detailsUrl, summary
+            case isRequired
+            case name, conclusion, status, detailsUrl, summary
             case context, state, targetUrl, description
         }
     }

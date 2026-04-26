@@ -3,8 +3,9 @@ import Foundation
 struct CheckSummary: Sendable, Hashable, Codable {
     let typename: String        // "CheckRun" | "StatusContext"
     let name: String            // workflow/check name (or context for legacy)
-    let conclusion: String?     // SUCCESS | FAILURE | NEUTRAL | …
-    let status: String?         // QUEUED | IN_PROGRESS | COMPLETED (or state for StatusContext)
+    let conclusion: String?     // SUCCESS | FAILURE | NEUTRAL | … (CheckRun)
+    let status: String?         // QUEUED | IN_PROGRESS | COMPLETED (CheckRun) or state (StatusContext)
+    let isRequired: Bool        // mirrors GitHub's "Required" badge — drives ready-to-merge logic
 }
 
 struct InboxPR: Identifiable, Sendable, Hashable, Codable {
@@ -82,7 +83,8 @@ extension InboxPR {
                 typename: ctx.typename,
                 name: ctx.name ?? ctx.context ?? "(unknown)",
                 conclusion: ctx.conclusion,
-                status: ctx.status ?? ctx.state
+                status: ctx.status ?? ctx.state,
+                isRequired: ctx.isRequired ?? false
             )
         }
     }

@@ -32,8 +32,8 @@ enum GraphQLQueries {
                       contexts(first: 30) {
                         nodes {
                           __typename
-                          ... on CheckRun     { name conclusion status workflowName detailsUrl summary }
-                          ... on StatusContext { context state targetUrl description }
+                          ... on CheckRun     { name conclusion status isRequired detailsUrl summary }
+                          ... on StatusContext { context state isRequired targetUrl description }
                         }
                       }
                     }
