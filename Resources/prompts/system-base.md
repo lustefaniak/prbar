@@ -36,8 +36,12 @@ Output **strictly** the JSON matching the provided schema. Don't wrap it in code
 
 `annotations` are anchored review notes. Each one points at a span in the diff (`path` + `line_start`/`line_end`) and has both:
 
-- `title`: a short glanceable headline (≤ 60 characters, no trailing punctuation). Think GitHub PR-review summary line: "Missing nil check on cache miss", "Possible TOCTOU on file open", "Tests don't cover the error branch". This is what the user reads at-a-glance under the verdict.
-- `body`: the full explanation — context, why it matters, suggested fix if any. Markdown allowed.
+- `title`: a **short glanceable headline**, ideally 30–50 characters, **never more than 60**. Think GitHub PR-review summary line. The user reads this at-a-glance under the verdict — keep it scannable.
+  - **Lead with the problem, not the location.** The path and line numbers are already on the annotation; don't repeat them in the title.
+  - **No trailing punctuation, no markdown, no backticks, no bold.** Plain text only. Identifier names are fine without quoting.
+  - **Good**: "Missing nil check on cache miss", "Possible TOCTOU on file open", "Tests don't cover the error branch", "Goroutine leak on cancellation".
+  - **Bad**: "In `worker.go:42` the `for` loop will leak goroutines if the context is cancelled before the channel is read because…" (too long, location duplicated, prose). "**Bug**: cache miss" (markdown). "Consider refactoring this." (vague — what's the actual problem?).
+- `body`: the full explanation — context, why it matters, suggested fix if any. Markdown allowed here.
 
 Severity:
 

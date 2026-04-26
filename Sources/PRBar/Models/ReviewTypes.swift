@@ -64,18 +64,70 @@ struct DiffAnnotation: Codable, Sendable, Hashable {
     let title: String?
     let body: String
 
+    /// Hard cap for `displayTitle` length, regardless of what the AI
+    /// emits. The schema can't enforce `maxLength` (claude's
+    /// `--json-schema` rejects it — see PLAN.md gotchas) so we trim
+    /// client-side as a safety net. The full title stays in `title` on
+    /// the underlying model; only the rendered string is truncated.
+    static let titleHardCap = 80
+
     /// Convenience: title if present, otherwise the first sentence of
-    /// body trimmed to ~80 chars. Used by the summary list when the AI
-    /// didn't supply a title (older reviews, model regression).
+    /// body trimmed. Strips markdown noise (backticks, leading **bold**,
+    /// trailing punctuation) the prompt explicitly forbids — but
+    /// occasional models still slip in.
     var displayTitle: String {
-        if let t = title, !t.isEmpty { return t }
-        let firstSentence = body
-            .split(whereSeparator: { ".!?\n".contains($0) })
-            .first
-            .map(String.init) ?? body
-        let trimmed = firstSentence.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count <= 80 { return trimmed }
-        return String(trimmed.prefix(80)) + "…"
+        let raw: String
+        if let t = title, !t.isEmpty {
+            raw = t
+        } else {
+            raw = body
+                .split(whereSeparator: { ".!?\n".contains($0) })
+                .first
+                .map(String.init) ?? body
+        }
+        return Self.normalizeTitle(raw)
+    }
+
+    static func normalizeTitle(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip backticks (the prompt forbids them in titles, but
+        // claude/codex sometimes wrap identifiers anyway).
+        s = s.replacingOccurrences(of: "`", with: "")
+        // Drop leading **Bold** markers — and the colon/dash that
+        // commonly follows them, since `**Bug**: cache miss` is
+        // really just "cache miss" with throat-clearing.
+        if s.hasPrefix("**") {
+            s = String(s.dropFirst(2))
+            if let end = s.range(of: "**") {
+                let after = s.index(end.upperBound, offsetBy: 0)
+                s = String(s[..<end.lowerBound]) + String(s[after...])
+            }
+            s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            // If the bolded word was a tag like "Bug" / "Note", a
+            // trailing ":" or "-" usually follows. Strip + the bold
+            // word + that separator.
+            if let colon = s.firstIndex(where: { $0 == ":" || $0 == "-" || $0 == "—" }) {
+                let before = s[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !before.isEmpty && before.allSatisfy({ $0.isLetter || $0 == " " }) && before.count <= 20 {
+                    s = String(s[s.index(after: colon)...])
+                }
+            }
+        }
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Drop trailing terminator punctuation — the prompt asks for
+        // none. Keeps "?" off the end of e.g. "Why catch and rethrow?".
+        while let last = s.last, [".", "!", ",", ";", ":"].contains(last) {
+            s.removeLast()
+        }
+        if s.count <= titleHardCap { return s }
+        // Truncate on a word boundary when one is reachable in the last
+        // 20 chars; otherwise hard-cut.
+        let cut = s.prefix(titleHardCap)
+        if let space = cut.lastIndex(of: " "),
+           cut.distance(from: space, to: cut.endIndex) <= 20 {
+            return String(cut[..<space]) + "…"
+        }
+        return String(cut) + "…"
     }
 
     init(

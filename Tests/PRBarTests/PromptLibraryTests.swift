@@ -62,4 +62,20 @@ final class PromptLibraryTests: XCTestCase {
         let base   = try PromptLibrary.systemBase()
         XCTAssertEqual(prompt, base)
     }
+
+    /// Regression net for the title guidance — the prompt is what
+    /// keeps annotation titles short and scannable. If someone trims
+    /// the constraint by accident, the AI starts emitting prose
+    /// titles and the inbox gets noisy.
+    func testSystemBaseDocumentsTitleConstraints() throws {
+        let base = try PromptLibrary.systemBase()
+        XCTAssertTrue(base.contains("60"),
+            "title cap should be documented")
+        XCTAssertTrue(base.contains("Lead with the problem, not the location"),
+            "must explicitly forbid embedding paths/lines in title")
+        XCTAssertTrue(base.contains("No trailing punctuation"),
+            "must forbid trailing punctuation")
+        XCTAssertTrue(base.contains("no markdown"),
+            "must forbid markdown in title")
+    }
 }

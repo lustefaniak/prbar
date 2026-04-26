@@ -76,6 +76,42 @@ final class ReviewTypesTests: XCTestCase {
         XCTAssertLessThanOrEqual(a.displayTitle.count, 81)
     }
 
+    func testNormalizeTitleStripsBackticksAndTrailingPunctuation() {
+        // The prompt forbids backticks + trailing punctuation in titles
+        // but models occasionally emit them anyway.
+        XCTAssertEqual(
+            DiffAnnotation.normalizeTitle("`worker.go` leaks goroutine on cancel."),
+            "worker.go leaks goroutine on cancel"
+        )
+        XCTAssertEqual(
+            DiffAnnotation.normalizeTitle("Possible TOCTOU on file open!"),
+            "Possible TOCTOU on file open"
+        )
+    }
+
+    func testNormalizeTitleStripsLeadingBoldMarker() {
+        XCTAssertEqual(
+            DiffAnnotation.normalizeTitle("**Bug**: cache miss path missing nil guard"),
+            "cache miss path missing nil guard"
+        )
+    }
+
+    func testNormalizeTitleTruncatesOnWordBoundaryWhenPossible() {
+        let raw = "A very long title that the model produced because it ignored the system prompt about staying short"
+        let out = DiffAnnotation.normalizeTitle(raw)
+        XCTAssertTrue(out.hasSuffix("…"))
+        XCTAssertLessThanOrEqual(out.count, DiffAnnotation.titleHardCap + 1)
+        XCTAssertFalse(out.contains(" …"),
+            "trailing space should be eaten by the word-boundary cut")
+    }
+
+    func testNormalizeTitleLeavesShortInputAlone() {
+        XCTAssertEqual(
+            DiffAnnotation.normalizeTitle("Missing nil check on cache miss"),
+            "Missing nil check on cache miss"
+        )
+    }
+
     func testTitleIsOptionalWhenDecoding() throws {
         // Old reviews cached before titles were added must still decode.
         let json = #"{"path":"x.go","line_start":1,"line_end":1,"severity":"info","body":"a"}"#
