@@ -27,10 +27,22 @@ enum ContextAssembler {
         existingComments: [ExistingReviewComment] = [],
         ciFailures: [CIFailureLog] = [],
         toolMode: ToolMode,
-        workdir: URL
+        workdir: URL,
+        customSystemPrompt: String? = nil,
+        replaceBaseSystemPrompt: Bool = false
     ) throws -> PromptBundle {
         let language = subdiff.dominantLanguage
-        let systemPrompt = try PromptLibrary.systemPrompt(for: language)
+        let basePrompt = try PromptLibrary.systemPrompt(for: language)
+        let systemPrompt: String
+        if let custom = customSystemPrompt, !custom.isEmpty {
+            if replaceBaseSystemPrompt {
+                systemPrompt = custom
+            } else {
+                systemPrompt = basePrompt + "\n\n" + custom
+            }
+        } else {
+            systemPrompt = basePrompt
+        }
         let userPrompt = buildUserPrompt(
             pr: pr,
             subdiff: subdiff,

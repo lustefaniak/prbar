@@ -8,17 +8,20 @@ A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysit
 
 ## Status
 
-**Phases 0, 1, 2, 3, and 4 are shipped end to end.** 140 tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
+**Phases 0, 1, 2, 3, 4, and 6 are shipped end to end.** 152 tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
 
 The AI review pipeline works end to end in both `.none` (pure-prompt, default) and `.minimal` (read-only tools, scoped per subfolder) modes. `RepoCheckoutManager` provisions bare-clone-backed sparse worktrees per (repo, headSha), `ReviewQueueWorker` orchestrates the splitter → checkout → assembler → provider → aggregator pipeline, and `PRDetailView` shows the verdict + summary + cost + tool count alongside the unified diff with AI annotations rendered inline (severity-colored bars, click-to-expand bodies). Approve/Comment/Request-changes buttons post back via `gh pr review`.
 
+`RepoConfig` (renamed from `MonorepoConfig`) is now the unified per-repo settings struct: exclusion, splitter shape (`.perSubfolder` / `.single`), `collapseAboveSubreviewCount` threshold, custom system prompt with `replaceBaseSystemPrompt` toggle, tool-mode override, per-subreview budget caps, and an `AutoApproveConfig` (enabled / minConfidence / requireZeroBlockingAnnotations / maxAdditions). `RepoConfigStore` persists user overrides to `repo-configs.json`; the Settings → Repositories tab is a sidebar+detail editor with built-in suggestions and an "Add from inbox" picker. Auto-approve fires through a *batched* 30-second undo banner that only appears once *every* enqueued review has settled — explicit design choice to collapse N PRs' worth of context switches into one.
+
 What's left vs the original plan:
 - **Phase 5** — pure-prompt mode polish (already mostly there since `.none` mode works).
-- **Phase 6** — auto-approve policy + 30s undo.
 - **Phase 7** — polish (history, cost dashboard, etc.).
 - Notification action buttons (small follow-up to Phase 1e).
-- SwiftData migration (still using JSON snapshot for now).
+- SwiftData migration (still using JSON for snapshot + repo configs).
 - Live SIGTERM budget enforcement (currently post-hoc only).
+- Sparse-checkout per the splitter's identified subpaths (`RepoCheckoutManager` checks out the full SHA today).
+- Bare-clone LRU eviction (manual Prune button shipped; automatic 5 GB cap not yet wired).
 
 Notable divergences from the original spec, tracked here so they don't get lost:
 
@@ -844,16 +847,20 @@ PRBar/
 - Setting toggle: per-`MonorepoConfig.toolModeOverride`, plus a global default in AI Provider settings.
 - **Demo gate**: a `MonorepoConfig` with `toolModeOverride = .none` produces a review with `toolCallCount == 0`, `costUsd ≈ $0.02`, and the `<subpath>/CLAUDE.md` content visible in the assembled prompt's debug dump.
 
-### Phase 6 — Auto-approve policy (½ day)
-- `AutoApprovePolicy.evaluate(_:)` with rule editor in Settings.
-- 30s undo banner in the popover before the `gh` call fires.
-- `auto_approved` notification category.
-- **Demo gate**: a Dependabot PR appears, AI says approve with high confidence, app shows undo banner for 30s, then auto-approves.
+### Phase 6 — Auto-approve policy (½ day) ✅ shipped
+- ✅ `AutoApprovePolicy.evaluate(pr:review:config:)` — pure function, table-tested across 8 cases (disabled, non-approve verdict, low confidence, blocking annotation, info-only annotation, too-big PR, unlimited additions, happy path).
+- ✅ Per-repo `AutoApproveConfig` (enabled, minConfidence, requireZeroBlockingAnnotations, maxAdditions) lives inside `RepoConfig`; editor is a section of the Repositories settings tab.
+- ✅ **Batched** 30-second undo banner in the popover. Critical design: the banner does *not* appear until **every** enqueued review has settled (`isInFlight == false` across the whole worker). Reduces context switches — N approvals → one banner, one timer, one undo button.
+- ✅ Two actions on the banner: "Undo" cancels the whole batch; "Approve now" fires immediately. Otherwise the timer fires `gh pr review --approve` after 30 s with body "Auto-approved by PRBar (NN% confidence)."
+- ◌ `auto_approved` UNUserNotificationCenter category — not yet routed (would land alongside the action-button work).
+- **Demo gate met**: Dependabot-style PR with autoApprove enabled, high confidence, no blocking annotations → AI completes → batch undo banner appears once the inbox is settled → 30 s later the approval posts (or sooner via "Approve now"; never via "Undo").
 
 ### Phase 7 — Polish (rolling)
 - `History` tab with action log + filtering.
 - Cost dashboard (sum of `costUsd` per day/week, broken out by provider/subreview/tool-mode).
-- Bare-clone disk usage view + manual prune.
+- ✅ Bare-clone disk usage view + manual Prune button (in Diagnostics).
+- ◌ Automatic LRU eviction at the 5 GB cap.
+- ◌ Sparse-checkout per the splitter's identified subpaths in `RepoCheckoutManager` — small, but tied to the per-PR exclude list (`.env*` etc.).
 - Provider abstraction proven by stubbing `CodexProvider` (deferred until codex's headless contract is more mature).
 - Diagnostics panel.
 

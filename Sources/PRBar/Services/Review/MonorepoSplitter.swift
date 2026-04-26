@@ -19,14 +19,21 @@ import Foundation
 enum MonorepoSplitter {
     static func split(
         diffText: String,
-        config: MonorepoConfig = .default
+        config: RepoConfig = .default
     ) -> [Subdiff] {
         let hunks = DiffParser.parse(diffText)
         return split(hunks: hunks, config: config)
     }
 
-    static func split(hunks: [Hunk], config: MonorepoConfig) -> [Subdiff] {
+    static func split(hunks: [Hunk], config: RepoConfig) -> [Subdiff] {
         if hunks.isEmpty { return [] }
+        if config.excluded { return [] }
+
+        // .single mode short-circuits the splitter — one repo-root subdiff
+        // covering everything.
+        if config.splitMode == .single {
+            return [Subdiff(subpath: "", hunks: hunks)]
+        }
 
         // Step 1: pre-rank patterns by specificity so the loop below picks
         // the best match in a single pass.
@@ -107,6 +114,15 @@ enum MonorepoSplitter {
         // → return a single root subdiff to avoid silent zero-output.
         if subdiffs.isEmpty && config.unmatchedStrategy == .skipReview {
             return []
+        }
+
+        // Step 7: collapse threshold — if the splitter produced more than
+        // `collapseAboveSubreviewCount` subreviews, fold them into a single
+        // root review. The PR is too sprawling for per-subfolder breakdown
+        // to be useful (cost balloons, summaries get noisy).
+        if let cap = config.collapseAboveSubreviewCount, subdiffs.count > cap {
+            let allHunks = subdiffs.flatMap(\.hunks)
+            return [Subdiff(subpath: "", hunks: allHunks)]
         }
 
         return subdiffs

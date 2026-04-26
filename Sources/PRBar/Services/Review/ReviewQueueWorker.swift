@@ -65,6 +65,14 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var diffFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
 
+    /// Resolves the per-repo config used when reviewing a PR. Pluggable so
+    /// tests can stub it and runtime can swap the live `RepoConfigStore`.
+    /// Default uses the built-in registry only.
+    @ObservationIgnored
+    var configResolver: @Sendable (_ owner: String, _ repo: String) -> RepoConfig = { owner, repo in
+        RepoConfig.match(owner: owner, repo: repo)
+    }
+
     /// On-disk checkout manager. Used in `.minimal` tool mode to give the
     /// AI a real workdir for `Read`/`Grep`. Nil → fall back to empty temp
     /// dirs (which only makes sense in `.none` mode anyway).
@@ -76,6 +84,48 @@ final class ReviewQueueWorker {
 
     @ObservationIgnored
     private var pending: [InboxPR] = []
+
+    // MARK: - Auto-approve batch state
+    //
+    // Approvals stage here when `AutoApprovePolicy` says yes. The undo
+    // banner only appears once *all* enqueued reviews have settled
+    // (no .queued / .running). Design goal: one context switch per cycle,
+    // not one per PR.
+
+    /// PRs the worker would auto-approve, keyed by node ID. Population
+    /// happens at completion time; presentation is gated by `batchReady`.
+    private(set) var pendingAutoApprovals: [String: PendingAutoApprove] = [:]
+
+    /// True when a batch undo banner is currently counting down (visible
+    /// in `PopoverView`). Set by `commitBatch()`, cleared on undo / fire.
+    private(set) var batchUndoActive: Bool = false
+
+    /// Wall-clock deadline at which the batch fires. Nil unless the
+    /// banner is showing.
+    private(set) var batchUndoDeadline: Date? = nil
+
+    /// How long the user has to undo the staged batch. 30 s per PLAN.
+    var undoWindow: TimeInterval = 30
+
+    /// Closure that posts the actual `gh pr review --approve`. Injected
+    /// so tests don't shell out. Default uses the shared `GHClient`.
+    @ObservationIgnored
+    var approvePoster: @Sendable (_ pr: InboxPR, _ body: String) async throws -> Void = { pr, body in
+        let c = try GHClient()
+        try await c.postReview(
+            owner: pr.owner, repo: pr.repo, number: pr.number,
+            kind: .approve, body: body
+        )
+    }
+
+    @ObservationIgnored
+    private var batchTimer: Task<Void, Never>?
+
+    struct PendingAutoApprove: Sendable, Hashable {
+        let pr: InboxPR
+        let review: AggregatedReview
+        let stagedAt: Date
+    }
 
     init(
         diffFetcher: @escaping @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String,
@@ -101,6 +151,10 @@ final class ReviewQueueWorker {
     /// Enqueue a PR for review. Idempotent — already-known PR is a no-op
     /// unless `force = true` (re-run).
     func enqueue(_ pr: InboxPR, force: Bool = false) {
+        // Repo-level exclusion — silent skip, no review state recorded.
+        if configResolver(pr.owner, pr.repo).excluded {
+            return
+        }
         if !force, let existing = reviews[pr.nodeId], !existing.status.isTerminal {
             return
         }
@@ -160,8 +214,12 @@ final class ReviewQueueWorker {
         reviews[pr.nodeId]?.status = .running
 
         do {
+            let config = configResolver(pr.owner, pr.repo)
+            if config.excluded {
+                reviews[pr.nodeId]?.status = .failed("Repo \(pr.owner)/\(pr.repo) is excluded by config.")
+                return
+            }
             let diffText = try await diffFetcher(pr.owner, pr.repo, pr.number)
-            let config = MonorepoConfig.match(owner: pr.owner, repo: pr.repo)
             let effectiveToolMode = config.toolModeOverride ?? toolMode
             let subdiffs = MonorepoSplitter.split(diffText: diffText, config: config)
             guard !subdiffs.isEmpty else {
@@ -195,7 +253,9 @@ final class ReviewQueueWorker {
                     subdiff: subdiff,
                     diffText: diffText,
                     toolMode: effectiveToolMode,
-                    workdir: workdir
+                    workdir: workdir,
+                    customSystemPrompt: config.customSystemPrompt,
+                    replaceBaseSystemPrompt: config.replaceBaseSystemPrompt
                 )
                 let options = ProviderOptions(
                     model: nil,
@@ -216,6 +276,7 @@ final class ReviewQueueWorker {
             }
             reviews[pr.nodeId]?.status = .completed(aggregated)
             reviews[pr.nodeId]?.costUsd = aggregated.costUsd
+            stageAutoApproveIfEligible(pr: pr, review: aggregated, config: config)
         } catch {
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
         }
@@ -235,5 +296,74 @@ final class ReviewQueueWorker {
             .appendingPathComponent("prbar-review-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         return tmp
+    }
+
+    // MARK: - auto-approve batching
+
+    private func stageAutoApproveIfEligible(
+        pr: InboxPR,
+        review: AggregatedReview,
+        config: RepoConfig
+    ) {
+        let decision = AutoApprovePolicy.evaluate(
+            pr: pr, review: review, config: config.autoApprove
+        )
+        guard case .approve = decision else { return }
+        pendingAutoApprovals[pr.nodeId] = PendingAutoApprove(
+            pr: pr, review: review, stagedAt: Date()
+        )
+        scheduleBatchIfSettled()
+    }
+
+    /// Start the undo-window timer iff (a) we have staged approvals and
+    /// (b) no review is still in-flight. The "wait until everything is
+    /// settled" rule deliberately collapses many notifications into one.
+    private func scheduleBatchIfSettled() {
+        guard !batchUndoActive else { return }
+        guard !pendingAutoApprovals.isEmpty else { return }
+        let anyInFlight = reviews.values.contains { $0.status.isInFlight }
+        guard !anyInFlight else { return }
+
+        batchUndoActive = true
+        batchUndoDeadline = Date().addingTimeInterval(undoWindow)
+        let window = undoWindow
+        batchTimer?.cancel()
+        batchTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(window))
+            await MainActor.run { self?.fireBatch() }
+        }
+    }
+
+    /// User-pressed "Undo" — discard the staged batch.
+    func cancelAutoApproveBatch() {
+        batchTimer?.cancel()
+        batchTimer = nil
+        pendingAutoApprovals.removeAll()
+        batchUndoActive = false
+        batchUndoDeadline = nil
+    }
+
+    /// User-pressed "Approve now" — fire immediately instead of waiting.
+    func approveBatchNow() {
+        batchTimer?.cancel()
+        batchTimer = nil
+        fireBatch()
+    }
+
+    private func fireBatch() {
+        let toApprove = Array(pendingAutoApprovals.values)
+        pendingAutoApprovals.removeAll()
+        batchUndoActive = false
+        batchUndoDeadline = nil
+        for entry in toApprove {
+            let body = "Auto-approved by PRBar (\(formatConfidence(entry.review.confidence)) confidence)."
+            Task { [poster = approvePoster] in
+                try? await poster(entry.pr, body)
+            }
+        }
+    }
+
+    private func formatConfidence(_ c: Double) -> String {
+        String(format: "%.0f%%", c * 100)
     }
 }

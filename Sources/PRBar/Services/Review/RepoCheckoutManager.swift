@@ -39,10 +39,48 @@ actor RepoCheckoutManager {
         return appSupport.appendingPathComponent("io.synq.prbar", isDirectory: true)
     }()
 
-    init(storageBase: URL = RepoCheckoutManager.defaultStorage) {
+    /// Worktrees older than this on startup are assumed leaked from a
+    /// crashed previous run and removed (best-effort).
+    let staleWorktreeAge: TimeInterval
+
+    init(
+        storageBase: URL = RepoCheckoutManager.defaultStorage,
+        staleWorktreeAge: TimeInterval = 60 * 60      // 1 hour
+    ) {
         self.storageBase = storageBase
+        self.staleWorktreeAge = staleWorktreeAge
         try? FileManager.default.createDirectory(at: bareReposDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: worktreesDir, withIntermediateDirectories: true)
+    }
+
+    /// Best-effort sweep of stale worktree directories. Call once at app
+    /// launch. Worktrees that we provision are torn down via `release()`
+    /// in normal flow; this catches the after-a-crash leak case.
+    /// Files newer than `staleWorktreeAge` are kept to avoid racing an
+    /// in-flight review from a parallel app instance.
+    func sweepStaleWorktrees() {
+        let now = Date()
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: worktreesDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for url in entries {
+            let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate) ?? now
+            if now.timeIntervalSince(mtime) > staleWorktreeAge {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    /// Delete every bare clone. Used by the Diagnostics "Prune" button
+    /// when the user wants to free disk. Worktrees in flight (if any)
+    /// will fail their next git op — caller's responsibility to ensure
+    /// no review is running.
+    func pruneAllBareClones() {
+        try? FileManager.default.removeItem(at: bareReposDir)
+        try? FileManager.default.createDirectory(at: bareReposDir, withIntermediateDirectories: true)
     }
 
     /// Provision a worktree at `headSha`. The returned `Handle.workdir` is

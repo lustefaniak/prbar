@@ -97,16 +97,10 @@ final class MonorepoSplitterTests: XCTestCase {
         -a
         +b
         """
-        let cfg = MonorepoConfig(
-            repoGlobs: ["*/*"],
-            rootPatterns: ["kernel-*"],
-            unmatchedStrategy: .skipReview,
-            minFilesPerSubreview: 1,
-            toolModeOverride: nil,
-            maxParallelSubreviews: 4,
-            maxToolCallsPerSubreview: 10,
-            maxCostUsdPerSubreview: 0.30
-        )
+        var cfg = RepoConfig.default
+        cfg.rootPatterns = ["kernel-*"]
+        cfg.unmatchedStrategy = .skipReview
+        cfg.maxParallelSubreviews = 4
         let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
         XCTAssertTrue(subs.isEmpty)
     }
@@ -120,18 +114,72 @@ final class MonorepoSplitterTests: XCTestCase {
         -a
         +b
         """
-        let cfg = MonorepoConfig(
-            repoGlobs: ["*/*"],
-            rootPatterns: ["kernel-*"],
-            unmatchedStrategy: .groupAsOther,
-            minFilesPerSubreview: 1,
-            toolModeOverride: nil,
-            maxParallelSubreviews: 4,
-            maxToolCallsPerSubreview: 10,
-            maxCostUsdPerSubreview: 0.30
-        )
+        var cfg = RepoConfig.default
+        cfg.rootPatterns = ["kernel-*"]
+        cfg.unmatchedStrategy = .groupAsOther
+        cfg.maxParallelSubreviews = 4
         let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
         XCTAssertEqual(subs.map(\.subpath), ["<other>"])
+    }
+
+    func testExcludedReturnsNoSubdiffs() {
+        let diff = """
+        diff --git a/foo.go b/foo.go
+        --- a/foo.go
+        +++ b/foo.go
+        @@ -1 +1 @@
+        -a
+        +b
+        """
+        var cfg = RepoConfig.default
+        cfg.excluded = true
+        XCTAssertTrue(MonorepoSplitter.split(diffText: diff, config: cfg).isEmpty)
+    }
+
+    func testSplitModeSingleIgnoresRootPatterns() {
+        // Even with rootPatterns set, .single forces one repo-root subdiff.
+        let diff = """
+        diff --git a/kernel-billing/log.go b/kernel-billing/log.go
+        --- a/kernel-billing/log.go
+        +++ b/kernel-billing/log.go
+        @@ -1 +1 @@
+        -a
+        +b
+        diff --git a/lib/auth/token.go b/lib/auth/token.go
+        --- a/lib/auth/token.go
+        +++ b/lib/auth/token.go
+        @@ -1 +1 @@
+        -a
+        +b
+        """
+        var cfg = RepoConfig.getsynqCloud
+        cfg.splitMode = .single
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        XCTAssertEqual(subs.count, 1)
+        XCTAssertEqual(subs[0].subpath, "")
+    }
+
+    func testCollapseAboveThresholdMergesIntoOneRootReview() {
+        // Three kernel modules, threshold 2 → collapse to a single root.
+        let diff = makeMultiKernelDiff(filesPerKernel: [
+            "kernel-a": 2, "kernel-b": 2, "kernel-c": 2,
+        ])
+        var cfg = RepoConfig.getsynqCloud
+        cfg.collapseAboveSubreviewCount = 2
+        cfg.maxParallelSubreviews = 8
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        XCTAssertEqual(subs.count, 1)
+        XCTAssertEqual(subs[0].subpath, "")
+    }
+
+    func testCollapseBelowThresholdLeavesSplitAlone() {
+        let diff = makeMultiKernelDiff(filesPerKernel: [
+            "kernel-a": 2, "kernel-b": 2,
+        ])
+        var cfg = RepoConfig.getsynqCloud
+        cfg.collapseAboveSubreviewCount = 5
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        XCTAssertGreaterThanOrEqual(subs.count, 2)
     }
 
     func testConfigMatchPicksGetsynqCloud() {

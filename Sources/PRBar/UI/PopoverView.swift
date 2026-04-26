@@ -55,6 +55,10 @@ struct PopoverView: View {
             missingToolsBanner
         }
 
+        if queue.batchUndoActive {
+            AutoApproveBanner()
+        }
+
         tabPicker
 
         Group {
