@@ -9,6 +9,7 @@ struct PRDetailView: View {
 
     @Environment(PRPoller.self) private var poller
     @Environment(ReviewQueueWorker.self) private var queue
+    @Environment(DiffStore.self) private var diffStore
 
     @State private var bodyDraft: String = ""
     @State private var showActionPicker: Bool = false
@@ -38,10 +39,14 @@ struct PRDetailView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     aiSection
                     Divider()
+                    diffSection
+                    Divider()
                     actionsSection
                 }
             }
         }
+        .onAppear { diffStore.ensureLoaded(for: pr) }
+        .onChange(of: pr.headSha) { _, _ in diffStore.ensureLoaded(for: pr) }
     }
 
     // MARK: - sections
@@ -183,11 +188,56 @@ struct PRDetailView: View {
                 .textSelection(.enabled)
                 .lineLimit(20)
             if !agg.annotations.isEmpty {
-                Text("\(agg.annotations.count) annotation\(agg.annotations.count == 1 ? "" : "s") (rendered with diff in Phase 3)")
+                Text("\(agg.annotations.count) annotation\(agg.annotations.count == 1 ? "" : "s") shown inline below.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    @ViewBuilder
+    private var diffSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Diff")
+                    .font(.subheadline.bold())
+                Spacer()
+                Button {
+                    diffStore.invalidate(for: pr)
+                    diffStore.ensureLoaded(for: pr)
+                } label: {
+                    Label("Reload", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Re-fetch diff")
+            }
+
+            switch diffStore.status(for: pr) {
+            case .idle, .loading:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading diff…").font(.caption).foregroundStyle(.secondary)
+                }
+            case .failed(let msg):
+                Text("Diff failed: \(msg)")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+            case .loaded(let hunks):
+                DiffView(
+                    hunks: hunks,
+                    annotations: review?.annotations ?? [],
+                    subpaths: subpathsFromReview()
+                )
+            }
+        }
+    }
+
+    private func subpathsFromReview() -> [String] {
+        guard let outcomes = review?.perSubreview, outcomes.count > 1 else { return [] }
+        return outcomes.map(\.subpath)
     }
 
     @ViewBuilder

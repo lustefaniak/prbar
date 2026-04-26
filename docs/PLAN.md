@@ -8,12 +8,11 @@ A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysit
 
 ## Status
 
-**Phases 0, 1, and 2 are shipped end to end.** 80+ tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
+**Phases 0, 1, 2, and 3 are shipped end to end.** 127 tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
 
-The AI review pipeline works end to end in both `.none` (pure-prompt, default) and `.minimal` (read-only tools, scoped per subfolder) modes. `RepoCheckoutManager` provisions bare-clone-backed sparse worktrees per (repo, headSha), `ReviewQueueWorker` orchestrates the splitter → checkout → assembler → provider → aggregator pipeline, and `PRDetailView` shows the verdict + summary + cost + tool count with Approve/Comment/Request-changes buttons that post back via `gh pr review`.
+The AI review pipeline works end to end in both `.none` (pure-prompt, default) and `.minimal` (read-only tools, scoped per subfolder) modes. `RepoCheckoutManager` provisions bare-clone-backed sparse worktrees per (repo, headSha), `ReviewQueueWorker` orchestrates the splitter → checkout → assembler → provider → aggregator pipeline, and `PRDetailView` shows the verdict + summary + cost + tool count alongside the unified diff with AI annotations rendered inline (severity-colored bars, click-to-expand bodies). Approve/Comment/Request-changes buttons post back via `gh pr review`.
 
 What's left vs the original plan:
-- **Phase 3** — diff view with annotations.
 - **Phase 4** — real `MonorepoSplitter` (currently a single-Subdiff pass-through).
 - **Phase 5** — pure-prompt mode polish (already mostly there since `.none` mode works).
 - **Phase 6** — auto-approve policy + 30s undo.
@@ -821,10 +820,13 @@ PRBar/
 - `PRDetailView` AI section: verdict, summary, action buttons, cost, tool-call count.
 - **Demo gate**: incoming review request shows a Claude verdict + summary within ~120s, with "used Read 2x, Grep 1x, $0.07" visible; clicking Approve posts the review.
 
-### Phase 3 — Diff with annotations (1 day)
-- `DiffView` rendering hunks with `AttributedString`, color-coded prefixes.
-- `AnnotationOverlay` correlating `DiffAnnotation` ranges to rendered lines, severity bars + click-to-expand bodies.
-- **Demo gate**: AI annotations show inline in the diff at the right line ranges.
+### Phase 3 — Diff with annotations (1 day) ✅ shipped
+- ✅ `DiffParser` already in place; `DiffView` renders hunks with SF-Mono colored prefixes (added/removed/context), file-group headers with collapsible chevrons + `+N/-N` counts, hunk header strip in purple.
+- ✅ `DiffAnnotationCorrelator` (pure function, table-tested) maps `DiffAnnotation` (path + new-side line range) onto each hunk's line indices; `.removed` lines are never annotated.
+- ✅ Severity-colored leading bar per line (info/suggestion/warning/blocker), click expands an inline annotation bubble with the body text.
+- ✅ `DiffStore` (@MainActor @Observable) caches parsed `[Hunk]` per (prNodeId, headSha) — force-push invalidates automatically. `PRDetailView.onAppear` triggers lazy fetch via the shared `gh pr diff` fetcher.
+- ✅ Subpath filter chips render when `AggregatedReview.perSubreview.count > 1` (no-op for single-subdiff PRs today, ready for Phase 4 multi-root).
+- **Demo gate met**: AI annotations show inline in the diff at the right line ranges; the multi-subreview filter chips are wired but currently latent (single subdiff).
 
 ### Phase 4 — Monorepo splitting + per-subfolder reviews (1.5 days)
 - `MonorepoConfig` model + bundled default for `getsynq/cloud`.
