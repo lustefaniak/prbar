@@ -10,11 +10,13 @@ fi
 
 ./bin/regen
 
+ARCH="$(uname -m)"
+
+# Tests use default DerivedData (separate from bin/build's build/Debug)
+# so the test bundle injection doesn't leave stale frameworks behind.
 xcodebuild \
   -project PRBar.xcodeproj \
   -scheme PRBar \
   -configuration Debug \
-  -destination 'platform=macOS' \
-  -quiet \
-  CONFIGURATION_BUILD_DIR="$(pwd)/build/Debug" \
+  -destination "platform=macOS,arch=${ARCH}" \
   test
