@@ -8,12 +8,19 @@ A menu-bar Swift app that closes the loop on two daily pain points: *(1) babysit
 
 ## Status
 
-**Phases 0, 1, and most of Phase 2 are shipped.** 70+ tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
+**Phases 0, 1, and 2 are shipped end to end.** 80+ tests passing including real-API integration tests for both `gh` and `claude` (the latter gated by a `/tmp/prbar-run-claude-tests` sentinel since it costs real money — `bin/test` skips it by default).
 
-Pure-prompt AI review path is end-to-end working: a review-requested PR auto-enqueues, `claude` returns a verdict + summary within seconds, the user sees it in the detail pane, and Approve/Comment/Request-changes posts back to GitHub. Verified end-to-end on 2026-04-26 against a trivial fixture diff.
+The AI review pipeline works end to end in both `.none` (pure-prompt, default) and `.minimal` (read-only tools, scoped per subfolder) modes. `RepoCheckoutManager` provisions bare-clone-backed sparse worktrees per (repo, headSha), `ReviewQueueWorker` orchestrates the splitter → checkout → assembler → provider → aggregator pipeline, and `PRDetailView` shows the verdict + summary + cost + tool count with Approve/Comment/Request-changes buttons that post back via `gh pr review`.
 
-What's left in Phase 2:
-- **Phase 2g: `RepoCheckoutManager`** — bare clones + transient sparse worktrees so `.minimal` tool mode has a real workdir. Currently `.none` (pure-prompt) is the default, so the AI can't actually `Read`/`Grep` files — that's the main gap.
+What's left vs the original plan:
+- **Phase 3** — diff view with annotations.
+- **Phase 4** — real `MonorepoSplitter` (currently a single-Subdiff pass-through).
+- **Phase 5** — pure-prompt mode polish (already mostly there since `.none` mode works).
+- **Phase 6** — auto-approve policy + 30s undo.
+- **Phase 7** — polish (history, cost dashboard, etc.).
+- Notification action buttons (small follow-up to Phase 1e).
+- SwiftData migration (still using JSON snapshot for now).
+- Live SIGTERM budget enforcement (currently post-hoc only).
 
 Notable divergences from the original spec, tracked here so they don't get lost:
 
