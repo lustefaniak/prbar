@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let failureLogs: FailureLogStore
     let repoConfigs: RepoConfigStore
     let readiness: ReadinessCoordinator
+    let actionLog: ActionLogStore
 
     // MARK: - Menu-bar state
 
@@ -58,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         q.failureLogStore = fls
         let rc = RepoConfigStore()
         let coord = ReadinessCoordinator(notifier: n)
+        let log = ActionLogStore.live()
         q.configResolver = rc.makeResolver()
         // Resolve the persisted default provider. Stored value can be
         // "auto" (probe-and-pick at launch) or a concrete ProviderID
@@ -106,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.failureLogs = fls
         self.repoConfigs = rc
         self.readiness = coord
+        self.actionLog = log
         super.init()
         Task { await n.requestAuthorization() }
         if let mgr = q.checkoutManager {
@@ -219,6 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(failureLogs)
             .environment(repoConfigs)
             .environment(readiness)
+            .environment(actionLog)
         popover.contentViewController = NSHostingController(rootView: root)
     }
 

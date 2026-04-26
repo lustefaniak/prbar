@@ -15,7 +15,6 @@ bin/regen   # regenerate PRBar.xcodeproj from project.yml
 bin/build   # bin/regen + xcodebuild build → build/Debug/PRBar.app
 bin/test    # bin/regen + xcodebuild test (uses default DerivedData, separate from build/)
 bin/run     # bin/build + open .app (kills prior instance first)
-bin/screenshots  # bin/regen + run only ScreenshotTests; rewrites docs/screenshots/*@2x.png
 ```
 
 Whenever you change `project.yml` or add a new file under `Sources/` or `Tests/`, run `bin/regen` (or `bin/build`, which regenerates first) so XcodeGen picks it up.
@@ -27,7 +26,7 @@ xcodebuild -project PRBar.xcodeproj -scheme PRBar -configuration Debug \
   -only-testing:PRBarTests/PRPollerTests test
 ```
 
-This is the fast feedback loop for `ScreenshotTests` and `ClaudeProviderIntegrationTests` — both write side effects (PNGs, real-API calls) you don't want firing on every full-suite run.
+This is the fast feedback loop for `ClaudeProviderIntegrationTests` — real-API calls you don't want firing on every full-suite run.
 
 ## Architecture (high-level wiring)
 
@@ -67,7 +66,7 @@ Three flavors, all run by `bin/test`:
 
 When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: `EventDeriverTests`, `PRPollerTests`, `SnapshotCacheTests`, `ContextAssemblerTests`, `ReviewQueueWorkerTests`, `ClaudeProviderIntegrationTests`. The compiler tells you which.
 
-**Adding a new env-injected `@Observable` service** (e.g. a new `*Store`) means updating *all* of: the service file, `AppDelegate` (property + init + popover env), `PRBarApp.body` (Settings env), plus `ScreenshotFixtures` struct, `environments(_:)`, and `makeFixtures()` in `ScreenshotTests.swift`. Miss the ScreenshotTests trio and `bin/build` passes but the screenshot suite crashes — the noisy LSP false positives make the gap hard to spot from squigglies alone.
+**Adding a new env-injected `@Observable` service** (e.g. a new `*Store`) means updating: the service file, `AppDelegate` (property + init + popover env), and `PRBarApp.body` (Settings env). LSP false positives make the gap hard to spot from squigglies alone — trust `bin/build`.
 
 ## Conventions
 

@@ -44,6 +44,7 @@ struct PRBarApp: App {
                 .environment(delegate.failureLogs)
                 .environment(delegate.repoConfigs)
                 .environment(delegate.readiness)
+                .environment(delegate.actionLog)
         }
     }
 }
