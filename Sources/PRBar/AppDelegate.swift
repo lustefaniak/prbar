@@ -62,6 +62,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let raw = storedRaw, let id = ProviderID(rawValue: raw) {
             q.defaultProviderId = id
         }
+        // Daily cost cap — both presence (toggle) and value persist
+        // separately so the cap survives flipping the toggle off/on.
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "dailyCostCapEnabled") != nil {
+            q.dailyCostCapEnabled = defaults.bool(forKey: "dailyCostCapEnabled")
+        }
+        let storedCap = defaults.double(forKey: "dailyCostCapUsd")
+        if storedCap > 0 {
+            q.dailyCostCap = storedCap
+        }
         rc.onChange = { [weak q, weak rc] in
             guard let q, let rc else { return }
             q.configResolver = rc.makeResolver()

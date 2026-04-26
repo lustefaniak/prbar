@@ -81,7 +81,12 @@ final class ReviewQueueWorker {
     /// reviews today (not a real running daily-window — for now we cap
     /// the cumulative since process start, which is good enough for a
     /// menu-bar app that gets restarted often).
+    /// Daily spend ceiling. Honored only when `dailyCostCapEnabled` is
+    /// true — subscription-auth users (Claude MAX, codex via OpenAI
+    /// subscription) typically want it off since the per-token cost
+    /// `claude` reports is informational, not actually billed.
     var dailyCostCap: Double = 5.0
+    var dailyCostCapEnabled: Bool = true
 
     /// Default AI provider. Used when `providerLookup` is nil (mostly in
     /// tests that pass a single stub via `worker.provider = …`).
@@ -289,7 +294,7 @@ final class ReviewQueueWorker {
             ?? configResolver(pr.owner, pr.repo).providerOverride
             ?? defaultProviderId
 
-        if cumulativeSpend() >= dailyCostCap {
+        if dailyCostCapEnabled && cumulativeSpend() >= dailyCostCap {
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
                 providerId: resolvedProviderId,

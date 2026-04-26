@@ -8,6 +8,8 @@ struct GeneralSettings: View {
     @AppStorage("badgeShowReviewRequested") private var badgeReviewRequested = true
     @AppStorage("badgeShowCIFailed")        private var badgeCIFailed        = true
     @AppStorage("defaultProviderId")        private var defaultProviderRaw   = ProviderID.claude.rawValue
+    @AppStorage("dailyCostCapEnabled")      private var costCapEnabled       = true
+    @AppStorage("dailyCostCapUsd")          private var costCapUsd: Double   = 5.0
 
     /// Probed at view-load. Drives "(not installed)" annotations in the
     /// provider picker so users don't pick a backend they don't have.
@@ -60,6 +62,31 @@ struct GeneralSettings: View {
             .task { await probeProviderAvailability() }
 
             Section {
+                Toggle("Enforce daily cost cap", isOn: capEnabledBinding)
+                    .help("Off if you're on a subscription (Claude MAX / OpenAI Pro) — the per-token cost claude reports is informational, not billed.")
+                HStack {
+                    Text("Daily cap")
+                    Spacer()
+                    TextField(
+                        "5.00",
+                        value: capUsdBinding,
+                        format: .currency(code: "USD")
+                    )
+                    .frame(width: 100)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!costCapEnabled)
+                }
+                .opacity(costCapEnabled ? 1 : 0.5)
+            } header: {
+                Text("Budgets")
+            } footer: {
+                Text("Stops new reviews from queuing once the cumulative session spend hits the cap. Per-subreview cost cap (live SIGTERM mid-stream) is set per-repo in Settings → Repositories.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 Toggle("Ready-to-merge PRs",   isOn: $badgeReadyToMerge)
                 Toggle("Pending review requests", isOn: $badgeReviewRequested)
                 Toggle("Authored PRs with red CI", isOn: $badgeCIFailed)
@@ -106,6 +133,26 @@ struct GeneralSettings: View {
         await MainActor.run {
             self.providerAvailability = probed
         }
+    }
+
+    private var capEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { costCapEnabled },
+            set: { newValue in
+                costCapEnabled = newValue
+                queue.dailyCostCapEnabled = newValue
+            }
+        )
+    }
+
+    private var capUsdBinding: Binding<Double> {
+        Binding(
+            get: { costCapUsd },
+            set: { newValue in
+                costCapUsd = max(0, newValue)
+                queue.dailyCostCap = costCapUsd
+            }
+        )
     }
 
     /// Bridge the AppStorage string (`"auto"`, `"claude"`, `"codex"`) ↔
