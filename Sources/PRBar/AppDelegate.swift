@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let notifier: Notifier
     let queue: ReviewQueueWorker
     let diffStore: DiffStore
+    let failureLogs: FailureLogStore
     let repoConfigs: RepoConfigStore
     let readiness: ReadinessCoordinator
 
@@ -50,6 +51,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let p = PRPoller.live()
         let q = ReviewQueueWorker.live()
         let d = DiffStore.sharing(q)
+        // Reuse the worker's FailureLogStore so the UI's expandable
+        // failure-log section reads from the same cache the prompt
+        // pipeline already warmed.
+        let fls = q.failureLogStore ?? FailureLogStore.live()
+        q.failureLogStore = fls
         let rc = RepoConfigStore()
         let coord = ReadinessCoordinator(notifier: n)
         q.configResolver = rc.makeResolver()
@@ -97,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.notifier = n
         self.queue = q
         self.diffStore = d
+        self.failureLogs = fls
         self.repoConfigs = rc
         self.readiness = coord
         super.init()
@@ -209,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(notifier)
             .environment(queue)
             .environment(diffStore)
+            .environment(failureLogs)
             .environment(repoConfigs)
             .environment(readiness)
         popover.contentViewController = NSHostingController(rootView: root)

@@ -118,6 +118,14 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var diffFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
 
+    /// Optional shared `FailureLogStore` — when present the worker
+    /// fetches the tail of every failed Actions job and feeds it into
+    /// the prompt's `## CI failures` section, plus warms the store
+    /// cache so PRDetailView's expandable failure log doesn't refetch.
+    /// Tests that don't care about CI logs leave this nil.
+    @ObservationIgnored
+    var failureLogStore: FailureLogStore?
+
     /// Resolves the per-repo config used when reviewing a PR. Pluggable so
     /// tests can stub it and runtime can swap the live `RepoConfigStore`.
     /// Default uses the built-in registry only.
@@ -203,11 +211,13 @@ final class ReviewQueueWorker {
     init(
         diffFetcher: @escaping @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String,
         checkoutManager: RepoCheckoutManager? = nil,
-        cache: ReviewCache? = nil
+        cache: ReviewCache? = nil,
+        failureLogStore: FailureLogStore? = nil
     ) {
         self.diffFetcher = diffFetcher
         self.checkoutManager = checkoutManager
         self.cache = cache
+        self.failureLogStore = failureLogStore
         if let cache {
             // Restore prior reviews so a relaunch doesn't wipe them.
             // In-flight states from a crashed previous run are downgraded
@@ -233,7 +243,8 @@ final class ReviewQueueWorker {
                 return try await c.fetchDiff(owner: owner, repo: repo, number: number)
             },
             checkoutManager: checkout,
-            cache: ReviewCache()
+            cache: ReviewCache(),
+            failureLogStore: FailureLogStore.live()
         )
     }
 
@@ -402,6 +413,21 @@ final class ReviewQueueWorker {
 
             let prior = reviews[pr.nodeId]?.priorReview
             let prNodeId = pr.nodeId
+
+            // Pull the tail of every failed Actions job so the AI sees
+            // *why* CI failed, not just that it did. Best-effort: any
+            // log we can't fetch (legacy StatusContext, missing job id,
+            // permissions) is silently skipped — the AI still gets the
+            // CI status rollup. The store also caches the tails so
+            // PRDetailView's expandable failure log doesn't refetch.
+            let ciFailures: [CIFailureLog]
+            if let store = failureLogStore,
+               pr.allCheckSummaries.contains(where: { $0.bucket == .failed }) {
+                ciFailures = await store.fetchAllFailures(for: pr)
+            } else {
+                ciFailures = []
+            }
+
             // Provider resolution: per-run override > repo override > app default.
             let chosenProviderId = item.providerOverride
                 ?? config.providerOverride
@@ -419,6 +445,7 @@ final class ReviewQueueWorker {
                     pr: pr,
                     subdiff: subdiff,
                     diffText: diffText,
+                    ciFailures: ciFailures,
                     toolMode: effectiveToolMode,
                     workdir: workdir,
                     customSystemPrompt: config.customSystemPrompt,

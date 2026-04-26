@@ -184,6 +184,7 @@ struct ScreenshotFixtures {
     let notifier: Notifier
     let queue: ReviewQueueWorker
     let diffStore: DiffStore
+    let failureLogs: FailureLogStore
     let repoConfigs: RepoConfigStore
     let readiness: ReadinessCoordinator
 }
@@ -196,6 +197,7 @@ extension View {
             .environment(f.notifier)
             .environment(f.queue)
             .environment(f.diffStore)
+            .environment(f.failureLogs)
             .environment(f.repoConfigs)
             .environment(f.readiness)
     }
@@ -451,6 +453,7 @@ private func makeFixtures(scenario: Scenario) -> ScreenshotFixtures {
         notifier: notifier,
         queue: queue,
         diffStore: diffStore,
+        failureLogs: FailureLogStore(logFetcher: { _, _, _ in "" }),
         repoConfigs: repoConfigs,
         readiness: readiness
     )

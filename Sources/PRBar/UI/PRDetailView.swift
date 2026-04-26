@@ -102,7 +102,7 @@ struct PRDetailView: View {
                                 Divider()
                             }
                             if !pr.allCheckSummaries.isEmpty {
-                                CIStatusView(checks: pr.allCheckSummaries)
+                                CIStatusView(checks: pr.allCheckSummaries, pr: pr)
                                 Divider()
                             }
                             aiSection
@@ -151,7 +151,7 @@ struct PRDetailView: View {
                 Divider()
             }
             if !pr.allCheckSummaries.isEmpty {
-                CIStatusView(checks: pr.allCheckSummaries)
+                CIStatusView(checks: pr.allCheckSummaries, pr: pr)
                 Divider()
             }
             aiSection

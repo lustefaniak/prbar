@@ -41,6 +41,7 @@ struct PRBarApp: App {
                 .environment(delegate.notifier)
                 .environment(delegate.queue)
                 .environment(delegate.diffStore)
+                .environment(delegate.failureLogs)
                 .environment(delegate.repoConfigs)
                 .environment(delegate.readiness)
         }

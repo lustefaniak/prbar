@@ -8,8 +8,19 @@ import AppKit
 /// browser when available.
 struct CIStatusView: View {
     let checks: [CheckSummary]
+    /// Optional PR context — when present, failed CheckRun rows grow
+    /// an inline disclosure that streams the tail of the failed job's
+    /// log via `FailureLogStore`. Caller views without a `PR` (e.g.
+    /// previews / list rows) pass nil and get the bare status panel.
+    var pr: InboxPR? = nil
+
+    @Environment(FailureLogStore.self) private var failureLogs
 
     @State private var showAll = false
+    /// Per-check expansion of the inline failure log. Keyed by
+    /// CheckSummary (Hashable) so toggling one check doesn't collapse
+    /// the others.
+    @State private var expandedFailureLogs: Set<CheckSummary> = []
 
     var body: some View {
         if checks.isEmpty {
@@ -40,7 +51,9 @@ struct CIStatusView: View {
             // disclosure below.
             VStack(alignment: .leading, spacing: 6) {
                 failedHeader
-                ForEach(failed, id: \.self) { check in row(check) }
+                ForEach(failed, id: \.self) { check in
+                    failedCheckEntry(check)
+                }
 
                 if !nonFailed.isEmpty {
                     DisclosureGroup(isExpanded: $showAll) {
@@ -136,6 +149,100 @@ struct CIStatusView: View {
         if passed > 0  { bits.append("\(passed) passed") }
         if bits.isEmpty { bits.append("\(nonFailed.count) more") }
         return bits.joined(separator: " · ")
+    }
+
+    /// Failed-check row + (when we have a PR + parseable jobId) an
+    /// inline disclosure that streams the tail of the failed log.
+    /// Lazy: clicking the chevron triggers the first fetch via
+    /// `FailureLogStore`. `ReviewQueueWorker` already warms the same
+    /// store cache during AI triage, so most expansions hit cached data.
+    @ViewBuilder
+    private func failedCheckEntry(_ check: CheckSummary) -> some View {
+        let canExpand = pr != nil && CIFailureLogTail.parseJobId(from: check.url) != nil
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                if canExpand {
+                    Button {
+                        toggleFailureLog(check)
+                    } label: {
+                        Image(systemName: expandedFailureLogs.contains(check)
+                              ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 10)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show failed-job log")
+                } else {
+                    Spacer().frame(width: 10)
+                }
+                row(check)
+            }
+            if canExpand, expandedFailureLogs.contains(check), let pr {
+                failureLogPanel(pr: pr, check: check)
+                    .padding(.leading, 14)
+            }
+        }
+    }
+
+    private func toggleFailureLog(_ check: CheckSummary) {
+        if expandedFailureLogs.contains(check) {
+            expandedFailureLogs.remove(check)
+        } else {
+            expandedFailureLogs.insert(check)
+            if let pr {
+                failureLogs.ensureLoaded(for: pr, check: check)
+            }
+        }
+    }
+
+    /// One failed-job log panel — small monospaced text, scrollable
+    /// vertically, capped in height so it doesn't push the diff out of
+    /// the popover. Shows loading / failed / loaded states from the
+    /// shared `FailureLogStore`.
+    @ViewBuilder
+    private func failureLogPanel(pr: InboxPR, check: CheckSummary) -> some View {
+        let status = failureLogs.status(for: pr, check: check)
+        switch status {
+        case .idle, .loading:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Fetching log…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(8)
+        case .failed(let msg):
+            HStack(spacing: 6) {
+                Text("Log unavailable: \(msg)")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                Spacer()
+                Button("Retry") {
+                    failureLogs.invalidate(for: pr, check: check)
+                    failureLogs.ensureLoaded(for: pr, check: check)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption2)
+            }
+            .padding(8)
+        case .loaded(let tail):
+            ScrollView(.vertical) {
+                Text(tail)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
+            .frame(maxHeight: 220)
+            .background(Color(nsColor: .textBackgroundColor),
+                        in: RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(.secondary.opacity(0.2))
+            )
+        }
     }
 
     @ViewBuilder

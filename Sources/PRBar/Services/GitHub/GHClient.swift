@@ -104,6 +104,28 @@ actor GHClient {
         return result.stdoutString ?? ""
     }
 
+    /// Fetch the raw log for a single failed Actions job. Uses the
+    /// REST endpoint `repos/{o}/{r}/actions/jobs/{jobId}/logs` (302 →
+    /// short-lived signed URL → plain text). `gh api` follows the
+    /// redirect and returns the log body on stdout. Caller should tail
+    /// the result; full logs can be megabytes.
+    func fetchJobLog(owner: String, repo: String, jobId: Int64) async throws -> String {
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: [
+                "api",
+                "repos/\(owner)/\(repo)/actions/jobs/\(jobId)/logs",
+            ]
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+        return result.stdoutString ?? ""
+    }
+
     /// Submit a review (approve / comment / request changes) on a PR.
     /// Body can be empty for plain approvals; some workflows want a short
     /// note even on approve (gh accepts an empty body string).
