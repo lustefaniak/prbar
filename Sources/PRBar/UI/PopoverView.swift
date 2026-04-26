@@ -77,7 +77,7 @@ struct PopoverView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image("MenuBarIcon")
+            Image("PopoverIcon")
                 .renderingMode(.template)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
