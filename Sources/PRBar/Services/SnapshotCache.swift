@@ -1,45 +1,66 @@
 import Foundation
+import SwiftData
 
-/// Persists the most recent inbox snapshot to disk so the popover shows
-/// known state immediately on launch instead of "Fetching…" until the
-/// first poll lands.
+/// SwiftData-backed persistence for the most recent inbox snapshot, so
+/// the popover shows known state immediately on launch instead of
+/// "Fetching…" until the first poll lands.
 ///
-/// Phase 1f deliberately uses a JSON file rather than SwiftData. Phase 2+
-/// will add ReviewRun + ActionLog which actually want relational queries —
-/// at that point we'll introduce SwiftData and migrate this single
-/// snapshot into it.
+/// One row per PR (`InboxSnapshotEntry`), keyed by `prNodeId`. The full
+/// `InboxPR` struct is stored as a JSON blob — relational queries
+/// against the inbox aren't a thing the app needs, and the alternative
+/// (modeling every nested struct as a `@Model`) buys nothing while
+/// costing migration risk every time the GraphQL response shape moves.
 actor SnapshotCache {
-    private let fileURL: URL
+    private let container: ModelContainer
 
-    static let defaultDirectory: URL = {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        let dir = appSupport.appendingPathComponent("io.synq.prbar", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }()
+    init(container: ModelContainer) {
+        self.container = container
+    }
 
-    init(directory: URL = SnapshotCache.defaultDirectory) {
-        self.fileURL = directory.appendingPathComponent("inbox-snapshot.json")
+    /// Convenience for production paths.
+    static func live() -> SnapshotCache {
+        SnapshotCache(container: PRBarModelContainer.live())
     }
 
     func load() -> [InboxPR] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        return (try? JSONDecoder().decode([InboxPR].self, from: data)) ?? []
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<InboxSnapshotEntry>()
+        guard let rows = try? context.fetch(descriptor) else { return [] }
+        let decoder = JSONDecoder()
+        return rows.compactMap { try? decoder.decode(InboxPR.self, from: $0.payload) }
     }
 
     func save(_ prs: [InboxPR]) {
-        do {
-            let data = try JSONEncoder().encode(prs)
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            NSLog("SnapshotCache.save failed: %@", String(describing: error))
+        let context = ModelContext(container)
+        let encoder = JSONEncoder()
+        let now = Date()
+
+        let descriptor = FetchDescriptor<InboxSnapshotEntry>()
+        let existing = (try? context.fetch(descriptor)) ?? []
+        let existingByKey = Dictionary(uniqueKeysWithValues: existing.map { ($0.prNodeId, $0) })
+
+        var keepKeys = Set<String>()
+        for pr in prs {
+            guard let payload = try? encoder.encode(pr) else { continue }
+            keepKeys.insert(pr.nodeId)
+            if let row = existingByKey[pr.nodeId] {
+                row.payload = payload
+                row.updatedAt = now
+            } else {
+                context.insert(InboxSnapshotEntry(
+                    prNodeId: pr.nodeId, payload: payload, updatedAt: now
+                ))
+            }
         }
+        for (key, row) in existingByKey where !keepKeys.contains(key) {
+            context.delete(row)
+        }
+        try? context.save()
     }
 
     func clear() {
-        try? FileManager.default.removeItem(at: fileURL)
+        let context = ModelContext(container)
+        try? context.delete(model: InboxSnapshotEntry.self)
+        try? context.save()
     }
 }

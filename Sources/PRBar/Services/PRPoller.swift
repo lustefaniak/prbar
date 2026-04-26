@@ -104,7 +104,7 @@ final class PRPoller {
         // Cache one client across calls — instantiation only does an
         // executable path lookup so it's cheap, but no need to repeat.
         let client: GHClient? = try? GHClient()
-        let snapshotCache = SnapshotCache()
+        let snapshotCache = SnapshotCache.live()
         let poller = PRPoller(
             fetcher: {
                 let c = try client ?? GHClient()

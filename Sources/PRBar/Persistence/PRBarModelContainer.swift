@@ -16,11 +16,21 @@ enum PRBarModelContainer {
         ActionLogEntry.self,
         ReviewStateEntry.self,
         RepoConfigEntry.self,
+        InboxSnapshotEntry.self,
     ])
 
+    /// `~/Library/Application Support/io.synq.prbar/`.
+    static let appSupportDirectory: URL = {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first!
+        let dir = base.appendingPathComponent("io.synq.prbar", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
     static func live() -> ModelContainer {
-        let url = SnapshotCache.defaultDirectory
-            .appendingPathComponent("store.sqlite")
+        let url = appSupportDirectory.appendingPathComponent("store.sqlite")
         do {
             let config = ModelConfiguration(url: url)
             return try ModelContainer(for: schema, configurations: [config])
