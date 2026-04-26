@@ -15,6 +15,7 @@ bin/regen   # regenerate PRBar.xcodeproj from project.yml
 bin/build   # bin/regen + xcodebuild build → build/Debug/PRBar.app
 bin/test    # bin/regen + xcodebuild test (uses default DerivedData, separate from build/)
 bin/run     # bin/build + open .app (kills prior instance first)
+bin/screenshots  # bin/regen + run only ScreenshotTests; rewrites docs/screenshots/*@2x.png
 ```
 
 Whenever you change `project.yml` or add a new file under `Sources/` or `Tests/`, run `bin/regen` (or `bin/build`, which regenerates first) so XcodeGen picks it up.
@@ -25,6 +26,8 @@ xcodebuild -project PRBar.xcodeproj -scheme PRBar -configuration Debug \
   -destination "platform=macOS,arch=$(uname -m)" \
   -only-testing:PRBarTests/PRPollerTests test
 ```
+
+This is the fast feedback loop for `ScreenshotTests` and `ClaudeProviderIntegrationTests` — both write side effects (PNGs, real-API calls) you don't want firing on every full-suite run.
 
 ## Architecture (high-level wiring)
 
@@ -83,12 +86,19 @@ When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: 
 - Foundation Pipe buffer is 64 KB on Darwin. `ProcessRunner` redirects stdout to a temp file for this reason. Don't switch back.
 - `SMAppService.mainApp.register()` (launch-at-login) only works fully when the app is in `/Applications`. From a `bin/run` debug build it logs a warning — ignore during dev.
 - `xcodegen` resource bundling: use explicit subdirs (`path: Resources/schemas` + `path: Resources/prompts`, both with `type: folder`), not `path: Resources` — the latter nests as `Contents/Resources/Resources/...`.
+- **SourceKit/LSP diagnostics in this project are unreliable** — cascading "Cannot find type X" / "Generic parameter could not be inferred" errors on cross-file references are frequent and almost always false. Trust `bin/build` and `bin/test` as authoritative; don't chase the LSP squigglies.
+- **claude vs codex schema constraints are *opposite*.** Claude rejects schemas with `$schema` / `description` / `additionalProperties` / `minimum` / `maximum` / `maxLength`. Codex (OpenAI strict mode) *requires* `additionalProperties: false` on every object. The shared `Resources/schemas/review.json` stays minimal (claude-style); `CodexProvider.addStrictAdditionalProperties(_:)` injects the strict markers on the way out.
+- **`ImageRenderer` can't capture `ScrollView` content, `Menu`, `HSplitView`, or NSControl-backed `Form` widgets** (Toggle / Slider / TextField / TextEditor / Picker render as the yellow placeholder). Production views that need to be screenshottable grow an opt-in `screenshotMode: Bool = false` parameter that swaps `ScrollView`→flat `VStack` and `Menu`→plain `Button`. Pattern lives on `PRDetailView`, `PRRowView`, `PRListView`, `RepoConfigEditor`. Settings panes are intentionally not in `ScreenshotTests` — capture manually via `screencapture -wo` against the running app.
+- **`textSelection(.enabled)` fights `onTapGesture`** — every click drops a caret instead of triggering the gesture, and dragging starts a selection. Resolution pattern: branch on state — `Button` when you need tap behaviour (e.g. collapsed-to-expand), selectable `Text` when not (e.g. expanded copy/paste).
+- **`AttributedString(markdown: , .inlineOnlyPreservingWhitespace)`** parses inline syntax (bold, italic, inline code, links) and keeps newlines. `.full` strips block markers — headings collapse into one paragraph. Neither variant renders block-level structure (heading sizes, fenced code blocks, blockquotes). Use the inline variant for now; reach for `MarkdownUI` if rich rendering becomes necessary (would be the first third-party Swift dep).
+- **`Data.prefix(through:)` returns a SubSequence sharing storage with the source.** If you call `removeSubrange` on the source before reading the SubSequence, you'll read corrupted bytes. Materialize via `Data(buffer.prefix(through: idx))` *before* mutating. Bit `ProcessRunner.runStreaming`'s `LineBox` twice.
+- **`ProcessRunner.runStreaming` termination handler must drain `takeCompleteLines()` *before* `flushTrailing()`.** Otherwise tail chunks delivered after the readability handler is nil'd get emitted as one concatenated "line" with embedded newlines.
 
 ## Don't
 
 - Don't commit `PRBar.xcodeproj/` — it's generated.
 - Don't add Swift files via Xcode "Add Files…" — drop them in `Sources/PRBar/<subdir>/` and run `bin/regen`.
-- Don't push directly to `main` — feature branches only. Squash-merge via PR.
+- This is a single-author personal repo — commits go straight to `main` (no PR gating). The global "feature branches only" rule in `~/.claude/CLAUDE.md` is overridden here. Force-with-lease still applies if rewriting history.
 - Don't call `claude` with `--permission-mode default` or `bypassPermissions` from app code. See PLAN.md §"AI Review Pipeline" for the locked invocation shape.
 - Don't add `Bash` / `Edit` / `Write` / `Task` / `Agent` to the AI's `--allowedTools` list. Those are deliberately disallowed; the AI is a judge, not a fixer.
 - Don't drop `--quiet` from `bin/build` (test output is silenced there on purpose) or *add* it to `bin/test` (we want test pass/fail visible).
