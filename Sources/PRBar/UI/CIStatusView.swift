@@ -14,9 +14,32 @@ struct CIStatusView: View {
     var body: some View {
         if checks.isEmpty {
             EmptyView()
+        } else if failed.isEmpty {
+            // All-green / all-pending case: no separate header — the
+            // DisclosureGroup *is* the header. Tapping the whole row
+            // expands. One concise summary, e.g. "CI: all green · 6
+            // passed" instead of two stacked lines.
+            DisclosureGroup(isExpanded: $showAll) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(nonFailed, id: \.self) { check in row(check) }
+                }
+                .padding(.top, 4)
+            } label: {
+                cleanHeaderLabel
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showAll.toggle()
+                        }
+                    }
+            }
         } else {
+            // Failures present: pin them at top under a red shield
+            // header, collapse pending+passed under a separate
+            // disclosure below.
             VStack(alignment: .leading, spacing: 6) {
-                header
+                failedHeader
                 ForEach(failed, id: \.self) { check in row(check) }
 
                 if !nonFailed.isEmpty {
@@ -28,10 +51,6 @@ struct CIStatusView: View {
                     } label: {
                         let pending = checks.filter { $0.bucket == .pending }.count
                         let passed = checks.filter { $0.bucket == .passed }.count
-                        // Full-width tappable area — the default
-                        // DisclosureGroup label only treats the chevron
-                        // as a hit target. Whole-row toggling matches
-                        // the rest of the popover's interaction model.
                         Text(disclosureLabel(pending: pending, passed: passed))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -48,24 +67,44 @@ struct CIStatusView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 6) {
-            Image(systemName: failed.isEmpty ? "checkmark.shield" : "exclamationmark.shield.fill")
-                .foregroundStyle(failed.isEmpty ? .green : .red)
+    /// Combined header used when there are no failures: green shield +
+    /// status verb + count summary on one line.
+    private var cleanHeaderLabel: some View {
+        let pending = checks.filter { $0.bucket == .pending }.count
+        let passed = checks.filter { $0.bucket == .passed }.count
+        return HStack(spacing: 6) {
+            Image(systemName: pending > 0 ? "clock" : "checkmark.shield")
+                .foregroundStyle(pending > 0 ? .yellow : .green)
                 .font(.caption)
-            Text(headerLabel)
+            Text(combinedCleanLabel(pending: pending, passed: passed))
+                .font(.caption.bold())
+        }
+    }
+
+    private var failedHeader: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .foregroundStyle(.red)
+                .font(.caption)
+            Text("CI: \(failed.count) failed")
                 .font(.caption.bold())
             Spacer()
         }
     }
 
-    private var headerLabel: String {
-        if !failed.isEmpty {
-            return "CI: \(failed.count) failed"
+    private func combinedCleanLabel(pending: Int, passed: Int) -> String {
+        // Mirrors the prior wording but on a single line:
+        // "CI: all green · 6 passed", "CI: 2 pending · 4 passed", etc.
+        let head: String
+        if pending > 0 {
+            head = "CI: \(pending) pending"
+        } else {
+            head = "CI: all green"
         }
-        let pending = checks.filter { $0.bucket == .pending }.count
-        if pending > 0 { return "CI: \(pending) pending" }
-        return "CI: all green"
+        if passed > 0 {
+            return "\(head) · \(passed) passed"
+        }
+        return head
     }
 
     private var failed: [CheckSummary] {
