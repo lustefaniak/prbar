@@ -9,6 +9,10 @@ struct GeneralSettings: View {
     @AppStorage("badgeShowCIFailed")        private var badgeCIFailed        = true
     @AppStorage("defaultProviderId")        private var defaultProviderRaw   = ProviderID.claude.rawValue
 
+    /// Probed at view-load. Drives "(not installed)" annotations in the
+    /// provider picker so users don't pick a backend they don't have.
+    @State private var providerAvailability: [ProviderID: Bool] = [:]
+
     var body: some View {
         Form {
             Section {
@@ -41,17 +45,18 @@ struct GeneralSettings: View {
             Section {
                 Picker("Default review provider", selection: providerBinding) {
                     ForEach(ProviderID.allCases, id: \.self) { p in
-                        Text(p.displayName).tag(p)
+                        Text(label(for: p)).tag(p)
                     }
                 }
                 .pickerStyle(.segmented)
             } header: {
                 Text("AI provider")
             } footer: {
-                Text("App-wide default. A repo's `providerOverride` (Settings → Repositories) wins over this; PRDetailView's \"Re-run with…\" menu can override either for a single run. Both providers must be installed to use them: `claude` and `codex`.")
+                Text("App-wide default. A repo's `providerOverride` (Settings → Repositories) wins over this; PRDetailView's \"Re-run with…\" menu can override either for a single run. If a chosen provider isn't installed the review fails with a clear message — see Diagnostics for current status.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .task { await probeProviderAvailability() }
 
             Section {
                 Toggle("Ready-to-merge PRs",   isOn: $badgeReadyToMerge)
@@ -66,6 +71,28 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// Picker label for one provider — adds "(not installed)" when the
+    /// CLI binary isn't on PATH so the user makes an informed choice.
+    private func label(for p: ProviderID) -> String {
+        if providerAvailability[p] == false {
+            return "\(p.displayName) (not installed)"
+        }
+        return p.displayName
+    }
+
+    /// Probe both binaries off the main thread; populate the @State map
+    /// so the picker reactively updates.
+    private func probeProviderAvailability() async {
+        let probed = await Task.detached(priority: .userInitiated) {
+            ProviderID.allCases.reduce(into: [ProviderID: Bool]()) { acc, p in
+                acc[p] = ExecutableResolver.find(p.binaryName) != nil
+            }
+        }.value
+        await MainActor.run {
+            self.providerAvailability = probed
+        }
     }
 
     /// Bridge `defaultProviderRaw` (String for AppStorage) ↔ `ProviderID`.

@@ -4,7 +4,7 @@ struct ToolAvailabilityView: View {
     @State private var results: [ToolProbeResult] = []
     @State private var isProbing = false
 
-    private let tools = ["gh", "claude", "git"]
+    private let tools = ["gh", "claude", "codex", "git"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
