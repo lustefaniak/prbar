@@ -24,10 +24,12 @@ targets:
     platform: macOS
     sources:
       - path: Sources/PRBar
-    resources:
-      - path: Resources
-        optional: true
+      - path: Resources/schemas
         buildPhase: resources
+        type: folder
+      - path: Resources/prompts
+        buildPhase: resources
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.lustefaniak.prbar
