@@ -263,6 +263,21 @@ private func makeFixtures(scenario: Scenario) -> ScreenshotFixtures {
             reviewDecision: "REVIEW_REQUIRED",
             checkRollupState: "SUCCESS",
             additions: 142, deletions: 18, files: 6,
+            body: """
+            ## Summary
+
+            Emits a `redaction.field_masked` event from the audit \
+            emitter every time a PII field is dropped, so downstream \
+            consumers (compliance dashboards, SIEM) can attribute \
+            **why** a payload became smaller.
+
+            - Adds `RedactedFields` to `Emitter.Options`.
+            - New event payload: `{tenant, field_path, reason}`.
+            - Test cases cover SSN, email, and the empty-list edge case.
+
+            Closes [#PLAT-2104](https://example.com/issues/2104). \
+            cc @kai for the dashboard wiring.
+            """,
             checks: [
                 CheckSummary(typename: "CheckRun", name: "CI / build",  conclusion: "SUCCESS", status: "COMPLETED", url: nil),
                 CheckSummary(typename: "CheckRun", name: "CI / test",   conclusion: "SUCCESS", status: "COMPLETED", url: nil),
@@ -564,12 +579,13 @@ private func makePR(
     reviewDecision: String? = "REVIEW_REQUIRED",
     checkRollupState: String = "PENDING",
     additions: Int = 50, deletions: Int = 10, files: Int = 2,
+    body: String = "## Summary\n\n- Concrete, focused changes for the screenshot fixtures.",
     checks: [CheckSummary] = []
 ) -> InboxPR {
     InboxPR(
         nodeId: nodeId, owner: owner, repo: repo, number: number,
         title: title,
-        body: "## Summary\n\n- Concrete, focused changes for the screenshot fixtures.",
+        body: body,
         url: URL(string: "https://github.com/\(owner)/\(repo)/pull/\(number)")!,
         author: author, headRef: "feat/x", baseRef: "main", headSha: headSha,
         isDraft: isDraft, role: role,
