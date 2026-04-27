@@ -24,10 +24,36 @@ final class RepoConfigStoreTests: XCTestCase {
         var cfg = RepoConfig.default
         cfg.repoGlobs = ["acme/x"]
         store.upsert(cfg)
-        store.remove(repoGlobs: ["acme/x"])
+        store.remove(id: cfg.id)
 
         let reloaded = RepoConfigStore(container: container)
         XCTAssertEqual(reloaded.userConfigs.count, 0)
+    }
+
+    func testEditRepoGlobsKeepsRowIdentity() throws {
+        let container = PRBarModelContainer.inMemory()
+        let store = RepoConfigStore(container: container)
+        var cfg = RepoConfig.default
+        cfg.repoGlobs = ["acme/x"]
+        store.upsert(cfg)
+
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<RepoConfigEntry>()
+        let before = try context.fetch(descriptor).first!.persistentModelID
+
+        // Rename the glob — id stays the same, so we should hit the
+        // same SwiftData row, not insert a new one.
+        var renamed = cfg
+        renamed.repoGlobs = ["acme/y"]
+        store.upsert(renamed)
+
+        let context2 = ModelContext(container)
+        let after = try context2.fetch(descriptor)
+        XCTAssertEqual(after.count, 1)
+        XCTAssertEqual(after.first?.persistentModelID, before)
+
+        let reloaded = RepoConfigStore(container: container)
+        XCTAssertEqual(reloaded.userConfigs.first?.repoGlobs, ["acme/y"])
     }
 
     func testIncrementalSavePreservesRowIdentity() throws {

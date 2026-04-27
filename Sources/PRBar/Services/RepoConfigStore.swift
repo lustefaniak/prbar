@@ -55,11 +55,10 @@ final class RepoConfigStore {
         onChange?()
     }
 
-    /// Upsert by `repoGlobs` identity (matched as exact-equal lists). Most
-    /// editors will pass the original config plus a mutated copy; this
-    /// keeps the list ordered.
+    /// Upsert by stable `id`. Editing repoGlobs no longer invalidates
+    /// the row — id is what the SwiftData row matches against too.
     func upsert(_ config: RepoConfig) {
-        if let idx = userConfigs.firstIndex(where: { $0.repoGlobs == config.repoGlobs }) {
+        if let idx = userConfigs.firstIndex(where: { $0.id == config.id }) {
             userConfigs[idx] = config
         } else {
             userConfigs.append(config)
@@ -68,8 +67,8 @@ final class RepoConfigStore {
         onChange?()
     }
 
-    func remove(repoGlobs: [String]) {
-        userConfigs.removeAll { $0.repoGlobs == repoGlobs }
+    func remove(id: UUID) {
+        userConfigs.removeAll { $0.id == id }
         save()
         onChange?()
     }
@@ -95,7 +94,18 @@ final class RepoConfigStore {
         descriptor.includePendingChanges = false
         guard let rows = try? context.fetch(descriptor) else { return [] }
         let decoder = JSONDecoder()
-        return rows.compactMap { try? decoder.decode(RepoConfig.self, from: $0.payload) }
+        var result: [RepoConfig] = []
+        for row in rows {
+            guard var cfg = try? decoder.decode(RepoConfig.self, from: row.payload)
+            else { continue }
+            // Force config.id to mirror the SwiftData row id. Stabilizes
+            // legacy rows whose payload predates the `id` field (the
+            // decoder otherwise gives them a fresh UUID per read), and
+            // reaffirms the invariant for newer rows.
+            cfg.id = row.id
+            result.append(cfg)
+        }
+        return result
     }
 
     private func save() {
@@ -111,35 +121,35 @@ final class RepoConfigStore {
         // leave the existing on-disk row untouched rather than the
         // earlier delete-all pattern, which silently nuked every config
         // if a single one couldn't serialize.
-        var encoded: [(orderIndex: Int, payload: Data)] = []
+        var encoded: [(id: UUID, orderIndex: Int, payload: Data)] = []
         for (idx, config) in userConfigs.enumerated() {
             guard let payload = try? encoder.encode(config) else {
                 NSLog("RepoConfigStore.save: skipped encode failure at index %d (globs=%@)",
                       idx, String(describing: config.repoGlobs))
                 continue
             }
-            encoded.append((idx, payload))
+            encoded.append((config.id, idx, payload))
         }
 
-        // In-place update by orderIndex. Preserves SwiftData row identity
-        // across edits (no churn per keystroke) and means an error
-        // mid-flight only affects the row that actually failed.
-        var existingByIdx = Dictionary(uniqueKeysWithValues: existing.map { ($0.orderIndex, $0) })
+        // Match by stable `id` so editing repoGlobs or reordering the
+        // list never churns SwiftData row identity. Anything in
+        // `existingById` not overwritten below is an orphan — delete.
+        var existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
         for entry in encoded {
-            if let row = existingByIdx.removeValue(forKey: entry.orderIndex) {
+            if let row = existingById.removeValue(forKey: entry.id) {
                 if row.payload != entry.payload {
                     row.payload = entry.payload
                 }
+                if row.orderIndex != entry.orderIndex {
+                    row.orderIndex = entry.orderIndex
+                }
             } else {
                 context.insert(RepoConfigEntry(
-                    orderIndex: entry.orderIndex, payload: entry.payload
+                    id: entry.id, orderIndex: entry.orderIndex, payload: entry.payload
                 ))
             }
         }
-
-        // Anything still in `existingByIdx` is an orphan — its
-        // orderIndex is past the new tail, so delete it.
-        for (_, row) in existingByIdx {
+        for (_, row) in existingById {
             context.delete(row)
         }
         try? context.save()

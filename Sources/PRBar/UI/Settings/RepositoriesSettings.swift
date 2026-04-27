@@ -117,14 +117,14 @@ struct RepositoriesSettings: View {
                         // Only persist when the rule already exists in
                         // userConfigs — built-in rows require an explicit
                         // "Save as user override" first.
-                        if store.userConfigs.contains(where: { $0.repoGlobs == newValue.repoGlobs }) {
+                        if store.userConfigs.contains(where: { $0.id == newValue.id }) {
                             store.upsert(newValue)
                         }
                     }
                 ),
-                isUserConfig: store.userConfigs.contains(where: { $0.repoGlobs == selected.repoGlobs }),
+                isUserConfig: store.userConfigs.contains(where: { $0.id == selected.id }),
                 onPromoteToUser: {
-                    var copy = draft ?? selected
+                    let copy = draft ?? selected
                     store.upsert(copy)
                     draft = copy
                 }
@@ -142,7 +142,7 @@ struct RepositoriesSettings: View {
     // MARK: - helpers
 
     private func rowId(_ config: RepoConfig) -> String {
-        config.repoGlobs.joined(separator: ",")
+        config.id.uuidString
     }
 
     private var allConfigs: [RepoConfig] {
@@ -150,8 +150,8 @@ struct RepositoriesSettings: View {
     }
 
     private var builtinsNotShadowed: [RepoConfig] {
-        let userKeys = Set(store.userConfigs.map(\.repoGlobs))
-        return RepoConfig.builtins.filter { !userKeys.contains($0.repoGlobs) }
+        let userKeys = Set(store.userConfigs.map(\.id))
+        return RepoConfig.builtins.filter { !userKeys.contains($0.id) }
     }
 
     private var currentlySelected: RepoConfig? {
@@ -174,6 +174,7 @@ struct RepositoriesSettings: View {
 
     private func addNew() {
         var draft = RepoConfig.default
+        draft.id = UUID()             // fresh identity, decoupled from .default's static id
         draft.repoGlobs = ["owner/repo"]
         store.upsert(draft)
         selection = rowId(draft)
@@ -182,6 +183,7 @@ struct RepositoriesSettings: View {
 
     private func addFromInbox(nameWithOwner: String) {
         var draft = RepoConfig.default
+        draft.id = UUID()
         draft.repoGlobs = [nameWithOwner]
         store.upsert(draft)
         selection = rowId(draft)
@@ -191,7 +193,7 @@ struct RepositoriesSettings: View {
     private func deleteSelected() {
         guard let sel = selection,
               let cfg = currentlySelected else { return }
-        store.remove(repoGlobs: cfg.repoGlobs)
+        store.remove(id: cfg.id)
         if rowId(cfg) == sel { selection = nil; draft = nil }
     }
 }

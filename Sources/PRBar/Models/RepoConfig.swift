@@ -68,6 +68,13 @@ struct AutoApproveConfig: Sendable, Hashable, Codable {
 /// `repoGlobs` entry; the most-specific match wins (built-ins as
 /// fallback). Persisted as JSON via `RepoConfigStore`.
 struct RepoConfig: Sendable, Hashable, Codable {
+    /// Stable identity. Generated on creation, persisted in the JSON
+    /// payload, reused as the UI's row id. Lets the user edit
+    /// `repoGlobs` without invalidating selection / orderIndex tracking
+    /// — matching by glob string was fragile (rename a glob → row id
+    /// changed → selection lost → editor showed the previous draft).
+    var id: UUID = UUID()
+
     /// Glob like "getsynq/cloud" (exact match) or "getsynq/*" (org-wide).
     /// Negations supported: ["getsynq/*", "!getsynq/cloud"].
     var repoGlobs: [String]
@@ -163,8 +170,11 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// whole inbox to minimise context switches.
     var notifyPolicy: NotifyPolicy = .batchSettled
 
-    /// Default for any repo not explicitly configured.
-    static let `default` = RepoConfig(
+    /// Default for any repo not explicitly configured. Computed (not a
+    /// `static let`) so each access produces a fresh `id` — otherwise
+    /// `var cfg = .default` style cloning at multiple call sites would
+    /// have them all collide on the same static UUID.
+    static var `default`: RepoConfig { RepoConfig(
         repoGlobs: ["*/*"],
         excluded: false,
         splitMode: .perSubfolder,
@@ -182,7 +192,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         reviewDrafts: false,
         aiReviewEnabled: true,
         notifyPolicy: .batchSettled
-    )
+    ) }
 
     /// Pick the first config whose `repoGlobs` match (negations honored).
     /// Falls back to `.default`. With no built-ins shipped, this only
@@ -213,6 +223,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
     // synthesized encoder is fine; only the decoder needs the shim.
 
     enum CodingKeys: String, CodingKey {
+        case id
         case repoGlobs, excluded
         case splitMode, rootPatterns, unmatchedStrategy, minFilesPerSubreview
         case maxParallelSubreviews, collapseAboveSubreviewCount
@@ -226,7 +237,11 @@ struct RepoConfig: Sendable, Hashable, Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = RepoConfig.default
-        // repoGlobs is the row's identity — required.
+        // id was added later. For payloads that predate it we generate
+        // a fresh UUID here; the store layer overrides it with the
+        // SwiftData row's persistent id so identity stabilizes after
+        // the first save.
+        self.id                      = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
         self.repoGlobs               = try c.decode([String].self, forKey: .repoGlobs)
         self.excluded                = (try? c.decode(Bool.self, forKey: .excluded)) ?? d.excluded
         self.splitMode               = (try? c.decode(SplitMode.self, forKey: .splitMode)) ?? d.splitMode
@@ -254,6 +269,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// — Swift drops the synthesized memberwise init when any explicit
     /// init is added.
     init(
+        id: UUID = UUID(),
         repoGlobs: [String],
         excluded: Bool = false,
         splitMode: SplitMode = .perSubfolder,
@@ -275,6 +291,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         providerOverride: ProviderID? = nil,
         notifyPolicy: NotifyPolicy = .batchSettled
     ) {
+        self.id = id
         self.repoGlobs = repoGlobs
         self.excluded = excluded
         self.splitMode = splitMode
