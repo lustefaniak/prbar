@@ -80,7 +80,16 @@ struct PopoverView: View {
         // works; this is the discoverable in-popover entry point.
         HStack {
             Spacer()
-            SettingsLink {
+            // Plain Button (not SettingsLink) so we can dismiss the
+            // popover before opening Settings — otherwise the popover
+            // lingers behind the Settings window. Routes through
+            // AppDelegate.openSettings which uses the same modern /
+            // legacy selector dance Apple's SettingsLink does.
+            Button {
+                let appDelegate = NSApp.delegate as? AppDelegate
+                appDelegate?.dismissPopover()
+                appDelegate?.openSettings(nil)
+            } label: {
                 Image(systemName: "gearshape")
                     .font(.body)
                     .foregroundStyle(.secondary)
