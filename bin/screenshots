@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Capture marketing screenshots by launching the real app against
+# fixture data, one stage per launch. Output → screenshots/<stage>.png.
+#
+# How it works:
+#   1. Launch PRBar with `--screenshot-stage <name>`. AppDelegate boots
+#      against `ScreenshotFixtures` (no gh, no network) and opens the
+#      surface for that stage (popover / detail window / settings).
+#   2. The app writes its content window's `windowNumber` to
+#      /tmp/prbar-screenshot-window-id.txt as soon as the window is
+#      laid out.
+#   3. We poll for that file, then call `screencapture -l<id>` to
+#      capture the exact window — no Accessibility permissions, no
+#      AppleScript, no Python deps.
+#
+# Why one launch per stage: each stage seeds its UI surface from
+# AppDelegate boot. Re-using a single launch would require AppleScript
+# UI navigation, which needs Accessibility permissions and is flaky.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+./bin/build
+
+APP="$(pwd)/build/Debug/PRBar.app"
+OUT="$(pwd)/screenshots"
+ID_FILE="/tmp/prbar-screenshot-window-id.txt"
+mkdir -p "$OUT"
+
+if [[ ! -d "$APP" ]]; then
+  echo "error: built app not found at $APP" >&2
+  exit 1
+fi
+
+capture_stage() {
+  local stage="$1"
+  echo "—— stage: $stage"
+  pkill -x PRBar 2>/dev/null || true
+  sleep 0.3
+  rm -f "$ID_FILE"
+
+  # `open -n` forces a fresh process so single-instance enforcement
+  # doesn't bounce us; --args forwards the rest to PRBar's CommandLine.
+  open -n "$APP" --args --screenshot-stage "$stage"
+
+  # Poll for the window-id file the app writes once layout settles.
+  local wid="" tries=0
+  while (( tries < 80 )); do
+    if [[ -s "$ID_FILE" ]]; then
+      wid="$(tr -d '[:space:]' < "$ID_FILE")"
+      if [[ "$wid" =~ ^[0-9]+$ && "$wid" -gt 0 ]]; then break; fi
+      wid=""
+    fi
+    sleep 0.1
+    (( tries++ )) || true
+  done
+
+  if [[ -z "$wid" ]]; then
+    echo "  error: window id never appeared (file: $ID_FILE)" >&2
+    pkill -x PRBar 2>/dev/null || true
+    return 1
+  fi
+
+  # Brief settle so any opening animation finishes before capture.
+  sleep 0.3
+  /usr/sbin/screencapture -x -o -l"$wid" "$OUT/$stage.png"
+  echo "  captured → $OUT/$stage.png (windowNumber=$wid)"
+
+  pkill -x PRBar 2>/dev/null || true
+  sleep 0.2
+}
+
+# Stages mirror ScreenshotMode.Stage. Update both lists together when
+# adding a new stage.
+STAGES=(
+  popover-my-prs
+  popover-inbox
+  popover-detail
+  window-detail
+  settings-general
+  settings-repositories
+  settings-diagnostics
+)
+
+# Allow capturing a single stage: `bin/screenshots popover-detail`.
+if (( $# > 0 )); then
+  STAGES=("$@")
+fi
+
+for stage in "${STAGES[@]}"; do
+  capture_stage "$stage"
+done
+
+echo
+echo "Done. PNGs in $OUT"
+ls -lh "$OUT"

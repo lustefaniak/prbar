@@ -61,7 +61,7 @@ The AI review pipeline works end to end in both `.none` (pure-prompt, default) a
 ### Still to do — ranked by value
 
 **High value, low effort:**
-1. **Marketing screenshots** — the ImageRenderer-based `ScreenshotTests` suite was removed; replacement plan is full-app captures (run the real app against fixture data, `screencapture -wo`). Production views still carry the harmless `screenshotMode: Bool = false` opt-in flag in case we want a programmatic capture path again.
+1. ~~**Marketing screenshots**~~ — shipped. `bin/screenshots` drives the real app against `ScreenshotFixtures` (no `gh`, no network) one stage per launch, captures via `screencapture -l<windowID>` against the windowNumber the app writes to `/tmp/prbar-screenshot-window-id.txt`. Stages: `popover-my-prs`, `popover-inbox`, `popover-detail`, `window-detail`, `settings-{general,repositories,diagnostics}`. The `screenshotMode: Bool` opt-in across `PRDetailView` / `PRRowView` / `PRListView` / `RepoConfigEditor` is gone — it was producing not-real-looking output (ImageRenderer can't render NSControl-backed widgets, ScrollView clips, etc.). Output → `screenshots/` (gitignored).
 2. **Provider judge / multi-AI** — only worth it if real workload shows single-`claude` review missing things often enough to justify 2× cost + latency. Not a near-term default.
 
 **Polish + safety:**

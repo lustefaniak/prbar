@@ -11,10 +11,6 @@ struct PRDetailView: View {
     /// based on the user's "Advance to next ready PR" preference. Default
     /// no-op so previews / fallback callers don't need to wire it.
     var onPostedAction: () -> Void = {}
-    /// When true, swap the inner ScrollView for a flat VStack so
-    /// `ImageRenderer` can capture every section in one frame for
-    /// `ScreenshotTests`. Production callers leave this false.
-    var screenshotMode: Bool = false
     /// True when this view is hosted inside `PRDetailWindowView` — the
     /// standalone full-size window. Hides the "open in window" button
     /// (we're already in one) and rebinds the back button to close the
@@ -81,15 +77,6 @@ struct PRDetailView: View {
     }
 
     var body: some View {
-        if screenshotMode {
-            screenshotBody
-        } else {
-            productionBody
-        }
-    }
-
-    @ViewBuilder
-    private var productionBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             navHeader
 
@@ -141,36 +128,6 @@ struct PRDetailView: View {
         }
         .onAppear { diffStore.ensureLoaded(for: pr) }
         .onChange(of: pr.headSha) { _, _ in diffStore.ensureLoaded(for: pr) }
-    }
-
-    /// Flat-layout body used when `screenshotMode == true`. Mirrors the
-    /// production sections (PR header, CI, AI verdict, annotations,
-    /// diff, actions) but skips the nav chrome and the ScrollView
-    /// wrapper — `ImageRenderer` clips ScrollView content to the
-    /// proposed size, so a flat tree is what marketing screenshots
-    /// (and visual regression diffs) need.
-    @ViewBuilder
-    private var screenshotBody: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            prHeader
-            Divider()
-            if !pr.body.isEmpty {
-                descriptionSection
-                Divider()
-            }
-            if !pr.allCheckSummaries.isEmpty {
-                CIStatusView(checks: pr.allCheckSummaries, pr: pr)
-                Divider()
-            }
-            aiSection
-            Divider()
-            diffSection
-            if showsReviewActions {
-                Divider()
-                actionsSection
-            }
-        }
-        .padding(16)
     }
 
     // MARK: - sections
@@ -653,30 +610,14 @@ struct PRDetailView: View {
             Text("Actions")
                 .font(.subheadline.bold())
 
-            // Optional comment body when the chosen action wants one.
-            // ImageRenderer can't render an NSTextView, so screenshot
-            // mode swaps in a static placeholder that visually matches
-            // the rounded-border editor.
-            if screenshotMode {
-                Text("Optional body for Approve / Comment / Request changes…")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .topLeading)
-                    .padding(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(.secondary.opacity(0.2))
-                    )
-            } else {
-                TextEditor(text: $bodyDraft)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(minHeight: 60, maxHeight: 120)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(.secondary.opacity(0.2))
-                    )
-                    .help("Optional body for Approve/Comment/Request changes.")
-            }
+            TextEditor(text: $bodyDraft)
+                .font(.system(.caption, design: .monospaced))
+                .frame(minHeight: 60, maxHeight: 120)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(.secondary.opacity(0.2))
+                )
+                .help("Optional body for Approve/Comment/Request changes.")
 
             HStack(spacing: 6) {
                 let isPosting = poller.postingReviewPRs.contains(pr.nodeId)

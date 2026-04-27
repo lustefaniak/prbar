@@ -7,10 +7,6 @@ struct PRRowView: View {
     let isMerging: Bool
     let onRefresh: () -> Void
     let onMerge: (MergeMethod) -> Void
-    /// When true (set by `ScreenshotTests`), swap `Menu` for plain
-    /// `Button`s. ImageRenderer can't capture NSPopUpButton-backed Menus
-    /// — they render as the yellow "image not loaded" placeholder.
-    var screenshotMode: Bool = false
 
     @State private var isHovering = false
     @State private var showMergeConfirm = false
@@ -109,18 +105,6 @@ struct PRRowView: View {
     /// non-ready rows merge isn't an option anyway (GitHub would refuse).
     @ViewBuilder
     private var secondaryActionsMenu: some View {
-        if screenshotMode {
-            Image(systemName: "ellipsis.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .help("Actions")
-        } else {
-            secondaryActionsMenuLive
-        }
-    }
-
-    @ViewBuilder
-    private var secondaryActionsMenuLive: some View {
         Menu {
             Button {
                 NSWorkspace.shared.open(pr.url)
@@ -148,41 +132,6 @@ struct PRRowView: View {
     /// allows appear in the dropdown.
     @ViewBuilder
     private var mergeSplitButton: some View {
-        if screenshotMode {
-            mergeSplitButtonStatic
-        } else {
-            mergeSplitButtonLive
-        }
-    }
-
-    /// Screenshot-only flat rendering: a plain `.borderedProminent` button
-    /// (which ImageRenderer captures fine) plus a static chevron glyph
-    /// next to it that visually mirrors the production split-button.
-    @ViewBuilder
-    private var mergeSplitButtonStatic: some View {
-        let primary = defaultMergeMethod
-        HStack(spacing: 0) {
-            Button {} label: {
-                Label(primary.shortDisplayName, systemImage: "arrow.triangle.merge")
-                    .labelStyle(.titleAndIcon)
-                    .font(.callout.weight(.semibold))
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.green)
-            .controlSize(.small)
-            .fixedSize()
-            Image(systemName: "chevron.down")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 4)
-                .frame(height: 22)
-                .background(Color.green, in: RoundedRectangle(cornerRadius: 4))
-                .padding(.leading, 1)
-        }
-    }
-
-    @ViewBuilder
-    private var mergeSplitButtonLive: some View {
         let primary = defaultMergeMethod
         let alternatives = MergeMethod.allCases.filter {
             pr.allowedMergeMethods.contains($0) && $0 != primary

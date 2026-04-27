@@ -67,8 +67,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // declaration triggers @NSApplicationDelegateAdaptor, so by the
         // time we're here we're already the only PRBar.
         let n = Notifier()
-        let p = PRPoller.live()
-        let q = ReviewQueueWorker.live()
+        let p: PRPoller
+        let q: ReviewQueueWorker
+        if ScreenshotMode.isActive {
+            // Screenshot launch path: never poll, never call gh, never
+            // touch the network. Build inert services seeded with
+            // ScreenshotFixtures so every UI surface has the data it
+            // needs to render fully populated.
+            p = PRPoller(fetcher: { ScreenshotFixtures.allPRs })
+            q = ReviewQueueWorker(diffFetcher: { _, _, _ in "" })
+            p._setPRsForScreenshot(ScreenshotFixtures.allPRs)
+            q._setReviewsForScreenshot(ScreenshotFixtures.allReviewStates)
+        } else {
+            p = PRPoller.live()
+            q = ReviewQueueWorker.live()
+        }
         let d = DiffStore.sharing(q)
         // Reuse the worker's FailureLogStore so the UI's expandable
         // failure-log section reads from the same cache the prompt
@@ -153,9 +166,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let router = NotificationActionRouter(poller: p)
         router.install()
         self.notificationRouter = router
-        Task { await n.requestAuthorization() }
-        if let mgr = q.checkoutManager {
-            Task { await mgr.sweepStaleWorktrees() }
+        // In screenshot mode we deliberately skip the OS auth prompt
+        // (would steal focus from the very window we're trying to
+        // capture) and the worktree GC pass (no real repos exist).
+        if !ScreenshotMode.isActive {
+            Task { await n.requestAuthorization() }
+            if let mgr = q.checkoutManager {
+                Task { await mgr.sweepStaleWorktrees() }
+            }
         }
     }
 
@@ -172,6 +190,123 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor in self?.refreshBadge() }
         }
+        if let stage = ScreenshotMode.stage {
+            // Run after the next tick so SwiftUI / AppKit has a chance
+            // to install the menu-bar item and finish initial layout
+            // before we start opening windows on top of it.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(150))
+                self.bootstrapScreenshotStage(stage)
+                // Give SwiftUI another beat to settle before sampling
+                // the window number; popovers in particular don't have
+                // their `contentViewController.view.window` populated
+                // immediately after `show()`.
+                try? await Task.sleep(for: .milliseconds(450))
+                self.publishScreenshotWindowID(for: stage)
+            }
+        }
+    }
+
+    /// Marketing-screenshot driver coordination: write the captured
+    /// surface's `windowNumber` to a well-known file so the `bin/
+    /// screenshots` shell script can pass it to `screencapture -l`
+    /// without needing AppleScript / Accessibility permissions.
+    /// Polls for up to ~3s because the Settings window in particular
+    /// is created asynchronously after `openSettings` returns.
+    private func publishScreenshotWindowID(for stage: ScreenshotMode.Stage) {
+        Task { @MainActor in
+            for _ in 0..<30 {
+                let id = self.screenshotWindowNumber(for: stage)
+                if id > 0 {
+                    let path = URL(fileURLWithPath: "/tmp/prbar-screenshot-window-id.txt")
+                    try? "\(id)\n".write(to: path, atomically: true, encoding: .utf8)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
+    private func screenshotWindowNumber(for stage: ScreenshotMode.Stage) -> Int {
+        switch stage {
+        case .popoverMyPRs, .popoverInbox, .popoverDetail:
+            return popover.contentViewController?.view.window?.windowNumber ?? 0
+        case .windowDetail:
+            return screenshotWindow?.windowNumber ?? 0
+        case .settingsGeneral, .settingsRepositories, .settingsDiagnostics:
+            // SwiftUI's Settings window may not exist immediately after
+            // `openSettings(_:)` returns — the selector dispatches
+            // asynchronously. Pick the first titled, visible, non-popover
+            // window (popover hosts its own NSWindow but it's usually
+            // not in `NSApp.windows`; if it is, it has `.borderless`
+            // style). Excluding the menu-bar status item (no title).
+            return NSApp.windows
+                .first(where: { w in
+                    w.isVisible
+                        && w.styleMask.contains(.titled)
+                        && !w.title.isEmpty
+                })?
+                .windowNumber ?? 0
+        }
+    }
+
+    /// Bring up the surface that the requested screenshot stage wants
+    /// captured, using fixture-seeded services that were installed in
+    /// `init` when `ScreenshotMode.isActive`. One stage per launch — the
+    /// shell driver loops over stages, killing and relaunching the app
+    /// between each, so we never need in-app navigation.
+    private func bootstrapScreenshotStage(_ stage: ScreenshotMode.Stage) {
+        switch stage {
+        case .popoverMyPRs:
+            ScreenshotMode.initialPopoverTab = .myPRs
+            ScreenshotMode.initialSelectedPR = nil
+            togglePopover()
+        case .popoverInbox:
+            ScreenshotMode.initialPopoverTab = .inbox
+            ScreenshotMode.initialSelectedPR = nil
+            togglePopover()
+        case .popoverDetail:
+            ScreenshotMode.initialPopoverTab = .inbox
+            ScreenshotMode.initialSelectedPR = ScreenshotFixtures.detailPR(for: stage)
+            togglePopover()
+        case .windowDetail:
+            openScreenshotDetailWindow(ScreenshotFixtures.detailPR(for: stage))
+        case .settingsGeneral:
+            UserDefaults.standard.set(0, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
+            openSettings(nil)
+        case .settingsRepositories:
+            UserDefaults.standard.set(1, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
+            openSettings(nil)
+        case .settingsDiagnostics:
+            UserDefaults.standard.set(2, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
+            openSettings(nil)
+        }
+    }
+
+    /// Held strongly so the standalone window doesn't dealloc the moment
+    /// `bootstrapScreenshotStage` returns. Only used in screenshot mode;
+    /// production opens the same view through the SwiftUI `WindowGroup`.
+    private var screenshotWindow: NSWindow?
+
+    private func openScreenshotDetailWindow(_ pr: InboxPR) {
+        let root = PRDetailWindowView(nodeId: pr.nodeId)
+            .environment(poller)
+            .environment(notifier)
+            .environment(queue)
+            .environment(diffStore)
+            .environment(failureLogs)
+            .environment(repoConfigs)
+            .environment(readiness)
+            .environment(actionLog)
+        let host = NSHostingController(rootView: root)
+        let window = NSWindow(contentViewController: host)
+        window.title = "\(pr.nameWithOwner) #\(pr.numberString) — \(pr.title)"
+        window.setContentSize(NSSize(width: 1100, height: 800))
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        screenshotWindow = window
     }
 
     /// Close the popover if it's showing. Used by actions that move the

@@ -43,9 +43,21 @@ struct PopoverView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task { await probeTools() }
-        .task { poller.pollNow() }   // refresh whenever the popover opens
-        .onAppear { notifier.setPopoverVisible(true) }
+        .task {
+            // Skip in screenshot mode: probing forks `gh --version`
+            // / `claude --version` which adds latency and would render
+            // a "missing tool" banner if the host machine lacks them.
+            if !ScreenshotMode.isActive { await probeTools() }
+        }
+        .task {
+            // Skip in screenshot mode: pollNow would race the fixture
+            // seeding and could emit spurious delta-driven notifications.
+            if !ScreenshotMode.isActive { poller.pollNow() }
+        }
+        .onAppear {
+            notifier.setPopoverVisible(true)
+            seedScreenshotStateOnce()
+        }
         .onDisappear { notifier.setPopoverVisible(false) }
         .onChange(of: poller.prs) { _, newPRs in
             queue.enqueueNewReviewRequests(from: newPRs)
@@ -193,6 +205,23 @@ struct PopoverView: View {
             selectedPR = next
         } else {
             selectedPR = nil
+        }
+    }
+
+    /// Apply the screenshot launcher's pre-set tab + selection if any.
+    /// Cleared after first read so subsequent re-opens behave normally.
+    private func seedScreenshotStateOnce() {
+        if let tab = ScreenshotMode.initialPopoverTab {
+            switch tab {
+            case .myPRs:   selectedTab = .myPRs
+            case .inbox:   selectedTab = .inbox
+            case .history: selectedTab = .history
+            }
+            ScreenshotMode.initialPopoverTab = nil
+        }
+        if let pr = ScreenshotMode.initialSelectedPR {
+            selectedPR = pr
+            ScreenshotMode.initialSelectedPR = nil
         }
     }
 

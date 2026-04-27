@@ -217,17 +217,10 @@ struct RepositoriesSettings: View {
 
 // MARK: - editor
 
-/// Internal so `ScreenshotTests` can render just the editor pane (the
-/// SwiftUI `HSplitView` from `RepositoriesSettings` is AppKit-backed
-/// and `ImageRenderer` can't capture it).
 struct RepoConfigEditor: View {
     @Binding var config: RepoConfig
     let isUserConfig: Bool
     let onPromoteToUser: () -> Void
-    /// When true, drops the outer `ScrollView` so `ImageRenderer` (used
-    /// by `ScreenshotTests`) captures every section instead of clipping
-    /// to the proposed frame.
-    var screenshotMode: Bool = false
 
     /// Local text buffers for the multiline pattern editors. Round-
     /// tripping through `[String]` strips trailing empty lines, which
@@ -239,12 +232,7 @@ struct RepoConfigEditor: View {
     @State private var rootPatternsText: String = ""
 
     var body: some View {
-        let view: AnyView = if screenshotMode {
-            AnyView(editorContent)
-        } else {
-            AnyView(ScrollView { editorContent })
-        }
-        return view
+        ScrollView { editorContent }
             .onAppear {
                 titlePatternsText = config.excludeTitlePatterns.joined(separator: "\n")
                 rootPatternsText  = config.rootPatterns.joined(separator: "\n")
