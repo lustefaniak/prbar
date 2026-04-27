@@ -64,6 +64,29 @@ enum GraphQLQueries {
     \(prFieldsFragment)
     """
 
+    /// Returns up to 50 open PRs the viewer authored. Goes through the
+    /// `viewer.pullRequests` connection — NOT the search index — so it
+    /// keeps working when GitHub Search is lagging or returning empty
+    /// results for `involves:@me` (a real outage we hit on 2026-04-27
+    /// that wiped both My PRs and Inbox tabs because they share the
+    /// search query). Cost ≈ 25 points.
+    static let myPRs: String = """
+    query MyPRs {
+      viewer {
+        login
+        pullRequests(
+          states: OPEN,
+          first: 50,
+          orderBy: { field: UPDATED_AT, direction: DESC }
+        ) {
+          nodes { ...PRFields }
+        }
+      }
+      rateLimit { remaining cost resetAt }
+    }
+    \(prFieldsFragment)
+    """
+
     /// Refresh a single PR in place. Cheaper than re-running `inbox` (cost ≈ 1).
     static let singlePR: String = """
     query SinglePR($owner: String!, $name: String!, $number: Int!) {
