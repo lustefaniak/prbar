@@ -46,5 +46,28 @@ struct PRBarApp: App {
                 .environment(delegate.readiness)
                 .environment(delegate.actionLog)
         }
+
+        // Standalone full-size detail window. Opened from the popover's
+        // PRDetailView via `openWindow(id: PRDetailWindowID.id, value:
+        // pr.nodeId)`. Keyed by `String` so each PR gets its own window
+        // (multiple can be open at once); resolved against
+        // `PRPoller.prs` so the window stays live across polls.
+        WindowGroup(id: PRDetailWindowID.id, for: String.self) { $nodeId in
+            if let id = nodeId {
+                PRDetailWindowView(nodeId: id)
+                    .environment(delegate.poller)
+                    .environment(delegate.notifier)
+                    .environment(delegate.queue)
+                    .environment(delegate.diffStore)
+                    .environment(delegate.failureLogs)
+                    .environment(delegate.repoConfigs)
+                    .environment(delegate.readiness)
+                    .environment(delegate.actionLog)
+            } else {
+                Text("No PR selected")
+                    .frame(minWidth: 400, minHeight: 200)
+            }
+        }
+        .defaultSize(width: 1100, height: 800)
     }
 }

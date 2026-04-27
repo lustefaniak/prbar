@@ -66,7 +66,7 @@ The AI review pipeline works end to end in both `.none` (pure-prompt, default) a
 
 **Polish + safety:**
 4. **Auto-approve as a real notification banner** — the `merge_ready` / `reviews_ready` / `ci_alert` categories now register actions and route taps via `NotificationActionRouter` (Merge all → `PRPoller.mergePR`, Open → `NSWorkspace.open`). Still open: surface the auto-approve undo window as a UNUserNotification too — today it's popover-only — with an `Undo` action wired to `ReviewQueueWorker.cancelAutoApproveBatch`.
-5. **Bigger PR detail window** — separate `Window` scene at full size for large diffs (popover stays for triage). Already prototyped in the design; ~½ day.
+5. ~~**Bigger PR detail window**~~ — shipped. `WindowGroup(id: PRDetailWindowID.id, for: String.self)` keyed by PR `nodeId`; opened from the popover via the `macwindow.on.rectangle` button in `PRDetailView.navHeader`. Default size 1100×800, min 800×600. PR resolved live against `PRPoller.prs` so the window stays in sync as polls land; falls back to a "no longer in inbox" empty state when the PR drops out.
 6. **Codex per-subfolder + multi-judge** — `CodexProvider` ships and `RepoConfig.providerOverride` already lets you pick claude or codex per repo. Still open: per-subfolder provider routing + multi-judge aggregation. *Skip* until real workload shows single-provider is missing things; multi-judge doubles cost for a maybe-improvement.
 7. **Sparse-checkout** — `RepoCheckoutManager` checks out the full SHA today; sparse-by-subpath shrinks worktree disk use and lines up with the per-PR exclude list (`.env*` / `*.pem`).
 8. **Bare-clone LRU eviction** — manual Prune button shipped; automatic 5 GB cap not yet wired.

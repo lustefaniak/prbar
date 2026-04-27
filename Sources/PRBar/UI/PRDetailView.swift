@@ -15,6 +15,11 @@ struct PRDetailView: View {
     /// `ImageRenderer` can capture every section in one frame for
     /// `ScreenshotTests`. Production callers leave this false.
     var screenshotMode: Bool = false
+    /// True when this view is hosted inside `PRDetailWindowView` — the
+    /// standalone full-size window. Hides the "open in window" button
+    /// (we're already in one) and rebinds the back button to close the
+    /// window instead of returning to the list.
+    var inWindow: Bool = false
 
     @Environment(PRPoller.self) private var poller
     @Environment(ReviewQueueWorker.self) private var queue
@@ -22,6 +27,7 @@ struct PRDetailView: View {
 
     @State private var bodyDraft: String = ""
     @AppStorage("approveIncludesComment") private var approveIncludesCommentDefault = false
+    @Environment(\.openWindow) private var openWindow
     @State private var showActionPicker: Bool = false
     @State private var descriptionExpanded: Bool = false
     @State private var branchCopied: Bool = false
@@ -171,18 +177,30 @@ struct PRDetailView: View {
 
     private var navHeader: some View {
         HStack {
-            Button(action: onBack) {
-                Label("Back", systemImage: "chevron.left")
-                    .labelStyle(.titleAndIcon)
+            if !inWindow {
+                Button(action: onBack) {
+                    Label("Back", systemImage: "chevron.left")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
             }
-            .buttonStyle(.borderless)
-            .keyboardShortcut(.cancelAction)
 
             Spacer()
             Text(verbatim: "\(pr.nameWithOwner) #\(pr.numberString)")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+
+            if !inWindow {
+                Button {
+                    openWindow(id: PRDetailWindowID.id, value: pr.nodeId)
+                } label: {
+                    Image(systemName: "macwindow.on.rectangle")
+                }
+                .buttonStyle(.borderless)
+                .help("Open in separate window")
+            }
 
             Button {
                 NSWorkspace.shared.open(pr.url)
