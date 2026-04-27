@@ -229,12 +229,32 @@ struct RepoConfigEditor: View {
     /// to the proposed frame.
     var screenshotMode: Bool = false
 
+    /// Local text buffers for the multiline pattern editors. Round-
+    /// tripping through `[String]` strips trailing empty lines, which
+    /// made pressing Return appear broken (the newline got immediately
+    /// erased on every keystroke). Buffers keep the literal editor
+    /// text; we only filter empties when writing back into the
+    /// persisted array.
+    @State private var titlePatternsText: String = ""
+    @State private var rootPatternsText: String = ""
+
     var body: some View {
-        if screenshotMode {
-            editorContent
+        let view: AnyView = if screenshotMode {
+            AnyView(editorContent)
         } else {
-            ScrollView { editorContent }
+            AnyView(ScrollView { editorContent })
         }
+        return view
+            .onAppear {
+                titlePatternsText = config.excludeTitlePatterns.joined(separator: "\n")
+                rootPatternsText  = config.rootPatterns.joined(separator: "\n")
+            }
+            .onChange(of: config.id) { _, _ in
+                // Switched to a different rule — re-seed buffers from
+                // the new config.
+                titlePatternsText = config.excludeTitlePatterns.joined(separator: "\n")
+                rootPatternsText  = config.rootPatterns.joined(separator: "\n")
+            }
     }
 
     @ViewBuilder
@@ -265,13 +285,16 @@ struct RepoConfigEditor: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Ignore PRs by title (one glob per line)")
                             .font(.callout)
-                        TextEditor(text: titlePatternsBinding)
+                        TextEditor(text: $titlePatternsText)
                             .font(.system(.caption, design: .monospaced))
                             .frame(minHeight: 60, maxHeight: 140)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 4)
                                     .stroke(.secondary.opacity(0.2))
                             )
+                            .onChange(of: titlePatternsText) { _, newValue in
+                                config.excludeTitlePatterns = parsePatterns(newValue)
+                            }
                         Text("fnmatch-style, case-insensitive. Examples: \"[Prod deploy]*\", \"chore: bump *\". Matching PRs disappear from lists, notifications, and AI triage.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -292,13 +315,16 @@ struct RepoConfigEditor: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Root patterns (one per line)")
                                 .font(.callout)
-                            TextEditor(text: rootPatternsBinding)
+                            TextEditor(text: $rootPatternsText)
                                 .font(.system(.body, design: .monospaced))
                                 .frame(minHeight: 100, maxHeight: 220)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 4)
                                         .stroke(.secondary.opacity(0.2))
                                 )
+                                .onChange(of: rootPatternsText) { _, newValue in
+                                    config.rootPatterns = parsePatterns(newValue)
+                                }
                             Text("fnmatch globs that mark each subreview root. Examples: \"kernel-*\", \"lib/*\", \"dev-infra\". Order matters within a single rule — first match wins.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -403,19 +429,13 @@ struct RepoConfigEditor: View {
         )
     }
 
-    private var rootPatternsBinding: Binding<String> {
-        Binding(
-            get: { config.rootPatterns.joined(separator: "\n") },
-            set: { newValue in
-                // Accept either newline-separated (TextEditor) or
-                // comma-separated input (legacy paste from older
-                // single-line field).
-                config.rootPatterns = newValue
-                    .split(whereSeparator: { $0.isNewline || $0 == "," })
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-            }
-        )
+    /// Parse a newline-separated (or comma-separated, for legacy paste)
+    /// pattern list into the persisted array — trimming whitespace,
+    /// dropping empties.
+    private func parsePatterns(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0.isNewline || $0 == "," })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     private var providerOverrideBinding: Binding<String> {
@@ -453,15 +473,4 @@ struct RepoConfigEditor: View {
         )
     }
 
-    private var titlePatternsBinding: Binding<String> {
-        Binding(
-            get: { config.excludeTitlePatterns.joined(separator: "\n") },
-            set: { newValue in
-                config.excludeTitlePatterns = newValue
-                    .split(whereSeparator: { $0.isNewline })
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-            }
-        )
-    }
 }
