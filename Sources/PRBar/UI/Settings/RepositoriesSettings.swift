@@ -35,13 +35,30 @@ struct RepositoriesSettings: View {
                 .foregroundStyle(.secondary)
 
             List(selection: $selection) {
-                ForEach(store.userConfigs, id: \.repoGlobs) { config in
-                    sidebarRow(config: config, isBuiltin: false)
-                        .tag(rowId(config))
+                Section {
+                    ForEach(store.userConfigs, id: \.id) { config in
+                        sidebarRow(config: config, isBuiltin: false)
+                            .tag(rowId(config))
+                    }
+                    .onMove { source, destination in
+                        var reordered = store.userConfigs
+                        reordered.move(fromOffsets: source, toOffset: destination)
+                        store.setAll(reordered)
+                    }
+                } footer: {
+                    if store.userConfigs.count > 1 {
+                        Text("Drag to reorder. First match wins, so list specific rules above broader ones.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                ForEach(builtinsNotShadowed, id: \.repoGlobs) { config in
-                    sidebarRow(config: config, isBuiltin: true)
-                        .tag(rowId(config))
+                if !builtinsNotShadowed.isEmpty {
+                    Section("Built-in") {
+                        ForEach(builtinsNotShadowed, id: \.id) { config in
+                            sidebarRow(config: config, isBuiltin: true)
+                                .tag(rowId(config))
+                        }
+                    }
                 }
             }
             .listStyle(.sidebar)

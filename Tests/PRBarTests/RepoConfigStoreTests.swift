@@ -88,6 +88,35 @@ final class RepoConfigStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.userConfigs.last?.rootPatterns, ["kernel-*"])
     }
 
+    func testReorderPreservesRowIdentityAndPersists() throws {
+        let container = PRBarModelContainer.inMemory()
+        let store = RepoConfigStore(container: container)
+        var a = RepoConfig.default; a.repoGlobs = ["acme/a"]
+        var b = RepoConfig.default; b.repoGlobs = ["acme/b"]
+        var c = RepoConfig.default; c.repoGlobs = ["acme/c"]
+        store.setAll([a, b, c])
+
+        let ctx = ModelContext(container)
+        let descriptor = FetchDescriptor<RepoConfigEntry>(
+            sortBy: [SortDescriptor(\RepoConfigEntry.orderIndex)]
+        )
+        let before = try ctx.fetch(descriptor).map(\.persistentModelID)
+        XCTAssertEqual(before.count, 3)
+
+        // Drag c to the front.
+        store.setAll([c, a, b])
+
+        // Same SwiftData rows, just different orderIndex — stable
+        // identity is the whole point of matching by config.id.
+        let ctx2 = ModelContext(container)
+        let after = try ctx2.fetch(descriptor)
+        XCTAssertEqual(Set(after.map(\.persistentModelID)), Set(before))
+
+        let reloaded = RepoConfigStore(container: container)
+        XCTAssertEqual(reloaded.userConfigs.map(\.repoGlobs),
+                       [["acme/c"], ["acme/a"], ["acme/b"]])
+    }
+
     func testSetAllPreservesOrder() {
         let container = PRBarModelContainer.inMemory()
         let store = RepoConfigStore(container: container)
