@@ -46,19 +46,31 @@ enum AppReset {
         UserDefaults.standard.synchronize()
     }
 
-    /// Relaunch via `open -n` (a fresh instance) and quit immediately.
-    /// `-n` forces a new instance even though the current one is still
-    /// terminating; the single-instance check in PRBarApp will let the
-    /// new one through once we're gone.
+    /// Relaunch the app. We can't just `open -n` and `terminate` — the
+    /// child fires while we're still alive, the new instance's
+    /// `enforceSingleInstance` sees us, and exits. Instead we spawn a
+    /// detached shell that waits for our PID to actually die, then
+    /// launches a fresh copy. The shell outlives our process tree
+    /// because /bin/sh re-parents to launchd once we're gone.
     static func relaunch() {
+        let pid = ProcessInfo.processInfo.processIdentifier
         let path = Bundle.main.bundlePath
+            .replacingOccurrences(of: "'", with: "'\\''")
+        let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; /usr/bin/open '\(path)'"
         let task = Process()
-        task.launchPath = "/usr/bin/open"
-        task.arguments = ["-n", path]
-        try? task.run()
-        // Give `open` a moment to fork; otherwise we exit before the
-        // child process is parented and the relaunch is dropped.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        task.launchPath = "/bin/sh"
+        task.arguments = ["-c", script]
+        do {
+            try task.run()
+        } catch {
+            NSLog("AppReset.relaunch: failed to spawn watchdog: %@", String(describing: error))
+        }
+        // Small delay so the watchdog is definitely up-and-polling
+        // before we exit, then quit cleanly. NSApp.terminate gives the
+        // app a chance to flush state; if anything blocks termination
+        // (a sheet, a confirmation), the watchdog still relaunches us
+        // when the user finally dismisses whatever's holding it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             NSApp.terminate(nil)
         }
     }
