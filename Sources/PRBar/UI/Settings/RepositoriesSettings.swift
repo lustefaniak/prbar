@@ -18,6 +18,12 @@ struct RepositoriesSettings: View {
             detail
                 .frame(minWidth: 360)
         }
+        // Drop the local edit-buffer when the selection moves so the
+        // detail pane reflects the freshly-selected row instead of the
+        // previously-edited one. Without this, draft (a parent-level
+        // @State) outlives the .id(selection) view churn and keeps
+        // bleeding the prior config into the editor's bindings.
+        .onChange(of: selection) { _, _ in draft = nil }
     }
 
     // MARK: - sidebar
