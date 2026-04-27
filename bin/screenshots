@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Capture marketing screenshots by launching the real app against
-# fixture data, one stage per launch. Output → screenshots/<stage>.png.
+# fixture data, one stage per launch. Output → docs/screenshots/<stage>.png
+# (committed; rendered inline by README.md).
 #
 # How it works:
 #   1. Launch PRBar with `--screenshot-stage <name>`. AppDelegate boots
@@ -23,7 +24,7 @@ cd "$(dirname "$0")/.."
 ./bin/build
 
 APP="$(pwd)/build/Debug/PRBar.app"
-OUT="$(pwd)/screenshots"
+OUT="$(pwd)/docs/screenshots"
 ID_FILE="/tmp/prbar-screenshot-window-id.txt"
 mkdir -p "$OUT"
 
