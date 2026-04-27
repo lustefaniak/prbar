@@ -82,9 +82,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if storedCap > 0 {
             q.dailyCostCap = storedCap
         }
-        rc.onChange = { [weak q, weak rc] in
+        p.configResolver = rc.makeResolver()
+        rc.onChange = { [weak q, weak rc, weak p] in
             guard let q, let rc else { return }
             q.configResolver = rc.makeResolver()
+            p?.configResolver = rc.makeResolver()
+            // Re-poll so the title-exclude filter applies to anything in
+            // the inbox right now, not just future fetches.
+            p?.pollNow()
         }
         // Hand AI-triage settlement to the coordinator so it can flip the
         // per-PR ready bit and (when the queue idles) flush a batched

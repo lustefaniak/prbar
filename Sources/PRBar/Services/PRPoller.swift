@@ -62,6 +62,13 @@ final class PRPoller {
     @ObservationIgnored
     weak var actionLog: ActionLogStore?
 
+    /// Per-repo config resolver. When set, fetched PRs are filtered
+    /// against the config's `excludeTitlePatterns` before exposure —
+    /// matching PRs are dropped from `prs`, notifications, and the
+    /// queue worker auto-enqueue (since the worker reads `prs`).
+    @ObservationIgnored
+    var configResolver: (@Sendable (_ owner: String, _ repo: String) -> RepoConfig)?
+
     /// Fires after every successful poll with the latest inbox. Used by
     /// `ReadinessCoordinator` to track which review-requested PRs are
     /// waiting on AI triage versus already ready for the user.
@@ -266,12 +273,28 @@ final class PRPoller {
         self.lastFetchedAt = Date()
     }
 
+    /// Apply per-repo `excludeTitlePatterns`. PRs whose resolved config
+    /// has a matching pattern are dropped before they ever reach `prs`,
+    /// notifications, or the auto-enqueue path. Case-insensitive
+    /// fnmatch.
+    private func applyTitleFilter(_ prs: [InboxPR]) -> [InboxPR] {
+        guard let resolver = configResolver else { return prs }
+        return prs.filter { pr in
+            let cfg = resolver(pr.owner, pr.repo)
+            if cfg.excludeTitlePatterns.isEmpty { return true }
+            let lcTitle = pr.title.lowercased()
+            let lcPatterns = cfg.excludeTitlePatterns.map { $0.lowercased() }
+            return !GlobMatcher.anyMatch(lcPatterns, lcTitle)
+        }
+    }
+
     private func poll() async {
         isFetching = true
         defer { isFetching = false }
 
         do {
-            let fetched = try await fetcher()
+            let raw = try await fetcher()
+            let fetched = applyTitleFilter(raw)
             let oldPRs = self.prs
             self.prs = fetched
             let delta = Self.computeDelta(old: oldPRs, new: fetched)

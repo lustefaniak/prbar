@@ -131,6 +131,21 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// review activity.
     var reviewDrafts: Bool = false
 
+    /// fnmatch-style globs matched against the PR title (case-insensitive).
+    /// Any match → the PR is hidden from the inbox / My PRs lists, isn't
+    /// considered for notifications, and the worker never auto-enqueues
+    /// it. Manual Re-run from the detail view is unreachable since the
+    /// row is hidden — that's intended; if you want to review one of
+    /// these, edit the title or unmute the pattern. Examples:
+    /// `["[Prod deploy]*", "*chore: bump*"]`.
+    var excludeTitlePatterns: [String] = []
+
+    /// When true, the worker skips auto-enqueueing PRs that already have
+    /// an APPROVED or CHANGES_REQUESTED decision from another reviewer.
+    /// PR stays visible in the list — you may still want to glance at
+    /// it — just doesn't burn an AI run on something already covered.
+    var skipAIIfReviewedByOthers: Bool = false
+
     /// Master switch for AI triage on this repo. When false, the queue
     /// worker never auto-enqueues PRs from matching repos and they go
     /// straight to "ready for human" — no waiting on AI. Manual Re-run
@@ -187,6 +202,99 @@ struct RepoConfig: Sendable, Hashable, Codable {
 
     func matches(nameWithOwner: String) -> Bool {
         GlobMatcher.anyMatch(repoGlobs, nameWithOwner)
+    }
+
+    // MARK: - Codable (forward-compatible)
+    //
+    // Hand-rolled `init(from:)` so adding new fields to RepoConfig in
+    // future never breaks existing JSON payloads stored in the SwiftData
+    // `RepoConfigEntry` table — every field decodes via
+    // `decodeIfPresent ?? <default from RepoConfig.default>`. The
+    // synthesized encoder is fine; only the decoder needs the shim.
+
+    enum CodingKeys: String, CodingKey {
+        case repoGlobs, excluded
+        case splitMode, rootPatterns, unmatchedStrategy, minFilesPerSubreview
+        case maxParallelSubreviews, collapseAboveSubreviewCount
+        case toolModeOverride, customSystemPrompt, replaceBaseSystemPrompt
+        case maxToolCallsPerSubreview, maxCostUsdPerSubreview
+        case autoApprove
+        case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
+        case aiReviewEnabled, providerOverride, notifyPolicy
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = RepoConfig.default
+        // repoGlobs is the row's identity — required.
+        self.repoGlobs               = try c.decode([String].self, forKey: .repoGlobs)
+        self.excluded                = (try? c.decode(Bool.self, forKey: .excluded)) ?? d.excluded
+        self.splitMode               = (try? c.decode(SplitMode.self, forKey: .splitMode)) ?? d.splitMode
+        self.rootPatterns            = (try? c.decode([String].self, forKey: .rootPatterns)) ?? d.rootPatterns
+        self.unmatchedStrategy       = (try? c.decode(UnmatchedStrategy.self, forKey: .unmatchedStrategy)) ?? d.unmatchedStrategy
+        self.minFilesPerSubreview    = (try? c.decode(Int.self, forKey: .minFilesPerSubreview)) ?? d.minFilesPerSubreview
+        self.maxParallelSubreviews   = (try? c.decode(Int.self, forKey: .maxParallelSubreviews)) ?? d.maxParallelSubreviews
+        self.collapseAboveSubreviewCount = try? c.decodeIfPresent(Int.self, forKey: .collapseAboveSubreviewCount)
+        self.toolModeOverride        = try? c.decodeIfPresent(ToolMode.self, forKey: .toolModeOverride)
+        self.customSystemPrompt      = try? c.decodeIfPresent(String.self, forKey: .customSystemPrompt)
+        self.replaceBaseSystemPrompt = (try? c.decode(Bool.self, forKey: .replaceBaseSystemPrompt)) ?? d.replaceBaseSystemPrompt
+        self.maxToolCallsPerSubreview = (try? c.decode(Int.self, forKey: .maxToolCallsPerSubreview)) ?? d.maxToolCallsPerSubreview
+        self.maxCostUsdPerSubreview  = (try? c.decode(Double.self, forKey: .maxCostUsdPerSubreview)) ?? d.maxCostUsdPerSubreview
+        self.autoApprove             = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
+        self.reviewDrafts            = (try? c.decode(Bool.self, forKey: .reviewDrafts)) ?? d.reviewDrafts
+        self.excludeTitlePatterns    = (try? c.decode([String].self, forKey: .excludeTitlePatterns)) ?? d.excludeTitlePatterns
+        self.skipAIIfReviewedByOthers = (try? c.decode(Bool.self, forKey: .skipAIIfReviewedByOthers)) ?? d.skipAIIfReviewedByOthers
+        self.aiReviewEnabled         = (try? c.decode(Bool.self, forKey: .aiReviewEnabled)) ?? d.aiReviewEnabled
+        self.providerOverride        = try? c.decodeIfPresent(ProviderID.self, forKey: .providerOverride)
+        self.notifyPolicy            = (try? c.decode(NotifyPolicy.self, forKey: .notifyPolicy)) ?? d.notifyPolicy
+    }
+
+    /// Memberwise init survives the explicit `init(from:)`. Listed so
+    /// callers (tests, RepoConfig.default, in-app editors) keep working
+    /// — Swift drops the synthesized memberwise init when any explicit
+    /// init is added.
+    init(
+        repoGlobs: [String],
+        excluded: Bool = false,
+        splitMode: SplitMode = .perSubfolder,
+        rootPatterns: [String] = [],
+        unmatchedStrategy: UnmatchedStrategy = .reviewAtRoot,
+        minFilesPerSubreview: Int = 1,
+        maxParallelSubreviews: Int = 1,
+        collapseAboveSubreviewCount: Int? = nil,
+        toolModeOverride: ToolMode? = nil,
+        customSystemPrompt: String? = nil,
+        replaceBaseSystemPrompt: Bool = false,
+        maxToolCallsPerSubreview: Int = 10,
+        maxCostUsdPerSubreview: Double = 0.30,
+        autoApprove: AutoApproveConfig = .off,
+        reviewDrafts: Bool = false,
+        excludeTitlePatterns: [String] = [],
+        skipAIIfReviewedByOthers: Bool = false,
+        aiReviewEnabled: Bool = true,
+        providerOverride: ProviderID? = nil,
+        notifyPolicy: NotifyPolicy = .batchSettled
+    ) {
+        self.repoGlobs = repoGlobs
+        self.excluded = excluded
+        self.splitMode = splitMode
+        self.rootPatterns = rootPatterns
+        self.unmatchedStrategy = unmatchedStrategy
+        self.minFilesPerSubreview = minFilesPerSubreview
+        self.maxParallelSubreviews = maxParallelSubreviews
+        self.collapseAboveSubreviewCount = collapseAboveSubreviewCount
+        self.toolModeOverride = toolModeOverride
+        self.customSystemPrompt = customSystemPrompt
+        self.replaceBaseSystemPrompt = replaceBaseSystemPrompt
+        self.maxToolCallsPerSubreview = maxToolCallsPerSubreview
+        self.maxCostUsdPerSubreview = maxCostUsdPerSubreview
+        self.autoApprove = autoApprove
+        self.reviewDrafts = reviewDrafts
+        self.excludeTitlePatterns = excludeTitlePatterns
+        self.skipAIIfReviewedByOthers = skipAIIfReviewedByOthers
+        self.aiReviewEnabled = aiReviewEnabled
+        self.providerOverride = providerOverride
+        self.notifyPolicy = notifyPolicy
     }
 }
 

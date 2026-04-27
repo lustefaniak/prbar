@@ -350,7 +350,22 @@ final class ReviewQueueWorker {
             // Skip drafts unless the repo config opts in — drafts churn a
             // lot and reviewing them burns cost on intermediate state.
             if pr.isDraft && !cfg.reviewDrafts { continue }
+            // Skip PRs already reviewed by another human — the row stays
+            // visible (filter is auto-enqueue-only) but we don't burn an
+            // AI run on something already covered. Manual Re-run still
+            // works.
+            if cfg.skipAIIfReviewedByOthers && Self.alreadyReviewedByOthers(pr) { continue }
             enqueue(pr)
+        }
+    }
+
+    /// True when at least one other reviewer has weighed in (APPROVED
+    /// or CHANGES_REQUESTED). REVIEW_REQUIRED / nil means nobody has
+    /// reviewed yet so AI triage is still useful.
+    static func alreadyReviewedByOthers(_ pr: InboxPR) -> Bool {
+        switch (pr.reviewDecision ?? "").uppercased() {
+        case "APPROVED", "CHANGES_REQUESTED": return true
+        default: return false
         }
     }
 
