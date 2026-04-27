@@ -293,7 +293,13 @@ final class ReviewQueueWorker {
         // SHA → auto re-triage (the PR moved). Cache miss → fresh run.
         if !force, let existing = reviews[pr.nodeId], existing.status.isTerminal {
             if existing.headSha == pr.headSha, case .completed = existing.status {
-                return   // already have a fresh verdict for this exact commit
+                // Already have a fresh verdict for this exact commit, but
+                // the readiness coordinator still needs the "settled" pulse
+                // so it knows this PR is human-ready (otherwise restarts
+                // with persisted reviews never trigger a notification).
+                let settled = inFlight == 0 && pending.isEmpty
+                onReviewSettled?(pr.nodeId, settled)
+                return
             }
             // SHA mismatch or previously failed → fall through to re-queue.
         }
