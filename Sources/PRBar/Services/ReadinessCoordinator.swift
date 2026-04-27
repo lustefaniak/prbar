@@ -38,11 +38,23 @@ final class ReadinessCoordinator {
 
     private var tracked: [String: Tracked] = [:]
 
+    /// Persistent dedup key: `prNodeId → headSha last notified at`. Survives
+    /// app restarts so we don't re-ping the user about a PR they've already
+    /// seen. New commits land at a fresh SHA, which intentionally re-arms
+    /// the notification so the user knows the AI triaged the new push.
+    @ObservationIgnored
+    private var notifiedSHAs: [String: String]
+
+    @ObservationIgnored
+    private let store: NotifiedSHAStore
+
     @ObservationIgnored
     private weak var notifier: Notifier?
 
-    init(notifier: Notifier? = nil) {
+    init(notifier: Notifier? = nil, store: NotifiedSHAStore = UserDefaultsNotifiedSHAStore()) {
         self.notifier = notifier
+        self.store = store
+        self.notifiedSHAs = store.load()
     }
 
     func setNotifier(_ n: Notifier) {
@@ -72,11 +84,17 @@ final class ReadinessCoordinator {
                 // First time we see this PR in review-requested state.
                 // If the repo has AI disabled, it's ready for human now;
                 // otherwise wait for the worker callback.
+                //
+                // Persistent-dedup: if we already notified about this PR
+                // at this same head SHA in a previous session, mark it
+                // already-notified so the next flush skips it. A new
+                // commit (different SHA) intentionally re-arms.
+                let alreadyNotified = (notifiedSHAs[pr.nodeId] == pr.headSha)
                 tracked[pr.nodeId] = Tracked(
                     pr: pr,
                     policy: cfg.notifyPolicy,
-                    isReadyForHuman: !cfg.aiReviewEnabled,
-                    hasNotified: false
+                    isReadyForHuman: !cfg.aiReviewEnabled || alreadyNotified,
+                    hasNotified: alreadyNotified
                 )
             } else {
                 // Keep the latest PR snapshot (title/state may have moved).
@@ -113,7 +131,9 @@ final class ReadinessCoordinator {
         notifier.enqueue(events)
         for entry in toFire {
             tracked[entry.pr.nodeId]?.hasNotified = true
+            notifiedSHAs[entry.pr.nodeId] = entry.pr.headSha
         }
+        store.save(notifiedSHAs)
     }
 
     /// Fire one grouped notification for every `.batchSettled` PR that's
@@ -127,7 +147,9 @@ final class ReadinessCoordinator {
         notifier.enqueue(events)
         for entry in toFire {
             tracked[entry.pr.nodeId]?.hasNotified = true
+            notifiedSHAs[entry.pr.nodeId] = entry.pr.headSha
         }
+        store.save(notifiedSHAs)
     }
 
     private static func event(for pr: InboxPR) -> NotificationEvent {
@@ -139,5 +161,42 @@ final class ReadinessCoordinator {
             prNumber: pr.number,
             prURL: pr.url
         )
+    }
+}
+
+/// Indirection so tests can drop a fake without hitting UserDefaults.
+protocol NotifiedSHAStore: Sendable {
+    func load() -> [String: String]
+    func save(_ map: [String: String])
+}
+
+/// UserDefaults-backed store for `(prNodeId → headSha)` of last-notified
+/// review-request banners. Caps at 500 entries (LRU-by-insertion-order
+/// since we drop oldest when over) so the dict can't grow unbounded across
+/// months of use.
+struct UserDefaultsNotifiedSHAStore: NotifiedSHAStore {
+    private static let key = "readinessNotifiedSHAs"
+    private static let cap = 500
+
+    func load() -> [String: String] {
+        guard let data = UserDefaults.standard.data(forKey: Self.key),
+              let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    func save(_ map: [String: String]) {
+        var bounded = map
+        if bounded.count > Self.cap {
+            // No timestamp on entries; trim to first `cap` keys in dict
+            // iteration order. Approximate, but `notifiedSHAs` is mostly
+            // append-only so this drops "oldest-ish" entries cheaply.
+            let surplus = bounded.count - Self.cap
+            for key in bounded.keys.prefix(surplus) {
+                bounded.removeValue(forKey: key)
+            }
+        }
+        guard let data = try? JSONEncoder().encode(bounded) else { return }
+        UserDefaults.standard.set(data, forKey: Self.key)
     }
 }
