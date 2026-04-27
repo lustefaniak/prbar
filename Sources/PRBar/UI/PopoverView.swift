@@ -92,16 +92,14 @@ struct PopoverView: View {
         // works; this is the discoverable in-popover entry point.
         HStack {
             Spacer()
-            // Plain Button (not SettingsLink) so we can dismiss the
-            // popover before opening Settings — otherwise the popover
-            // lingers behind the Settings window. Routes through
-            // AppDelegate.openSettings which uses the same modern /
-            // legacy selector dance Apple's SettingsLink does.
-            Button {
-                let appDelegate = NSApp.delegate as? AppDelegate
-                appDelegate?.dismissPopover()
-                appDelegate?.openSettings(nil)
-            } label: {
+            // SettingsLink talks to SwiftUI's internal Settings-scene
+            // plumbing, which works reliably from inside an animating-
+            // closed popover (the manual NSApp.perform / sendAction
+            // path lost the dispatch when the popover was tearing down).
+            // The simultaneous tap gesture dismisses the popover in
+            // parallel with SettingsLink's action — both fire, neither
+            // blocks the other.
+            SettingsLink {
                 Image(systemName: "gearshape")
                     .font(.body)
                     .foregroundStyle(.secondary)
@@ -109,6 +107,11 @@ struct PopoverView: View {
             .buttonStyle(.plain)
             .keyboardShortcut(",", modifiers: .command)
             .help("Settings")
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    (NSApp.delegate as? AppDelegate)?.dismissPopover()
+                }
+            )
         }
     }
 

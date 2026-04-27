@@ -22,7 +22,11 @@ actor SnapshotCache {
         SnapshotCache(container: PRBarModelContainer.live())
     }
 
-    func load() -> [InboxPR] {
+    /// Read-only — each call creates its own `ModelContext` and never
+    /// touches actor-isolated state, so it's safe to call synchronously
+    /// from any thread (and crucially from the synchronous `live()`
+    /// construction path, before the polling task starts).
+    nonisolated func load() -> [InboxPR] {
         let context = ModelContext(container)
         let descriptor = FetchDescriptor<InboxSnapshotEntry>()
         guard let rows = try? context.fetch(descriptor) else { return [] }

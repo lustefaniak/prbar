@@ -177,7 +177,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Disable AppKit window state restoration. PRBar is a menu-bar
+    /// agent (`LSUIElement: true`); the popover lives off the status
+    /// item and the Settings / detail windows are user-initiated.
+    /// Auto-restoring "whatever was open at quit" leads to surprises
+    /// like Settings popping up on launch just because the user had
+    /// it open last time. Explicit user gestures only.
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldRestoreApplicationState(_ app: NSApplication, coder: NSCoder) -> Bool {
+        false
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // macOS 26's SwiftUI eagerly materializes the `Settings { … }`
+        // scene's window at launch — it's already in `NSApp.windows`
+        // with `isVisible == true` by the time we get here, even
+        // though no user gesture asked for it. On a regular app it'd
+        // be hidden behind the main window; on an LSUIElement menu-
+        // bar agent it pops to front because nothing else is showing.
+        // Hide any pre-shown Settings/Preferences-identified window;
+        // the next explicit `openSettings(_:)` re-shows it via
+        // `makeKeyAndOrderFront`, which keeps working on the same
+        // already-allocated NSWindow.
+        if let preShown = Self.findExistingSettingsWindow() {
+            preShown.orderOut(nil)
+        }
         installStatusItem()
         installPopover()
         installRightClickMenu()
@@ -318,19 +345,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.performClose(nil)
     }
 
-    /// Programmatically open Settings — used by the right-click menu.
-    /// Settings scene exposes its window through `showSettingsWindow:`
-    /// (macOS 14+); fall back to `showPreferencesWindow:` on older.
+    /// Programmatically open Settings — used by the right-click menu
+    /// and any internal caller.
+    ///
+    /// Two layers:
+    ///
+    /// 1. If a Settings window already exists in `NSApp.windows`
+    ///    (SwiftUI keeps it around after close on modern macOS), just
+    ///    bring it back to front. The selector dispatch route below
+    ///    is unreliable on the *second* open — SwiftUI's handler
+    ///    sometimes no-ops when the window already exists but is
+    ///    hidden, so the user clicks "Settings…" and nothing happens.
+    /// 2. Otherwise dispatch via `NSApp.sendAction(_:to:nil:)` which
+    ///    walks the responder chain and reaches SwiftUI's registered
+    ///    `showSettingsWindow:` handler. Falls back to the legacy
+    ///    `showPreferencesWindow:` selector on pre-macOS-14.
+    ///
+    /// Note: `NSApp.perform(...)` looks superficially equivalent but
+    /// calls the selector directly on `NSApp` rather than walking the
+    /// responder chain — SwiftUI's handler doesn't sit on `NSApp`
+    /// itself, so `perform` quietly no-ops. Always use `sendAction`.
     @objc func openSettings(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
-        let modern = Selector(("showSettingsWindow:"))
-        if NSApp.responds(to: modern) {
-            NSApp.perform(modern, with: nil)
+        if let existing = Self.findExistingSettingsWindow() {
+            existing.makeKeyAndOrderFront(sender)
             return
         }
+        let modern = Selector(("showSettingsWindow:"))
+        if NSApp.sendAction(modern, to: nil, from: sender) { return }
         let legacy = Selector(("showPreferencesWindow:"))
-        if NSApp.responds(to: legacy) {
-            NSApp.perform(legacy, with: nil)
+        _ = NSApp.sendAction(legacy, to: nil, from: sender)
+    }
+
+    private static func findExistingSettingsWindow() -> NSWindow? {
+        NSApp.windows.first { w in
+            // SwiftUI's Settings scene window has a stable identifier
+            // that contains "Settings". Title is locale-dependent and
+            // can be empty while the window is hidden; identifier is
+            // stable, so prefer it.
+            let id = w.identifier?.rawValue ?? ""
+            if id.localizedCaseInsensitiveContains("setting") { return true }
+            if id.localizedCaseInsensitiveContains("preference") { return true }
+            return false
         }
     }
 

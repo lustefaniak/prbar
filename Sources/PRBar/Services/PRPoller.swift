@@ -95,12 +95,17 @@ final class PRPoller {
     }
 
     /// Load the last persisted snapshot (if any) into `prs`. Idempotent —
-    /// no-op if `prs` is already populated. Call once early in app launch.
-    func loadCached() async {
+    /// no-op if `prs` is already populated. Synchronous because
+    /// `SnapshotCache.load()` is `nonisolated` (read-only, fresh
+    /// `ModelContext` per call); call this *before* `start()` so the
+    /// popover renders cached PRs the first time it opens instead of
+    /// the empty / "Fetching…" state until the first poll lands.
+    func loadCached() {
         guard prs.isEmpty, let cache else { return }
-        let cached = await cache.load()
+        let cached = cache.load()
         if !cached.isEmpty {
             self.prs = cached
+            self.lastFetchedAt = Date()
         }
     }
 
@@ -140,7 +145,7 @@ final class PRPoller {
             },
             cache: snapshotCache
         )
-        Task { await poller.loadCached() }
+        poller.loadCached()
         poller.start()
         return poller
     }
