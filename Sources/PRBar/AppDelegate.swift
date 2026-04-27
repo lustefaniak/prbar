@@ -192,6 +192,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // macOS 26's SwiftUI eagerly materializes the `Settings { … }`
+        // scene's window at launch — it's already in `NSApp.windows`
+        // with `isVisible == true` by the time we get here, even
+        // though no user gesture asked for it. On a regular app it'd
+        // be hidden behind the main window; on an LSUIElement menu-
+        // bar agent it pops to front because nothing else is showing.
+        // Hide any pre-shown Settings/Preferences-identified window;
+        // the next explicit `openSettings(_:)` re-shows it via
+        // `makeKeyAndOrderFront`, which keeps working on the same
+        // already-allocated NSWindow.
+        if let preShown = Self.findExistingSettingsWindow() {
+            preShown.orderOut(nil)
+        }
         installStatusItem()
         installPopover()
         installRightClickMenu()
