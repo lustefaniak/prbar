@@ -24,6 +24,7 @@ struct PRDetailView: View {
     @AppStorage("approveIncludesComment") private var approveIncludesCommentDefault = false
     @State private var showActionPicker: Bool = false
     @State private var descriptionExpanded: Bool = false
+    @State private var branchCopied: Bool = false
 
     /// Set when the user clicks an annotation row → drives scroll +
     /// expand-bubble in the diff. Cleared after a short delay so the
@@ -208,6 +209,21 @@ struct PRDetailView: View {
                 Text("`\(pr.baseRef)` ← `\(pr.headRef)`")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
+                Button {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(pr.headRef, forType: .string)
+                    branchCopied = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        branchCopied = false
+                    }
+                } label: {
+                    Image(systemName: branchCopied ? "checkmark" : "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help(branchCopied ? "Copied" : "Copy branch name")
                 Text("·")
                     .foregroundStyle(.secondary)
                 Text("+\(pr.totalAdditions) -\(pr.totalDeletions) (\(pr.changedFiles) files)")
