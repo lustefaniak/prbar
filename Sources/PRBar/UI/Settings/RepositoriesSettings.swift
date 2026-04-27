@@ -14,9 +14,9 @@ struct RepositoriesSettings: View {
     var body: some View {
         HSplitView {
             sidebar
-                .frame(minWidth: 220)
+                .frame(minWidth: 200, idealWidth: 240, maxWidth: 280)
             detail
-                .frame(minWidth: 360)
+                .frame(minWidth: 480)
         }
         // Drop the local edit-buffer when the selection moves so the
         // detail pane reflects the freshly-selected row instead of the
@@ -337,7 +337,7 @@ struct RepoConfigEditor: View {
                             value: $config.maxToolCallsPerSubreview, in: 0...50)
                     HStack {
                         Text("Max cost / subreview: $\(String(format: "%.2f", config.maxCostUsdPerSubreview))")
-                        Slider(value: $config.maxCostUsdPerSubreview, in: 0.05...2.0, step: 0.05)
+                        Slider(value: $config.maxCostUsdPerSubreview, in: 0.05...3.0, step: 0.05)
                     }
                 }
 
