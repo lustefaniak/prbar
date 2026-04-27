@@ -43,6 +43,32 @@ targets:
     dependencies:
       - package: MarkdownUI
       - package: Sparkle
+    # Custom Info.plist — Sparkle keys (SUFeedURL / SUPublicEDKey / SUEnableInstallerLauncherService)
+    # are not in Apple's INFOPLIST_KEY_* allow-list, so GENERATE_INFOPLIST_FILE silently drops them.
+    # Generating a real plist via XcodeGen is the only way to embed them.
+    info:
+      path: Resources/PRBar-Info.plist
+      properties:
+        LSUIElement: true
+        LSMinimumSystemVersion: "14.0"
+        CFBundleDisplayName: PRBar
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleDevelopmentRegion: $(DEVELOPMENT_LANGUAGE)
+        NSHumanReadableCopyright: "Copyright Lukasz Stefaniak"
+        # Sparkle auto-update. Feed lives on the gh-pages branch
+        # (published by .github/workflows/release.yml on each tag).
+        # The public EdDSA key is generated once via `bin/sparkle-keygen`
+        # — the matching private key stays in the macOS Keychain
+        # locally and in the SPARKLE_ED_PRIVATE_KEY GitHub secret on CI.
+        SUFeedURL: "https://lustefaniak.github.io/prbar/appcast.xml"
+        SUPublicEDKey: "K1o93vv5SuisDDP+LIRbLJddFf3PXpa3JoiKTnl2Jh4="
+        SUEnableInstallerLauncherService: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.lustefaniak.prbar
@@ -54,21 +80,7 @@ targets:
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         DEVELOPMENT_TEAM: ""
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_LSUIElement: YES
-        INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
-        INFOPLIST_KEY_CFBundleDisplayName: PRBar
-        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright Lukasz Stefaniak"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # Sparkle auto-update. Feed lives on the gh-pages branch
-        # (published by .github/workflows/release.yml on each tag).
-        # The public EdDSA key is generated once via `bin/sparkle-keygen`
-        # — the matching private key stays in the macOS Keychain
-        # locally and in the SPARKLE_ED_PRIVATE_KEY GitHub secret on CI.
-        # Replace the placeholder below the first time you run keygen.
-        INFOPLIST_KEY_SUFeedURL: "https://lustefaniak.github.io/prbar/appcast.xml"
-        INFOPLIST_KEY_SUPublicEDKey: "K1o93vv5SuisDDP+LIRbLJddFf3PXpa3JoiKTnl2Jh4="
-        INFOPLIST_KEY_SUEnableInstallerLauncherService: NO
 
   PRBarTests:
     type: bundle.unit-test
