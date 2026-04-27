@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-PRBar — macOS menu-bar Swift app that monitors my GitHub PRs (via `gh`) and runs AI-assisted reviews on incoming review requests (via `claude` CLI). The full design + Phase-by-Phase status lives in [docs/PLAN.md](docs/PLAN.md). Read it before any non-trivial change — it documents both intent and the divergences we've already paid for in lessons.
+PRBar — macOS menu-bar Swift app that monitors GitHub PRs (via `gh`) and runs AI-assisted reviews on incoming review requests (via `claude` / `codex` CLI). The MVP and Phase 0–6 work landed long ago; the project is in normal-development mode. Design history, architectural rationale, what's shipped beyond the original spec, and the live "still to do" list live in [docs/PLAN.md](docs/PLAN.md). Read PLAN.md before any non-trivial change — it documents both intent and the divergences we've already paid for in lessons.
+
+## Workflow
+
+`main` is branch-protected. Non-trivial work happens on a `lukasz-<feature>` branch, opens a PR (squash-merged, linear history — merge commits are disabled at the repo level), and must pass the `build-test` CI job before merge. Required approvals = 0 (solo author, GitHub blocks self-approval). Admin override (`enforce_admins: false`) is the deliberate escape hatch for doc-only edits (`CLAUDE.md`, `PLAN.md`, `README.md`), screenshot regeneration via `bin/screenshots`, and emergency fixes — those can push directly to `main`. Force-with-lease still applies if rewriting history on a feature branch.
 
 ## Build / test / run
 
@@ -30,15 +34,20 @@ This is the fast feedback loop for `ClaudeProviderIntegrationTests` — real-API
 
 ## Architecture (high-level wiring)
 
-`PRBarApp.swift` is `@main`. It constructs and wires three `@MainActor @Observable` classes, exposes them via `.environment(...)`, and views read with `@Environment(...)`:
+`PRBarApp.swift` is `@main`. `AppDelegate` constructs the `@MainActor @Observable` services and exposes them through `.environment(...)`; views read with `@Environment(...)`. The live services:
 
-1. **`PRPoller.live()`** — 60s polling loop calling `GHClient.fetchInbox()`. Per-PR refresh / merge / postReview route through `GHClient` too. `SnapshotCache` (actor) persists `[InboxPR]` to `~/Library/Application Support/io.synq.prbar/inbox-snapshot.json` so launches show known state immediately. After each successful poll, calls `EventDeriver.events(from:, oldPRs:)` (pure function) and `notifier.enqueue(events)`.
+1. **`PRPoller.live()`** — 60s polling loop calling `GHClient.fetchInbox()`. Per-PR refresh / merge / postReview route through `GHClient` too. `SnapshotCache` (actor) persists `[InboxPR]` so launches show known state immediately. After each poll, fires `EventDeriver.events(from:oldPRs:)` for *author-side* events (ready-to-merge, CI failed) and hands the full inbox to `ReadinessCoordinator.track(prs:)` — which now owns the review-request notification path.
 2. **`Notifier()`** — coalesces events into a 60s settling window, delivers via `UNUserNotificationCenter` (`UNNotificationDeliverer`). Suppressed while popover is open. Pluggable `NotificationDeliverer` protocol for tests.
-3. **`ReviewQueueWorker.live()`** — drains a queue of pending AI reviews. For each PR: `GHClient.fetchDiff` → `MonorepoSplitter.split` (trivial single-Subdiff for now; Phase 4 will multi) → optional `RepoCheckoutManager.provision` (only in `.minimal` mode) → `ContextAssembler.assemble` → `ClaudeProvider.review` → `ResultAggregator.aggregate` → store as `ReviewState.completed(AggregatedReview)`. `maxConcurrent=2`. Auto-enqueues review-requested PRs after each poll via `enqueueNewReviewRequests`.
+3. **`ReviewQueueWorker.live()`** — drains a queue of pending AI reviews. For each PR: `GHClient.fetchDiff` → `MonorepoSplitter.split` (per-subfolder routing, with `collapseAboveSubreviewCount` fallback for sprawling PRs) → optional `RepoCheckoutManager.provision` (only in `.minimal` mode) → `ContextAssembler.assemble` → `ClaudeProvider` / `CodexProvider` → `ResultAggregator.aggregate` → store as `ReviewState.completed(AggregatedReview)`. `maxConcurrent=2`, drained newest-PR-first (not FIFO). Auto-enqueues review-requested PRs after each poll via `enqueueNewReviewRequests`. Cache-hit short-circuits *still* fire `onReviewSettled` — see gotchas.
+4. **`ReadinessCoordinator`** — owns "ready for human review" signal per repo's `NotifyPolicy` (`.batchSettled` default, `.eachReady` opt-in). Persists notified `(prNodeId, headSha)` map to UserDefaults so restarts don't re-ping; new SHA re-arms. Worker calls `noteReviewSettled` on every triage completion *and* on cache-hit no-ops; coordinator flushes `Notifier.enqueue` only when worker idles.
+5. **`NotificationActionRouter`** (`@MainActor` NSObject) — `UNUserNotificationCenterDelegate`. Registers categories with `[Merge all] [Open]` / `[Open]` actions at launch and routes taps to `PRPoller.mergePR` / `NSWorkspace.open`. AppDelegate holds a strong reference (the system keeps the delegate weakly).
+6. **`RepoConfigStore`** — SwiftData-backed user overrides. `onChange` triggers `pollNow` so live config edits apply immediately without waiting 60s.
+7. **`ActionLogStore`** — every `gh pr review` / `gh pr merge` / auto-approve fire records one entry (success and failure both). Drives the History tab.
+8. **`DiffStore`**, **`FailureLogStore`** — caches that survive relaunch via SwiftData (parsed `[Hunk]` per `(prNodeId, headSha)`; CI-failure log tails per CheckRun).
 
 Subprocess + I/O actors:
 - **`GHClient`** (actor) wraps `gh`: `fetchInbox` / `fetchPR` / `fetchDiff` / `mergePR` / `postReview`.
-- **`ProcessRunner`** (enum, static async) runs Foundation `Process` with **temp-file redirection** (not `Pipe()`). Pipes deadlock on output >64 KB; the inbox response is ~110 KB.
+- **`ProcessRunner`** (enum, static async) — two paths: `run(...)` redirects stdout to a temp file (avoids the 64 KB Pipe-deadlock; the inbox response is ~110 KB), `runStreaming(...)` uses `Pipe` + a readability handler with mutex-guarded line buffering for `claude` so we get live progress + SIGTERM-on-overrun.
 - **`RepoCheckoutManager`** (actor) — bare clone per repo (`gh repo clone … -- --bare --depth=50 --filter=blob:none`) + transient sparse worktrees per (repo, headSha). Used in `.minimal` mode so the AI has a real cwd for `Read`/`Glob`/`Grep` and per-subfolder `CLAUDE.md` / `.mcp.json` resolves.
 
 AI review pipeline:
@@ -50,6 +59,7 @@ AI review pipeline:
 Test seams (use these instead of mocking subprocess-y types directly):
 - `PRPoller(fetcher:, prRefresher:, prMerger:, prReviewer:, cache:)` — inject closures.
 - `Notifier(deliverer: NotificationDeliverer)` — `RecordingDeliverer` actor captures what would have been sent.
+- `ReadinessCoordinator(notifier:, store:)` — inject `NotifiedSHAStore` (use `InMemoryNotifiedSHAStore` from tests) so the persistent dedup doesn't bleed across runs.
 - `ReviewQueueWorker(diffFetcher:, checkoutManager: nil)` — inject the diff source; `provider` is settable so tests use `StubProvider` / `SlowStubProvider` / `ThrowingStubProvider` (in `ReviewQueueWorkerTests`).
 - `ClaudeProvider.buildArgs(bundle:, options:)` is exposed for argv assertion without spawning claude.
 
@@ -64,7 +74,7 @@ Three flavors, all run by `bin/test`:
   - **`ClaudeProviderIntegrationTests`** — gated by `touch /tmp/prbar-run-claude-tests` because each call costs real money (~$0.05–$0.20). `bin/test` always skips by default. xcodebuild env-var pass-through to the test runner doesn't work reliably, hence the sentinel file.
   - **`RepoCheckoutManagerTests`** — uses a local fixture git repo (no network, no gh auth). Verifies the clone + worktree-add + worktree-remove lifecycle.
 
-When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: `EventDeriverTests`, `PRPollerTests`, `SnapshotCacheTests`, `ContextAssemblerTests`, `ReviewQueueWorkerTests`, `ClaudeProviderIntegrationTests`. The compiler tells you which.
+When you add a field to `InboxPR`, every test file that constructs one (currently around a dozen — grep `func makePR` / `InboxPR(` under `Tests/`) has its own helper that needs the field threaded through. The compiler tells you which.
 
 **Adding a new env-injected `@Observable` service** (e.g. a new `*Store`) means updating: the service file, `AppDelegate` (property + init + popover env), and `PRBarApp.body` (Settings env). LSP false positives make the gap hard to spot from squigglies alone — trust `bin/build`.
 
@@ -118,7 +128,7 @@ When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: 
 
 - Don't commit `PRBar.xcodeproj/` — it's generated.
 - Don't add Swift files via Xcode "Add Files…" — drop them in `Sources/PRBar/<subdir>/` and run `bin/regen`.
-- `main` is branch-protected — non-trivial changes go through a PR on a feature branch, squash-merged with linear history (no merge commits — disabled at the repo level; rebase is available as a fallback). Branch naming: `lukasz-<feature>`. Required CI check on PRs: `build-test`. Admin override (`enforce_admins: false`) is the deliberate escape hatch for doc-only edits (CLAUDE.md, PLAN.md, README.md), screenshot regeneration, and emergency fixes — those can push straight to `main`.
+- Don't push non-trivial changes straight to `main` — see §Workflow at the top of this file for the PR-and-CI gate and the doc-only / emergency override.
 - Don't call `claude` with `--permission-mode default` or `bypassPermissions` from app code. See PLAN.md §"AI Review Pipeline" for the locked invocation shape.
 - Don't add `Bash` / `Edit` / `Write` / `Task` / `Agent` to the AI's `--allowedTools` list. Those are deliberately disallowed; the AI is a judge, not a fixer.
 - Don't drop `--quiet` from `bin/build` (test output is silenced there on purpose) or *add* it to `bin/test` (we want test pass/fail visible).
