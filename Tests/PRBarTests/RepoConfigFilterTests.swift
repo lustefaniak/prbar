@@ -62,6 +62,36 @@ final class RepoConfigFilterTests: XCTestCase {
 
     // MARK: - Forward-compat Codable
 
+    func testRepoConfigRoundtripsAllFields() throws {
+        var cfg = RepoConfig.default
+        cfg.repoGlobs = ["acme/cloud"]
+        cfg.rootPatterns = ["kernel-*", "lib/*", "dev-infra"]
+        cfg.unmatchedStrategy = .groupAsOther
+        cfg.minFilesPerSubreview = 3
+        cfg.maxParallelSubreviews = 4
+        cfg.collapseAboveSubreviewCount = 8
+        cfg.toolModeOverride = .minimal
+        cfg.customSystemPrompt = "Be terse."
+        cfg.replaceBaseSystemPrompt = true
+        cfg.maxToolCallsPerSubreview = 12
+        cfg.maxCostUsdPerSubreview = 0.5
+        cfg.autoApprove = AutoApproveConfig(
+            enabled: true, minConfidence: 0.95,
+            requireZeroBlockingAnnotations: true, maxAdditions: 100
+        )
+        cfg.reviewDrafts = true
+        cfg.excludeTitlePatterns = ["[Prod deploy]*"]
+        cfg.skipAIIfReviewedByOthers = true
+        cfg.aiReviewEnabled = false
+        cfg.providerOverride = .codex
+        cfg.notifyPolicy = .eachReady
+
+        let data = try JSONEncoder().encode(cfg)
+        let decoded = try JSONDecoder().decode(RepoConfig.self, from: data)
+
+        XCTAssertEqual(decoded, cfg, "RepoConfig must round-trip every field — partial Codable could silently drop edits at save() time")
+    }
+
     func testRepoConfigDecodesMissingNewFieldsAsDefaults() throws {
         // Simulates a stored payload from an older schema (no
         // excludeTitlePatterns / skipAIIfReviewedByOthers keys).

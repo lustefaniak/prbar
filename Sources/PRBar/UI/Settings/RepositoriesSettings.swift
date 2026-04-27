@@ -237,6 +237,23 @@ struct RepoConfigEditor: View {
                     Toggle("Exclude (skip all PRs from these repos)", isOn: $config.excluded)
                     Toggle("Auto-review draft PRs", isOn: $config.reviewDrafts)
                         .help("Drafts churn a lot; off by default. Re-run is always available manually.")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Ignore PRs by title (one glob per line)")
+                            .font(.callout)
+                        TextEditor(text: titlePatternsBinding)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(minHeight: 60, maxHeight: 140)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(.secondary.opacity(0.2))
+                            )
+                        Text("fnmatch-style, case-insensitive. Examples: \"[Prod deploy]*\", \"chore: bump *\". Matching PRs disappear from lists, notifications, and AI triage.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle("Skip AI when another reviewer has already weighed in",
+                           isOn: $config.skipAIIfReviewedByOthers)
+                        .help("Row stays visible; AI just doesn't auto-run when reviewDecision is APPROVED or CHANGES_REQUESTED. Manual Re-run still works.")
                 }
 
                 section("Splitter") {
@@ -287,10 +304,12 @@ struct RepoConfigEditor: View {
                         Text("Minimal — read-only code exploration").tag("minimal")
                         Text("None — pure prompt, no exploration").tag("none")
                     }
-                    LabeledContent("Custom system prompt") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Custom system prompt")
+                            .font(.callout)
                         TextEditor(text: customPromptBinding)
                             .font(.system(.caption, design: .monospaced))
-                            .frame(minHeight: 60, maxHeight: 140)
+                            .frame(minHeight: 200, maxHeight: 480)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 4)
                                     .stroke(.secondary.opacity(0.2))
@@ -395,6 +414,18 @@ struct RepoConfigEditor: View {
         Binding(
             get: { config.customSystemPrompt ?? "" },
             set: { config.customSystemPrompt = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private var titlePatternsBinding: Binding<String> {
+        Binding(
+            get: { config.excludeTitlePatterns.joined(separator: "\n") },
+            set: { newValue in
+                config.excludeTitlePatterns = newValue
+                    .split(whereSeparator: { $0.isNewline })
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            }
         )
     }
 }
