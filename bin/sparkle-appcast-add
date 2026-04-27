@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Build (or update) appcast.xml with a new release entry.
+#
+# Inputs (env or args):
+#   DMG               — path to the signed DMG
+#   VERSION           — marketing version (e.g. 0.2.0). Defaults to bin/version marketing.
+#   BUILD             — CFBundleVersion (e.g. 47).      Defaults to bin/version build.
+#   TAG               — git tag (e.g. v0.2.0).          Defaults to v$VERSION.
+#   RELEASE_NOTES_URL — link to release notes (optional, defaults to
+#                       the GitHub release page for $TAG).
+#   APPCAST_PATH      — path to existing appcast.xml to update in place
+#                       (default: build/release/appcast.xml — fresh feed).
+#
+# Output: writes the updated appcast.xml to APPCAST_PATH. Existing items
+# are preserved; the new item is inserted at the top of <channel>.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+DMG="${DMG:-${1:-}}"
+if [[ -z "$DMG" || ! -f "$DMG" ]]; then
+  echo "usage: DMG=path/to/PRBar-x.y.z.dmg $0" >&2
+  exit 64
+fi
+
+VERSION="${VERSION:-$(./bin/version marketing)}"
+BUILD="${BUILD:-$(./bin/version build)}"
+TAG="${TAG:-v$VERSION}"
+RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-https://github.com/lustefaniak/prbar/releases/tag/$TAG}"
+APPCAST_PATH="${APPCAST_PATH:-build/release/appcast.xml}"
+
+mkdir -p "$(dirname "$APPCAST_PATH")"
+
+# sign_update outputs e.g.  sparkle:edSignature="…" length="…"
+SIGN_ATTRS="$(./bin/sparkle-sign "$DMG")"
+DMG_NAME="$(basename "$DMG")"
+DOWNLOAD_URL="https://github.com/lustefaniak/prbar/releases/download/$TAG/$DMG_NAME"
+PUB_DATE="$(LC_ALL=C TZ=UTC date '+%a, %d %b %Y %H:%M:%S +0000')"
+
+ITEM=$(cat <<EOF
+        <item>
+            <title>Version $VERSION</title>
+            <link>$RELEASE_NOTES_URL</link>
+            <sparkle:version>$BUILD</sparkle:version>
+            <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <pubDate>$PUB_DATE</pubDate>
+            <enclosure url="$DOWNLOAD_URL" $SIGN_ATTRS type="application/octet-stream" />
+        </item>
+EOF
+)
+
+if [[ -f "$APPCAST_PATH" ]] && grep -q '<channel>' "$APPCAST_PATH"; then
+  # Insert the new <item> immediately after the first <channel> tag.
+  # Preserves prior <item>s so the feed keeps history.
+  python3 - "$APPCAST_PATH" "$ITEM" <<'PY'
+import sys, pathlib
+path = pathlib.Path(sys.argv[1])
+item = sys.argv[2]
+text = path.read_text()
+# Drop any existing <item> with the same shortVersionString — re-runs of
+# the same tag should overwrite, not duplicate.
+import re
+short = re.search(r'<sparkle:shortVersionString>([^<]+)</sparkle:shortVersionString>', item).group(1)
+text = re.sub(
+    r'\s*<item>(?:(?!</item>).)*<sparkle:shortVersionString>'
+    + re.escape(short)
+    + r'</sparkle:shortVersionString>(?:(?!</item>).)*</item>',
+    '',
+    text,
+    flags=re.DOTALL,
+)
+text = text.replace('<channel>', '<channel>\n' + item, 1)
+path.write_text(text)
+PY
+else
+  cat >"$APPCAST_PATH" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>PRBar</title>
+        <link>https://lustefaniak.github.io/prbar/appcast.xml</link>
+        <description>Most recent PRBar releases</description>
+        <language>en</language>
+$ITEM
+    </channel>
+</rss>
+EOF
+fi
+
+echo "Updated $APPCAST_PATH (added $VERSION / build $BUILD)"

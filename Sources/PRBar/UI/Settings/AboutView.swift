@@ -24,6 +24,18 @@ struct AboutView: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
 
+            Button("Check for Updates…") {
+                // Routed up the responder chain to AppDelegate, which
+                // owns the SPUStandardUpdaterController. Same selector
+                // lives on the right-click menu item so the two paths
+                // converge on a single Sparkle controller.
+                NSApp.sendAction(
+                    Selector(("checkForUpdates:")),
+                    to: nil, from: nil
+                )
+            }
+            .controlSize(.small)
+
             Text("Menu-bar PR co-pilot — monitors GitHub PRs and runs AI-assisted reviews via the gh and claude CLIs.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

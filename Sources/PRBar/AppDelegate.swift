@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Sparkle
 
 /// Single source of truth for the popover dimensions. Both the
 /// NSPopover.contentSize and the inner SwiftUI .frame need to match,
@@ -37,6 +38,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var rightClickMenu: NSMenu!
+
+    /// Sparkle updater. `startingUpdater: true` arms the scheduled
+    /// background check immediately; `SUEnableAutomaticChecks` /
+    /// `SUScheduledCheckInterval` in Info.plist (or Sparkle's defaults)
+    /// govern cadence. The standard controller owns its own NSMenuItem
+    /// validation, so wiring "Check for Updates…" is just a target +
+    /// `checkForUpdates(_:)` action.
+    let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
 
     /// UserDefaults keys mirror @AppStorage in GeneralSettings so the two
     /// stay in sync.
@@ -253,6 +266,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         settings.target = self
         rightClickMenu.addItem(settings)
+        // Sparkle's SPUStandardUpdaterController validates the menu
+        // item itself (greys it out while a check is in-flight), so we
+        // just point target+action at the controller and let it do the
+        // rest. No keyEquivalent — discoverable through the menu only.
+        let checkUpdates = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+            keyEquivalent: ""
+        )
+        checkUpdates.target = updaterController
+        rightClickMenu.addItem(checkUpdates)
         rightClickMenu.addItem(.separator())
         let quit = NSMenuItem(
             title: "Quit PRBar",
@@ -260,6 +284,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "q"
         )
         rightClickMenu.addItem(quit)
+    }
+
+    /// Forwarding selector used by AboutView's "Check for Updates…"
+    /// button — sent up the responder chain via NSApp.sendAction.
+    @objc func checkForUpdates(_ sender: Any?) {
+        updaterController.checkForUpdates(sender)
     }
 
     @objc private func statusItemClicked(_ sender: Any?) {

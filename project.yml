@@ -14,6 +14,9 @@ packages:
   MarkdownUI:
     url: https://github.com/gonzalezreal/swift-markdown-ui
     from: "2.4.1"
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.6.0"
 
 settings:
   base:
@@ -39,6 +42,7 @@ targets:
         buildPhase: resources
     dependencies:
       - package: MarkdownUI
+      - package: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.lustefaniak.prbar
@@ -56,6 +60,15 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: PRBar
         INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright Lukasz Stefaniak"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Sparkle auto-update. Feed lives on the gh-pages branch
+        # (published by .github/workflows/release.yml on each tag).
+        # The public EdDSA key is generated once via `bin/sparkle-keygen`
+        # — the matching private key stays in the macOS Keychain
+        # locally and in the SPARKLE_ED_PRIVATE_KEY GitHub secret on CI.
+        # Replace the placeholder below the first time you run keygen.
+        INFOPLIST_KEY_SUFeedURL: "https://lustefaniak.github.io/prbar/appcast.xml"
+        INFOPLIST_KEY_SUPublicEDKey: "K1o93vv5SuisDDP+LIRbLJddFf3PXpa3JoiKTnl2Jh4="
+        INFOPLIST_KEY_SUEnableInstallerLauncherService: NO
 
   PRBarTests:
     type: bundle.unit-test

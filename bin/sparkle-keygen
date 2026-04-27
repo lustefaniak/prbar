@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# One-time setup: generate the Sparkle EdDSA signing key.
+#
+# - The PRIVATE key is stored in your macOS Keychain (the standard
+#   Sparkle workflow). Sparkle's sign_update will pick it up
+#   automatically on subsequent runs.
+# - The PUBLIC key is printed to stdout. Copy it into project.yml's
+#   INFOPLIST_KEY_SUPublicEDKey and commit. The public key is safe to
+#   commit; only the private key matters for signing.
+# - For CI signing you need the private key as text. Run with
+#   `--export` (after generating) to print the private key — paste it
+#   into the SPARKLE_ED_PRIVATE_KEY GitHub Actions secret.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+SP="$(./bin/sparkle-tools)"
+
+case "${1:-}" in
+  --export)
+    "$SP/bin/generate_keys" -x -
+    ;;
+  "")
+    "$SP/bin/generate_keys"
+    cat <<'EOF'
+
+Next steps:
+  1. Copy the public key above into project.yml's
+     INFOPLIST_KEY_SUPublicEDKey, then run bin/regen + commit.
+  2. For CI signing, run:  bin/sparkle-keygen --export
+     and paste the output into the SPARKLE_ED_PRIVATE_KEY secret on
+     GitHub (Settings → Secrets and variables → Actions).
+EOF
+    ;;
+  *)
+    echo "usage: $0 [--export]" >&2
+    exit 64
+    ;;
+esac

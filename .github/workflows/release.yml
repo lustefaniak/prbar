@@ -51,6 +51,44 @@ jobs:
           path: ${{ steps.artifact.outputs.path }}
           if-no-files-found: error
 
+      - name: Sign DMG for Sparkle and build appcast
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          DMG: ${{ steps.artifact.outputs.path }}
+        run: |
+          if [[ -z "${SPARKLE_ED_PRIVATE_KEY:-}" ]]; then
+            echo "::warning::SPARKLE_ED_PRIVATE_KEY secret missing — skipping appcast publish."
+            echo "skip_appcast=1" >>"$GITHUB_ENV"
+            exit 0
+          fi
+          # Pull existing appcast.xml from gh-pages so we preserve prior
+          # release entries. The branch is bootstrapped with an empty
+          # appcast at repo setup; gh-pages serves it at
+          # https://lustefaniak.github.io/prbar/appcast.xml .
+          mkdir -p build/release
+          git fetch origin gh-pages --depth=1
+          git show origin/gh-pages:appcast.xml >build/release/appcast.xml 2>/dev/null || true
+          DMG="$DMG" ./bin/sparkle-appcast-add
+
+      - name: Publish appcast to gh-pages
+        if: startsWith(github.ref, 'refs/tags/v') && env.skip_appcast != '1'
+        run: |
+          # Publish to the existing gh-pages branch via a worktree so we
+          # don't disturb main. We preserve `index.html` (and any other
+          # files at the branch root) by checking out the branch instead
+          # of starting from an orphan tree.
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -rf build/ghpages
+          git worktree add build/ghpages gh-pages
+          cp build/release/appcast.xml build/ghpages/appcast.xml
+          (cd build/ghpages && \
+            git add appcast.xml && \
+            (git diff --cached --quiet || \
+              (git commit -m "release: appcast for ${GITHUB_REF_NAME}" && \
+               git push origin gh-pages)))
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -62,4 +100,6 @@ jobs:
             First launch will hit Gatekeeper — right-click the app and
             choose Open, then confirm. Notarization is a follow-up;
             this build is intended for personal / internal use.
+
+            Auto-update: PRBar checks the [appcast feed](https://lustefaniak.github.io/prbar/appcast.xml) on launch via Sparkle.
           fail_on_unmatched_files: true

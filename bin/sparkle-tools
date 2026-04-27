@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Cache Sparkle's CLI tools (sign_update, generate_appcast, generate_keys)
+# under .build/sparkle/<version>/ on first use, then print the cache path
+# so callers can run "$path/bin/sign_update", etc.
+#
+# Used by bin/sparkle-keygen, bin/sparkle-sign, and the release workflow.
+# The Sparkle SPM artifact bundle is per-DerivedData and inconvenient to
+# locate from a shell script, so we just download the official release
+# tarball — same binaries, deterministic path.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+VERSION="${SPARKLE_VERSION:-2.6.4}"
+CACHE=".build/sparkle/$VERSION"
+
+if [[ ! -x "$CACHE/bin/sign_update" ]]; then
+  rm -rf "$CACHE"
+  mkdir -p "$CACHE"
+  url="https://github.com/sparkle-project/Sparkle/releases/download/$VERSION/Sparkle-$VERSION.tar.xz"
+  echo "Downloading Sparkle ${VERSION}..." >&2
+  curl -fsSL "$url" | tar -xJ -C "$CACHE"
+fi
+
+echo "$CACHE"

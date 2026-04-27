@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Sign a release DMG with the Sparkle EdDSA private key and print the
+# `sparkle:edSignature="…" length="…"` attributes ready to paste into
+# an appcast.xml <enclosure> tag.
+#
+# Key source:
+#   - $SPARKLE_ED_PRIVATE_KEY env var  → CI path (GitHub Actions secret)
+#   - macOS Keychain                    → local dev path (default)
+#
+# Usage: bin/sparkle-sign path/to/PRBar-x.y.z.dmg
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+DMG="${1:?usage: $0 <dmg>}"
+SP="$(./bin/sparkle-tools)"
+
+if [[ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]]; then
+  KEY_FILE="$(mktemp)"
+  trap 'rm -f "$KEY_FILE"' EXIT
+  printf '%s' "$SPARKLE_ED_PRIVATE_KEY" >"$KEY_FILE"
+  "$SP/bin/sign_update" -f "$KEY_FILE" "$DMG"
+else
+  "$SP/bin/sign_update" "$DMG"
+fi
