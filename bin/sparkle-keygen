@@ -7,9 +7,10 @@
 # - The PUBLIC key is printed to stdout. Copy it into project.yml's
 #   INFOPLIST_KEY_SUPublicEDKey and commit. The public key is safe to
 #   commit; only the private key matters for signing.
-# - For CI signing you need the private key as text. Run with
-#   `--export` (after generating) to print the private key — paste it
-#   into the SPARKLE_ED_PRIVATE_KEY GitHub Actions secret.
+# - For CI signing you need the private key as text. Run
+#   `bin/sparkle-keygen --export` to print the private key on stdout
+#   (or pass an output path: `--export ~/sparkle-priv.key`). Paste the
+#   contents into the SPARKLE_ED_PRIVATE_KEY GitHub Actions secret.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,7 +18,25 @@ SP="$(./bin/sparkle-tools)"
 
 case "${1:-}" in
   --export)
-    "$SP/bin/generate_keys" -x -
+    OUT="${2:-}"
+    if [[ -z "$OUT" ]]; then
+      # generate_keys -x requires a real filename (it does not honour
+      # `-` as stdout — it would write a file literally named `-`),
+      # so route through a temp file and cat the result.
+      TMP="$(mktemp -t prbar-sparkle-priv.XXXXXX)"
+      rm -f "$TMP"
+      "$SP/bin/generate_keys" -x "$TMP"
+      cat "$TMP"
+      rm -f "$TMP"
+    else
+      if [[ -e "$OUT" ]]; then
+        echo "error: $OUT already exists; refusing to overwrite a private-key file" >&2
+        exit 1
+      fi
+      "$SP/bin/generate_keys" -x "$OUT"
+      echo "Private key written to $OUT" >&2
+      echo "Treat it like a password: store offline, then delete the file." >&2
+    fi
     ;;
   "")
     "$SP/bin/generate_keys"
@@ -27,12 +46,13 @@ Next steps:
   1. Copy the public key above into project.yml's
      INFOPLIST_KEY_SUPublicEDKey, then run bin/regen + commit.
   2. For CI signing, run:  bin/sparkle-keygen --export
-     and paste the output into the SPARKLE_ED_PRIVATE_KEY secret on
-     GitHub (Settings → Secrets and variables → Actions).
+     to print the private key on stdout (or pass a path to write a
+     file). Paste the contents into the SPARKLE_ED_PRIVATE_KEY secret
+     on GitHub (Settings -> Secrets and variables -> Actions).
 EOF
     ;;
   *)
-    echo "usage: $0 [--export]" >&2
+    echo "usage: $0 [--export [path]]" >&2
     exit 64
     ;;
 esac

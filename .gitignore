@@ -31,3 +31,10 @@ Generated/
 # Local junk
 tmp/
 .tmp/
+
+# Sparkle private-key exports — if you ever run `sparkle-keygen --export <path>`,
+# the resulting file is the EdDSA private key. Treat like a password.
+*.priv
+*.priv.key
+sparkle-priv*
+prbar-key*
