@@ -318,20 +318,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.performClose(nil)
     }
 
-    /// Programmatically open Settings — used by the right-click menu.
-    /// Settings scene exposes its window through `showSettingsWindow:`
-    /// (macOS 14+); fall back to `showPreferencesWindow:` on older.
+    /// Programmatically open Settings — used by the right-click menu
+    /// and any internal caller. Settings scene exposes its window
+    /// through `showSettingsWindow:` (macOS 14+); fall back to
+    /// `showPreferencesWindow:` on older.
+    ///
+    /// Uses `NSApp.sendAction(_:to:nil, from:)` rather than
+    /// `NSApp.perform` because SwiftUI's Settings-scene handler is
+    /// installed on the responder chain — `perform` calls the method
+    /// directly on `NSApp`, which doesn't always reach SwiftUI's
+    /// dispatch table; `sendAction(to: nil)` walks the chain and
+    /// reliably finds the registered handler.
     @objc func openSettings(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
         let modern = Selector(("showSettingsWindow:"))
-        if NSApp.responds(to: modern) {
-            NSApp.perform(modern, with: nil)
-            return
-        }
+        if NSApp.sendAction(modern, to: nil, from: sender) { return }
         let legacy = Selector(("showPreferencesWindow:"))
-        if NSApp.responds(to: legacy) {
-            NSApp.perform(legacy, with: nil)
-        }
+        _ = NSApp.sendAction(legacy, to: nil, from: sender)
     }
 
     // MARK: - private setup
