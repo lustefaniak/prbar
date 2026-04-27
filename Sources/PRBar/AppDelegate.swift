@@ -33,6 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let readiness: ReadinessCoordinator
     let actionLog: ActionLogStore
 
+    /// Routes UNUserNotification action-button taps back into services.
+    /// Held strongly because UNUserNotificationCenter retains its
+    /// delegate weakly.
+    private var notificationRouter: NotificationActionRouter!
+
     // MARK: - Menu-bar state
 
     private var statusItem: NSStatusItem!
@@ -141,6 +146,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.readiness = coord
         self.actionLog = log
         super.init()
+        // Install the notification action router *before* requesting
+        // authorization so the registered categories are visible the
+        // first time macOS shows the auth prompt — otherwise the user
+        // may grant permission on a stale category set with no buttons.
+        let router = NotificationActionRouter(poller: p)
+        router.install()
+        self.notificationRouter = router
         Task { await n.requestAuthorization() }
         if let mgr = q.checkoutManager {
             Task { await mgr.sweepStaleWorktrees() }

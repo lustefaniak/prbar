@@ -97,9 +97,17 @@ struct UNNotificationDeliverer: NotificationDeliverer {
         content.body = Self.body(for: events)
         content.sound = .default
         content.categoryIdentifier = Self.category(for: events)
+        // Carry every event's nodeId + URL so the action router can
+        // resolve "Merge all" against PRPoller.prs and "Open" can fall
+        // back to any URL when the primary one isn't openable.
+        var userInfo: [String: Any] = [
+            NotificationUserInfoKey.nodeIds: events.map(\.prNodeId),
+            NotificationUserInfoKey.urls: events.map { $0.prURL.absoluteString }
+        ]
         if let url = events.first?.prURL {
-            content.userInfo = ["url": url.absoluteString]
+            userInfo[NotificationUserInfoKey.primaryURL] = url.absoluteString
         }
+        content.userInfo = userInfo
 
         let request = UNNotificationRequest(
             identifier: UUID().uuidString,
