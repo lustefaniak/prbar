@@ -384,8 +384,14 @@ final class ReviewQueueWorker {
     // MARK: - private
 
     private func drainIfPossible() {
-        while inFlight < maxConcurrent, let next = pending.first {
-            pending.removeFirst()
+        // Pop newest-first (highest PR number) rather than FIFO so a stale
+        // older PR I'm not planning to approve doesn't block fresh review
+        // requests behind it. PR number is a per-repo monotonic stand-in
+        // for createdAt; cross-repo it's an arbitrary-but-stable tiebreaker,
+        // which matches the user-stated "all other things equal" intent.
+        while inFlight < maxConcurrent, !pending.isEmpty {
+            let idx = pending.indices.max { pending[$0].pr.number < pending[$1].pr.number }!
+            let next = pending.remove(at: idx)
             inFlight += 1
             Task { await self.run(item: next) }
         }
