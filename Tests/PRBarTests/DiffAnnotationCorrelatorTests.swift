@@ -85,6 +85,33 @@ final class DiffAnnotationCorrelatorTests: XCTestCase {
         XCTAssertTrue(hits.isEmpty)
     }
 
+    func testMultiHunkFileScopesHitsToCorrectHunk() {
+        // Two hunks in the same file. An annotation on new-line 11 should
+        // only land on hunk A (which covers new lines 10-13), not hunk B
+        // (which covers new lines 110-113) — even though both hunks share
+        // the same internal line indices.
+        let file = "kernel-billing/log.go"
+        let hunkA = Hunk(
+            filePath: file,
+            oldStart: 100, oldCount: 3, newStart: 10, newCount: 4,
+            lines: [.context("a"), .added("b"), .removed("x"), .added("c"), .context("d")]
+        )
+        let hunkB = Hunk(
+            filePath: file,
+            oldStart: 200, oldCount: 3, newStart: 110, newCount: 4,
+            lines: [.context("a"), .added("b"), .removed("x"), .added("c"), .context("d")]
+        )
+        let ann = DiffAnnotation(
+            path: file, lineStart: 11, lineEnd: 11,
+            severity: .suggestion, body: "only on hunk A"
+        )
+        let hits = DiffAnnotationCorrelator.correlate(hunks: [hunkA, hunkB], annotations: [ann])
+        let fileHits = hits[file] ?? []
+        XCTAssertEqual(fileHits.count, 1)
+        XCTAssertEqual(fileHits.first?.hunkIndex, 0)
+        XCTAssertEqual(fileHits.first?.lineIndex, 1)
+    }
+
     func testMultipleAnnotationsOnSameLineBothRecorded() {
         let h = sampleHunk()
         let a1 = DiffAnnotation(path: h.filePath, lineStart: 11, lineEnd: 11,

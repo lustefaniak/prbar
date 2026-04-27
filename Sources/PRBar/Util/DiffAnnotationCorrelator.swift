@@ -11,6 +11,12 @@ import Foundation
 /// file). Context and added lines do.
 enum DiffAnnotationCorrelator {
     struct Hit: Sendable, Hashable {
+        /// Position of the matched hunk *within its file's hunk list* (not
+        /// the global flat list passed to `correlate`). DiffView iterates
+        /// per-file when rendering, so the per-file ordinal is what the
+        /// renderer can match against. Using a global index caused
+        /// annotations to leak across hunks: a hit for hunk 0 matched
+        /// every other hunk whose local index also happened to be 0.
         let hunkIndex: Int
         let lineIndex: Int          // index into Hunk.lines
         let annotation: DiffAnnotation
@@ -24,11 +30,14 @@ enum DiffAnnotationCorrelator {
         annotations: [DiffAnnotation]
     ) -> [String: [Hit]] {
         var byFile: [String: [Hit]] = [:]
+        var perFileOrdinal: [String: Int] = [:]
 
-        // Index annotations by file path for quick lookup.
         let annotationsByFile = Dictionary(grouping: annotations, by: \.path)
 
-        for (hunkIndex, hunk) in hunks.enumerated() {
+        for hunk in hunks {
+            let hunkIndex = perFileOrdinal[hunk.filePath, default: 0]
+            perFileOrdinal[hunk.filePath] = hunkIndex + 1
+
             guard let fileAnnotations = annotationsByFile[hunk.filePath],
                   !fileAnnotations.isEmpty else { continue }
 

@@ -26,7 +26,12 @@ struct DiffView: View {
 
     @State private var selectedSubpath: String? = nil
     @State private var collapsedFiles: Set<String> = []
-    @State private var expandedAnnotationKeys: Set<String> = []
+    /// Set of *annotations* (not line-anchor keys) currently expanded.
+    /// Tracking by annotation lets a single click on any covered line
+    /// toggle one bubble — anchored at the annotation's last covered
+    /// line — instead of producing one duplicate bubble per line in the
+    /// range.
+    @State private var expandedAnnotations: Set<DiffAnnotation> = []
 
     init(
         hunks: [Hunk],
@@ -66,12 +71,15 @@ struct DiffView: View {
             }
         }
         // When the parent flips focusedKey (user clicked an annotation in
-        // the summary list), expand the matching bubble in-place. Scroll
-        // is the parent's job via its ScrollViewReader; here we just make
-        // sure the destination is visible (i.e. the bubble pops open).
+        // the summary list), expand the matching annotation(s) in-place.
+        // Scroll is the parent's job via its ScrollViewReader; here we
+        // just open the bubbles whose range covers the focused line.
         .onChange(of: focusedKey) { _, newValue in
-            if let key = newValue {
-                expandedAnnotationKeys.insert(key)
+            guard let key = newValue,
+                  let (path, lineNo) = Self.parseAnchorKey(key) else { return }
+            for ann in annotations
+            where ann.path == path && lineNo >= ann.lineStart && lineNo <= ann.lineEnd {
+                expandedAnnotations.insert(ann)
             }
         }
     }
@@ -188,18 +196,25 @@ struct DiffView: View {
     ) -> some View {
         let newLines = DiffAnnotationCorrelator.newLineNumbers(for: hunk)
         let oldLines = DiffAnnotationCorrelator.oldLineNumbers(for: hunk)
-        // We index hits by their original (whole-list) hunkIndex, not the
-        // per-file one — find the matching subset by line.
+        // hunkIndex is per-file (set by the correlator). Filter to only
+        // hits belonging to *this* hunk — without it, an annotation on
+        // hunk 0 line 2 would also light up hunk 1 line 2, hunk 2 line 2,
+        // etc. (visible bug: the same SUGGESTION repeated against every
+        // hunk in a multi-hunk file).
+        let scopedHits = fileHits.filter { hit in
+            hit.hunkIndex == hunkIndexInFile && hit.lineIndex < hunk.lines.count
+        }
         let hitsByLine: [Int: [DiffAnnotationCorrelator.Hit]] = Dictionary(
-            grouping: fileHits.filter { hit in
-                // Match the *line content* via filePath + lineIndex range —
-                // the renderer only needs to know "is there an annotation
-                // on this hunk-relative line index". We just match on
-                // line index (same hunk in filtered list = same indices).
-                hit.lineIndex < hunk.lines.count
-            },
+            grouping: scopedHits,
             by: \.lineIndex
         )
+        // For each annotation, the largest lineIndex it touches in this
+        // hunk — that's where the expanded bubble renders. Without this
+        // anchor, a range annotation (e.g. lines 4-7) would render a
+        // duplicate bubble below every covered line when expanded.
+        let anchorLineByAnnotation: [DiffAnnotation: Int] = scopedHits.reduce(into: [:]) { acc, hit in
+            acc[hit.annotation] = max(acc[hit.annotation] ?? -1, hit.lineIndex)
+        }
 
         VStack(alignment: .leading, spacing: 0) {
             // Hunk header line.
@@ -215,11 +230,15 @@ struct DiffView: View {
                 let hitsHere = hitsByLine[lineIdx] ?? []
                 let newLine = newLines[lineIdx]
                 let key = newLine.map { Self.anchorKey(path: hunk.filePath, newLine: $0) }
+                let bubbleHits = hitsHere.filter { hit in
+                    anchorLineByAnnotation[hit.annotation] == lineIdx
+                }
                 diffLineRow(
                     line: line,
                     oldLine: oldLines[lineIdx],
                     newLine: newLine,
                     hits: hitsHere,
+                    bubbleHits: bubbleHits,
                     anchorKey: key
                 )
             }
@@ -232,6 +251,7 @@ struct DiffView: View {
         oldLine: Int?,
         newLine: Int?,
         hits: [DiffAnnotationCorrelator.Hit],
+        bubbleHits: [DiffAnnotationCorrelator.Hit],
         anchorKey: String?
     ) -> some View {
         let bg: Color = {
@@ -279,15 +299,13 @@ struct DiffView: View {
             .background(bg)
             .contentShape(Rectangle())
             .onTapGesture {
-                if !hits.isEmpty, let key = anchorKey {
-                    toggleExpanded(key)
-                }
+                guard !hits.isEmpty else { return }
+                toggleExpansion(for: hits.map(\.annotation))
             }
 
-            if !hits.isEmpty,
-               let key = anchorKey,
-               expandedAnnotationKeys.contains(key) {
-                annotationBubble(hits: hits)
+            let openHits = bubbleHits.filter { expandedAnnotations.contains($0.annotation) }
+            if !openHits.isEmpty {
+                annotationBubble(hits: openHits)
             }
         }
         // Anchor for the outer ScrollViewReader. .removed lines have no
@@ -322,12 +340,25 @@ struct DiffView: View {
         .background(.secondary.opacity(0.08))
     }
 
-    private func toggleExpanded(_ key: String) {
-        if expandedAnnotationKeys.contains(key) {
-            expandedAnnotationKeys.remove(key)
+    /// Toggle bubble expansion for the annotations tied to a tapped line.
+    /// If every annotation in the set is already open we collapse them all;
+    /// otherwise we open the missing ones (so a partial-overlap line click
+    /// still ends in a fully-expanded state, matching the user's intent).
+    private func toggleExpansion(for anns: [DiffAnnotation]) {
+        let allOpen = anns.allSatisfy { expandedAnnotations.contains($0) }
+        if allOpen {
+            for ann in anns { expandedAnnotations.remove(ann) }
         } else {
-            expandedAnnotationKeys.insert(key)
+            for ann in anns { expandedAnnotations.insert(ann) }
         }
+    }
+
+    /// Inverse of `anchorKey(path:newLine:)`. Returns nil for keys that
+    /// don't match the documented shape.
+    static func parseAnchorKey(_ key: String) -> (path: String, newLine: Int)? {
+        let parts = key.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "anchor", let line = Int(parts[2]) else { return nil }
+        return (String(parts[1]), line)
     }
 
     private func formatLineNumber(_ n: Int?) -> String {
