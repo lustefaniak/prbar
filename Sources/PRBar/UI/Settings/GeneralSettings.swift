@@ -4,6 +4,7 @@ struct GeneralSettings: View {
     @Environment(ReviewQueueWorker.self) private var queue
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
+    @AppStorage("approveIncludesComment") private var approveIncludesComment = false
     @AppStorage("badgeShowReadyToMerge")    private var badgeReadyToMerge    = true
     @AppStorage("badgeShowReviewRequested") private var badgeReviewRequested = true
     @AppStorage("badgeShowCIFailed")        private var badgeCIFailed        = true
@@ -36,10 +37,12 @@ struct GeneralSettings: View {
 
             Section {
                 Toggle("Advance to next ready PR after action", isOn: $sequentialFocusMode)
+                Toggle("Include comment body when approving by default",
+                       isOn: $approveIncludesComment)
             } header: {
                 Text("Review focus")
             } footer: {
-                Text("After Approve / Comment / Request changes, the detail pane jumps to the next ready review-requested PR instead of returning to the list. Reduces context switching when working through a batch.")
+                Text("After Approve / Comment / Request changes, the detail pane jumps to the next ready review-requested PR instead of returning to the list. Reduces context switching when working through a batch.\n\nThe Approve split-button on the PR detail pane respects the second toggle, with the alternative always one click away in the chevron menu.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

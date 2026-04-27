@@ -21,6 +21,7 @@ struct PRDetailView: View {
     @Environment(DiffStore.self) private var diffStore
 
     @State private var bodyDraft: String = ""
+    @AppStorage("approveIncludesComment") private var approveIncludesCommentDefault = false
     @State private var showActionPicker: Bool = false
     @State private var descriptionExpanded: Bool = false
 
@@ -641,15 +642,35 @@ struct PRDetailView: View {
 
             HStack(spacing: 6) {
                 let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
+                let primaryIncludesBody = approveIncludesCommentDefault
 
-                Button {
-                    poller.postReview(pr, kind: .approve, body: bodyDraft)
-                    bodyDraft = ""
-                    onPostedAction()
+                // Split button: primary fires the user's chosen default
+                // (with-comment vs no-comment), chevron offers the
+                // alternative. Avoids posting trivial "LGTM" bodies by
+                // accident while keeping comment-on-approve one click
+                // away.
+                Menu {
+                    Button {
+                        approve(includeBody: !primaryIncludesBody)
+                    } label: {
+                        if primaryIncludesBody {
+                            Label("Approve without comment",
+                                  systemImage: "hand.thumbsup")
+                        } else {
+                            Label("Approve with comment",
+                                  systemImage: "hand.thumbsup.fill")
+                        }
+                    }
+                    .disabled(!primaryIncludesBody && bodyDraft.isEmpty)
                 } label: {
-                    Label("Approve", systemImage: "hand.thumbsup")
+                    Label(primaryIncludesBody ? "Approve with comment" : "Approve",
+                          systemImage: "hand.thumbsup")
+                } primaryAction: {
+                    approve(includeBody: primaryIncludesBody)
                 }
-                .disabled(isPosting)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(isPosting || (primaryIncludesBody && bodyDraft.isEmpty))
 
                 Button {
                     poller.postReview(pr, kind: .comment, body: bodyDraft)
@@ -724,6 +745,13 @@ struct PRDetailView: View {
         } else {
             pill
         }
+    }
+
+    private func approve(includeBody: Bool) {
+        let body = includeBody ? bodyDraft : ""
+        poller.postReview(pr, kind: .approve, body: body)
+        bodyDraft = ""
+        onPostedAction()
     }
 
     private func reviewAction(for verdict: ReviewVerdict) -> ReviewActionKind? {

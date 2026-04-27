@@ -49,7 +49,7 @@ struct DiagnosticsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Reset all data")
                             .font(.callout.weight(.medium))
-                        Text("Wipes the SwiftData store (inbox snapshot, repo configs, action history, AI reviews, diff/log caches) and every UserDefaults toggle. The app relaunches with empty state. Bare clones on disk are preserved — use Prune above to clear those.")
+                        Text("Wipes everything PRBar has saved on disk: repo rules, action history, AI reviews, cached diffs and CI logs, plus every settings toggle. The app relaunches with empty state. Bare clones are preserved — use Prune above to clear those.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -61,7 +61,7 @@ struct DiagnosticsView: View {
             } header: {
                 Text("Reset")
             } footer: {
-                Text("If the app launches but configs look wrong, that's the in-memory fallback for a corrupt store — reset gives you a clean slate.")
+                Text("PRBar still launches if its saved data is corrupt — it just shows empty state. Reset gives you a clean slate from inside the app.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -74,7 +74,7 @@ struct DiagnosticsView: View {
                 AppReset.wipeEverythingAndRelaunch()
             }
         } message: {
-            Text("All repo configs, action history, and cached reviews will be deleted. The app will relaunch with empty state. This can't be undone.")
+            Text("All saved rules, history, and cached reviews will be deleted. The app will relaunch with empty state. This can't be undone.")
         }
     }
 
