@@ -5,6 +5,7 @@ struct DiagnosticsView: View {
 
     @State private var cacheBytes: Int64 = 0
     @State private var pruning = false
+    @State private var confirmingReset = false
 
     var body: some View {
         Form {
@@ -42,9 +43,39 @@ struct DiagnosticsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Reset all data")
+                            .font(.callout.weight(.medium))
+                        Text("Wipes the SwiftData store (inbox snapshot, repo configs, action history, AI reviews, diff/log caches) and every UserDefaults toggle. The app relaunches with empty state. Bare clones on disk are preserved — use Prune above to clear those.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(role: .destructive) { confirmingReset = true } label: {
+                        Text("Reset…")
+                    }
+                }
+            } header: {
+                Text("Reset")
+            } footer: {
+                Text("If the app launches but configs look wrong, that's the in-memory fallback for a corrupt store — reset gives you a clean slate.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .task { await refreshCacheSize() }
+        .alert("Reset all PRBar data?", isPresented: $confirmingReset) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset and relaunch", role: .destructive) {
+                AppReset.wipeEverythingAndRelaunch()
+            }
+        } message: {
+            Text("All repo configs, action history, and cached reviews will be deleted. The app will relaunch with empty state. This can't be undone.")
+        }
     }
 
     private func refreshCacheSize() async {
