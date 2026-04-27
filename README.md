@@ -113,4 +113,4 @@ The release workflow signs each tag with EdDSA, publishes a notarization-ready D
 
 ## License
 
-MIT — see [LICENSE](LICENSE) if present (single-author personal project).
+[MIT](LICENSE) — Copyright (c) 2026 Lukasz Stefaniak.
