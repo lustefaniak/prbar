@@ -147,11 +147,12 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// `["[Prod deploy]*", "*chore: bump*"]`.
     var excludeTitlePatterns: [String] = []
 
-    /// When true, the worker skips auto-enqueueing PRs that already have
-    /// an APPROVED or CHANGES_REQUESTED decision from another reviewer.
-    /// PR stays visible in the list — you may still want to glance at
-    /// it — just doesn't burn an AI run on something already covered.
-    var skipAIIfReviewedByOthers: Bool = false
+    /// When true (default), the worker skips auto-enqueueing PRs that
+    /// already have an APPROVED or CHANGES_REQUESTED decision from
+    /// another reviewer. PR stays visible in the list — you may still
+    /// want to glance at it — just doesn't burn an AI run on something
+    /// already covered.
+    var skipAIIfReviewedByOthers: Bool = true
 
     /// Master switch for AI triage on this repo. When false, the queue
     /// worker never auto-enqueues PRs from matching repos and they go
@@ -286,7 +287,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         autoApprove: AutoApproveConfig = .off,
         reviewDrafts: Bool = false,
         excludeTitlePatterns: [String] = [],
-        skipAIIfReviewedByOthers: Bool = false,
+        skipAIIfReviewedByOthers: Bool = true,
         aiReviewEnabled: Bool = true,
         providerOverride: ProviderID? = nil,
         notifyPolicy: NotifyPolicy = .batchSettled

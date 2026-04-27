@@ -110,7 +110,9 @@ final class RepoConfigFilterTests: XCTestCase {
         let cfg = try JSONDecoder().decode(RepoConfig.self, from: Data(oldJSON.utf8))
         XCTAssertEqual(cfg.repoGlobs, ["acme/x"])
         XCTAssertEqual(cfg.excludeTitlePatterns, [])
-        XCTAssertFalse(cfg.skipAIIfReviewedByOthers)
+        // Default flipped to true on 2026-04-27; old payloads that
+        // predate the field adopt the current default.
+        XCTAssertTrue(cfg.skipAIIfReviewedByOthers)
         XCTAssertTrue(cfg.aiReviewEnabled)
     }
 
