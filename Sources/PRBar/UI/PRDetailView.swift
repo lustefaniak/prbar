@@ -195,6 +195,10 @@ struct PRDetailView: View {
             if !inWindow {
                 Button {
                     openWindow(id: PRDetailWindowID.id, value: pr.nodeId)
+                    // Dismiss the popover so the user lands focused on
+                    // the new window rather than seeing the popover
+                    // hang around behind it.
+                    (NSApp.delegate as? AppDelegate)?.dismissPopover()
                 } label: {
                     Image(systemName: "macwindow.on.rectangle")
                 }

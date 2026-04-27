@@ -174,6 +174,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Close the popover if it's showing. Used by actions that move the
+    /// user out of the popover into a different surface (e.g. opening a
+    /// PR in the standalone detail window) so the popover doesn't linger
+    /// behind the new window.
+    func dismissPopover() {
+        guard popover != nil, popover.isShown else { return }
+        popover.performClose(nil)
+    }
+
     /// Programmatically open Settings — used by the right-click menu.
     /// Settings scene exposes its window through `showSettingsWindow:`
     /// (macOS 14+); fall back to `showPreferencesWindow:` on older.
