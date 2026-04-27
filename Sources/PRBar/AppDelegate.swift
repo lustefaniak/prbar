@@ -319,22 +319,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Programmatically open Settings — used by the right-click menu
-    /// and any internal caller. Settings scene exposes its window
-    /// through `showSettingsWindow:` (macOS 14+); fall back to
-    /// `showPreferencesWindow:` on older.
+    /// and any internal caller.
     ///
-    /// Uses `NSApp.sendAction(_:to:nil, from:)` rather than
-    /// `NSApp.perform` because SwiftUI's Settings-scene handler is
-    /// installed on the responder chain — `perform` calls the method
-    /// directly on `NSApp`, which doesn't always reach SwiftUI's
-    /// dispatch table; `sendAction(to: nil)` walks the chain and
-    /// reliably finds the registered handler.
+    /// Two layers:
+    ///
+    /// 1. If a Settings window already exists in `NSApp.windows`
+    ///    (SwiftUI keeps it around after close on modern macOS), just
+    ///    bring it back to front. The selector dispatch route below
+    ///    is unreliable on the *second* open — SwiftUI's handler
+    ///    sometimes no-ops when the window already exists but is
+    ///    hidden, so the user clicks "Settings…" and nothing happens.
+    /// 2. Otherwise dispatch via `NSApp.sendAction(_:to:nil:)` which
+    ///    walks the responder chain and reaches SwiftUI's registered
+    ///    `showSettingsWindow:` handler. Falls back to the legacy
+    ///    `showPreferencesWindow:` selector on pre-macOS-14.
+    ///
+    /// Note: `NSApp.perform(...)` looks superficially equivalent but
+    /// calls the selector directly on `NSApp` rather than walking the
+    /// responder chain — SwiftUI's handler doesn't sit on `NSApp`
+    /// itself, so `perform` quietly no-ops. Always use `sendAction`.
     @objc func openSettings(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)
+        if let existing = Self.findExistingSettingsWindow() {
+            existing.makeKeyAndOrderFront(sender)
+            return
+        }
         let modern = Selector(("showSettingsWindow:"))
         if NSApp.sendAction(modern, to: nil, from: sender) { return }
         let legacy = Selector(("showPreferencesWindow:"))
         _ = NSApp.sendAction(legacy, to: nil, from: sender)
+    }
+
+    private static func findExistingSettingsWindow() -> NSWindow? {
+        NSApp.windows.first { w in
+            // SwiftUI's Settings scene window has a stable identifier
+            // that contains "Settings". Title is locale-dependent and
+            // can be empty while the window is hidden; identifier is
+            // stable, so prefer it.
+            let id = w.identifier?.rawValue ?? ""
+            if id.localizedCaseInsensitiveContains("setting") { return true }
+            if id.localizedCaseInsensitiveContains("preference") { return true }
+            return false
+        }
     }
 
     // MARK: - private setup
