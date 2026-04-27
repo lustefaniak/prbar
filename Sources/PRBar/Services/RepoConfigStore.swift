@@ -102,13 +102,45 @@ final class RepoConfigStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
-        // Replace strategy: drop everything, re-insert in current order.
-        // The user-config list is small (single-digit to a dozen entries)
-        // so the cost is negligible and the code stays simple.
-        try? context.delete(model: RepoConfigEntry.self)
+        let descriptor = FetchDescriptor<RepoConfigEntry>(
+            sortBy: [SortDescriptor(\RepoConfigEntry.orderIndex)]
+        )
+        let existing = (try? context.fetch(descriptor)) ?? []
+
+        // Encode upfront. A row whose encode fails is *skipped* — we
+        // leave the existing on-disk row untouched rather than the
+        // earlier delete-all pattern, which silently nuked every config
+        // if a single one couldn't serialize.
+        var encoded: [(orderIndex: Int, payload: Data)] = []
         for (idx, config) in userConfigs.enumerated() {
-            guard let payload = try? encoder.encode(config) else { continue }
-            context.insert(RepoConfigEntry(orderIndex: idx, payload: payload))
+            guard let payload = try? encoder.encode(config) else {
+                NSLog("RepoConfigStore.save: skipped encode failure at index %d (globs=%@)",
+                      idx, String(describing: config.repoGlobs))
+                continue
+            }
+            encoded.append((idx, payload))
+        }
+
+        // In-place update by orderIndex. Preserves SwiftData row identity
+        // across edits (no churn per keystroke) and means an error
+        // mid-flight only affects the row that actually failed.
+        var existingByIdx = Dictionary(uniqueKeysWithValues: existing.map { ($0.orderIndex, $0) })
+        for entry in encoded {
+            if let row = existingByIdx.removeValue(forKey: entry.orderIndex) {
+                if row.payload != entry.payload {
+                    row.payload = entry.payload
+                }
+            } else {
+                context.insert(RepoConfigEntry(
+                    orderIndex: entry.orderIndex, payload: entry.payload
+                ))
+            }
+        }
+
+        // Anything still in `existingByIdx` is an orphan — its
+        // orderIndex is past the new tail, so delete it.
+        for (_, row) in existingByIdx {
+            context.delete(row)
         }
         try? context.save()
     }
