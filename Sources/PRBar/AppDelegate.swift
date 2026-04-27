@@ -177,6 +177,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Disable AppKit window state restoration. PRBar is a menu-bar
+    /// agent (`LSUIElement: true`); the popover lives off the status
+    /// item and the Settings / detail windows are user-initiated.
+    /// Auto-restoring "whatever was open at quit" leads to surprises
+    /// like Settings popping up on launch just because the user had
+    /// it open last time. Explicit user gestures only.
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldRestoreApplicationState(_ app: NSApplication, coder: NSCoder) -> Bool {
+        false
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         installStatusItem()
         installPopover()
