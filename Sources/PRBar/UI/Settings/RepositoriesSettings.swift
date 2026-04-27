@@ -270,11 +270,19 @@ struct RepoConfigEditor: View {
                     .pickerStyle(.segmented)
 
                     if config.splitMode == .perSubfolder {
-                        LabeledContent("Root patterns") {
-                            TextField("kernel-*, lib/*, dev-infra",
-                                      text: rootPatternsBinding)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Root patterns (one per line)")
+                                .font(.callout)
+                            TextEditor(text: rootPatternsBinding)
                                 .font(.system(.body, design: .monospaced))
-                                .textFieldStyle(.roundedBorder)
+                                .frame(minHeight: 100, maxHeight: 220)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .stroke(.secondary.opacity(0.2))
+                                )
+                            Text("fnmatch globs that mark each subreview root. Examples: \"kernel-*\", \"lib/*\", \"dev-infra\". Order matters within a single rule — first match wins.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                         Picker("Unmatched", selection: $config.unmatchedStrategy) {
                             Text("Review at root").tag(UnmatchedStrategy.reviewAtRoot)
@@ -378,10 +386,13 @@ struct RepoConfigEditor: View {
 
     private var rootPatternsBinding: Binding<String> {
         Binding(
-            get: { config.rootPatterns.joined(separator: ", ") },
+            get: { config.rootPatterns.joined(separator: "\n") },
             set: { newValue in
+                // Accept either newline-separated (TextEditor) or
+                // comma-separated input (legacy paste from older
+                // single-line field).
                 config.rootPatterns = newValue
-                    .split(separator: ",")
+                    .split(whereSeparator: { $0.isNewline || $0 == "," })
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
             }

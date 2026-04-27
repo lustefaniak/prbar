@@ -12,7 +12,7 @@ struct SettingsRoot: View {
             AboutView()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 700, height: 520)
+        .frame(minWidth: 880, idealWidth: 920, minHeight: 640, idealHeight: 720)
         .scenePadding()
     }
 }
