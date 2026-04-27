@@ -118,7 +118,7 @@ When you add a field to `InboxPR`, update the `makePR` helpers in 6 test files: 
 
 - Don't commit `PRBar.xcodeproj/` — it's generated.
 - Don't add Swift files via Xcode "Add Files…" — drop them in `Sources/PRBar/<subdir>/` and run `bin/regen`.
-- `main` is branch-protected — non-trivial changes go through a PR (squash-merged, linear history). The global "feature branches only" rule in `~/.claude/CLAUDE.md` applies here. Exceptions allowed via admin override (`enforce_admins: false`): doc-only edits (CLAUDE.md, PLAN.md, README.md), screenshot regeneration, emergency fixes. Required CI check on PRs: `build-test`. Merge commits are disabled at the repo level — only squash and rebase merges are available; squash is the default.
+- `main` is branch-protected — non-trivial changes go through a PR on a feature branch, squash-merged with linear history (no merge commits — disabled at the repo level; rebase is available as a fallback). Branch naming: `lukasz-<feature>`. Required CI check on PRs: `build-test`. Admin override (`enforce_admins: false`) is the deliberate escape hatch for doc-only edits (CLAUDE.md, PLAN.md, README.md), screenshot regeneration, and emergency fixes — those can push straight to `main`.
 - Don't call `claude` with `--permission-mode default` or `bypassPermissions` from app code. See PLAN.md §"AI Review Pipeline" for the locked invocation shape.
 - Don't add `Bash` / `Edit` / `Write` / `Task` / `Agent` to the AI's `--allowedTools` list. Those are deliberately disallowed; the AI is a judge, not a fixer.
 - Don't drop `--quiet` from `bin/build` (test output is silenced there on purpose) or *add* it to `bin/test` (we want test pass/fail visible).
