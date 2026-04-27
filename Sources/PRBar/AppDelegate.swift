@@ -62,6 +62,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let log = ActionLogStore.live()
         p.actionLog = log
         q.actionLog = log
+        // Auto-approve fire posts via gh in the worker; refresh the
+        // PR through the poller (with the same race-tolerant double-
+        // refresh as user-initiated approve) so the row reflects the
+        // new reviewDecision without waiting for the next 60s poll.
+        q.onAutoApproved = { [weak p] pr in
+            p?.refreshPR(pr)
+            Task { @MainActor [weak p] in
+                try? await Task.sleep(for: .seconds(1.2))
+                p?.refreshPR(pr, force: true)
+            }
+        }
         q.configResolver = rc.makeResolver()
         // Resolve the persisted default provider. Stored value can be
         // "auto" (probe-and-pick at launch) or a concrete ProviderID

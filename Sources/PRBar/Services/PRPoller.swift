@@ -173,7 +173,10 @@ final class PRPoller {
     /// in `prs` in place; the row only "blinks" if the snapshot actually
     /// changed. No-op (with optional fallback to pollNow) if no per-PR
     /// refresher is configured (e.g. in tests using the simpler init).
-    func refreshPR(_ pr: InboxPR) {
+    /// `force` skips the in-flight de-dup so two refreshes in quick
+    /// succession (e.g. the optimistic + 1.2s-delayed pair after a
+    /// review post) actually both run.
+    func refreshPR(_ pr: InboxPR, force: Bool = false) {
         let nodeId = pr.nodeId
         let owner = pr.owner
         let repo = pr.repo
@@ -182,7 +185,7 @@ final class PRPoller {
             pollNow()
             return
         }
-        guard !refreshingPRs.contains(nodeId) else { return }
+        if !force, refreshingPRs.contains(nodeId) { return }
         refreshingPRs.insert(nodeId)
 
         Task {
@@ -216,7 +219,15 @@ final class PRPoller {
                     kind: kind.actionLogKind, outcome: .success, pr: pr,
                     detail: body.isEmpty ? nil : body
                 )
+                // GitHub's GraphQL read-model can lag the REST write
+                // gh just made — refresh now to surface optimistic
+                // intermediate state, then again after ~1.2s as a
+                // belt-and-suspenders catch for the propagation.
                 self.refreshPR(pr)
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(1.2))
+                    self?.refreshPR(pr, force: true)
+                }
             } catch {
                 self.lastError = error.localizedDescription
                 self.actionLog?.record(

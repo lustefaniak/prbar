@@ -208,6 +208,12 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     weak var actionLog: ActionLogStore?
 
+    /// Hook fired after a successful auto-approve post so the inbox row
+    /// reflects the new reviewDecision without waiting for the next 60s
+    /// poll. Wired to `PRPoller.refreshPR` from `AppDelegate`.
+    @ObservationIgnored
+    var onAutoApproved: (@MainActor (_ pr: InboxPR) -> Void)?
+
     struct PendingAutoApprove: Sendable, Hashable {
         let pr: InboxPR
         let review: AggregatedReview
@@ -599,6 +605,7 @@ final class ReviewQueueWorker {
                             detail: body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
                         )
+                        self?.onAutoApproved?(entry.pr)
                     }
                 } catch {
                     await MainActor.run {
