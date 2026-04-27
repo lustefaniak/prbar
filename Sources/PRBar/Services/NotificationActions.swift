@@ -1,6 +1,9 @@
 import AppKit
 import Foundation
+import OSLog
 import UserNotifications
+
+private let routerLog = Logger(subsystem: "dev.lustefaniak.prbar", category: "notifications")
 
 /// Identifiers for `UNNotificationCategory` registrations and the action
 /// buttons attached to them. Kept in one place so `UNNotificationDeliverer`
@@ -159,7 +162,9 @@ extension NotificationActionRouter: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let actionId = response.actionIdentifier
-        let payload = Payload(userInfo: response.notification.request.content.userInfo)
+        let userInfo = response.notification.request.content.userInfo
+        let payload = Payload(userInfo: userInfo)
+        routerLog.notice("notification tap actionId=\(actionId, privacy: .public) primaryURL=\(payload.primaryURL ?? "<none>", privacy: .public) nodeIdCount=\(payload.nodeIds.count, privacy: .public)")
         // Hand the dispatched work to the main actor; the system gives
         // us a brief window after the handler returns, which is enough
         // to fire mergePR / NSWorkspace.open synchronously on main.

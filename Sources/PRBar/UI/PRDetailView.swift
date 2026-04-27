@@ -748,8 +748,14 @@ struct PRDetailView: View {
         .background(color, in: Capsule())
 
         if showsReviewActions, let action {
+            // Approve action obeys the global "include AI summary as body"
+            // toggle so a single setting controls every approve path
+            // (split button below + this pill). Comment / Request-changes
+            // are inherently body-bearing actions and always include the
+            // summary — posting them with an empty body would be useless.
+            let body: String = (action == .approve && !approveIncludesCommentDefault) ? "" : summary
             Button {
-                poller.postReview(pr, kind: action, body: summary)
+                poller.postReview(pr, kind: action, body: body)
                 onPostedAction()
             } label: {
                 pill

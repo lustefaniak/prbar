@@ -1,6 +1,9 @@
 import Foundation
 import Observation
+import OSLog
 import UserNotifications
+
+private let notifierLog = Logger(subsystem: "dev.lustefaniak.prbar", category: "notifications")
 
 /// Coalesces NotificationEvents within a settling window and delivers them
 /// as macOS notifications via UNUserNotificationCenter. Suppresses delivery
@@ -52,6 +55,7 @@ final class Notifier {
         for ev in events where !pending.contains(ev) {
             pending.append(ev)
         }
+        notifierLog.notice("Notifier.enqueue events=\(events.count, privacy: .public) pending=\(self.pending.count, privacy: .public) popoverVisible=\(self.isPopoverVisible, privacy: .public)")
         scheduleFire(after: debounceWindow)
     }
 
@@ -69,10 +73,12 @@ final class Notifier {
         if isPopoverVisible {
             // Hold pending until popover closes; setPopoverVisible(false)
             // will reschedule.
+            notifierLog.notice("Notifier.fire suppressed (popover visible) pending=\(self.pending.count, privacy: .public)")
             return
         }
         let events = pending
         pending.removeAll()
+        notifierLog.notice("Notifier.fire delivering events=\(events.count, privacy: .public)")
         await deliverer.deliver(events)
     }
 }
@@ -116,8 +122,9 @@ struct UNNotificationDeliverer: NotificationDeliverer {
         )
         do {
             try await UNUserNotificationCenter.current().add(request)
+            notifierLog.notice("UN.add success category=\(content.categoryIdentifier, privacy: .public) title=\(content.title, privacy: .public)")
         } catch {
-            NSLog("Notifier: delivery failed: %@", String(describing: error))
+            notifierLog.error("UN.add failed: \(String(describing: error), privacy: .public)")
         }
     }
 
