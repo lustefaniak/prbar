@@ -544,7 +544,7 @@ final class ReviewQueueWorker {
                 )
                 let subElapsedMs = Int(Date().timeIntervalSince(subStart) * 1000)
                 let subpathTag = subdiff.subpath.isEmpty ? "<root>" : subdiff.subpath
-                PRBarLog.provider.notice("subreview done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) subpath=\(subpathTag, privacy: .public) verdict=\(result.verdict.rawValue, privacy: .public) confidence=\(self.fmt(result.confidence), privacy: .public) cost=\(self.fmt(result.costUsd), privacy: .public) tools=\(result.toolCallCount, privacy: .public) elapsedMs=\(subElapsedMs, privacy: .public)")
+                PRBarLog.provider.notice("subreview done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) subpath=\(subpathTag, privacy: .public) verdict=\(result.verdict.rawValue, privacy: .public) confidence=\(self.fmt(result.confidence), privacy: .public) cost=\(self.fmt(result.costUsd ?? 0), privacy: .public) tools=\(result.toolCallCount, privacy: .public) elapsedMs=\(subElapsedMs, privacy: .public)")
                 outcomes.append(SubreviewOutcome(subpath: subdiff.subpath, result: result))
             }
             // Clear live progress once outcomes are aggregated below.
