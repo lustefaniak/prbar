@@ -171,6 +171,14 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// whole inbox to minimise context switches.
     var notifyPolicy: NotifyPolicy = .batchSettled
 
+    /// When true, retriages drop the prior verdict from the prompt and
+    /// review the full PR fresh. The default `false` carries the prior
+    /// summary forward so the AI can frame its verdict as "did the new
+    /// commits address prior concerns?" — saves cost and reduces churn,
+    /// but biases the model toward judging only the increment. Flip on
+    /// for repos where every retriage should re-evaluate the whole diff.
+    var forceFullReview: Bool = false
+
     /// Default for any repo not explicitly configured. Computed (not a
     /// `static let`) so each access produces a fresh `id` — otherwise
     /// `var cfg = .default` style cloning at multiple call sites would
@@ -192,7 +200,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         autoApprove: .off,
         reviewDrafts: false,
         aiReviewEnabled: true,
-        notifyPolicy: .batchSettled
+        notifyPolicy: .batchSettled,
+        forceFullReview: false
     ) }
 
     /// Pick the first config whose `repoGlobs` match (negations honored).
@@ -233,6 +242,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case autoApprove
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case aiReviewEnabled, providerOverride, notifyPolicy
+        case forceFullReview
     }
 
     init(from decoder: Decoder) throws {
@@ -263,6 +273,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.aiReviewEnabled         = (try? c.decode(Bool.self, forKey: .aiReviewEnabled)) ?? d.aiReviewEnabled
         self.providerOverride        = try? c.decodeIfPresent(ProviderID.self, forKey: .providerOverride)
         self.notifyPolicy            = (try? c.decode(NotifyPolicy.self, forKey: .notifyPolicy)) ?? d.notifyPolicy
+        self.forceFullReview         = (try? c.decode(Bool.self, forKey: .forceFullReview)) ?? d.forceFullReview
     }
 
     /// Memberwise init survives the explicit `init(from:)`. Listed so
@@ -290,7 +301,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         skipAIIfReviewedByOthers: Bool = true,
         aiReviewEnabled: Bool = true,
         providerOverride: ProviderID? = nil,
-        notifyPolicy: NotifyPolicy = .batchSettled
+        notifyPolicy: NotifyPolicy = .batchSettled,
+        forceFullReview: Bool = false
     ) {
         self.id = id
         self.repoGlobs = repoGlobs
@@ -313,6 +325,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.aiReviewEnabled = aiReviewEnabled
         self.providerOverride = providerOverride
         self.notifyPolicy = notifyPolicy
+        self.forceFullReview = forceFullReview
     }
 }
 

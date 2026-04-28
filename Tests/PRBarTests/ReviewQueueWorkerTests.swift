@@ -65,6 +65,36 @@ final class ReviewQueueWorkerTests: XCTestCase {
             "successful retriage should clear the priorReview")
     }
 
+    func testForceFullReviewDropsPriorReviewFromPromptOnRetriage() async throws {
+        // First triage on old SHA captures a normal prior review.
+        let provider = BundleCapturingStubProvider(verdict: .comment, summary: "first", cost: 0.01)
+        let worker = makeWorker(provider: provider, diffText: makeDiff())
+        // Repo opts into "always do a full review" — retriage should NOT
+        // carry the prior verdict into the prompt or the ReviewState.
+        worker.configResolver = { _, _ in
+            var c = RepoConfig.default
+            c.forceFullReview = true
+            return c
+        }
+
+        let oldPR = makePR(nodeId: "PR_F", number: 7, headSha: "oldShaA")
+        worker.enqueue(oldPR)
+        try await waitUntil { self.isCompleted(worker.reviews["PR_F"]?.status) }
+
+        // PR head moves → retriage. With forceFullReview the prior should
+        // be dropped before it ever reaches the prompt or ReviewState.
+        let newPR = makePR(nodeId: "PR_F", number: 7, headSha: "newShaB")
+        worker.enqueue(newPR)
+        try await waitUntil { self.isCompleted(worker.reviews["PR_F"]?.status) }
+
+        XCTAssertNil(worker.reviews["PR_F"]?.priorReview,
+            "forceFullReview should suppress priorReview on the new entry")
+        XCTAssertEqual(provider.callCount, 2, "retriage should still run the provider")
+        let lastPrompt = provider.lastUserPrompt ?? ""
+        XCTAssertFalse(lastPrompt.contains("## Previous review"),
+            "forceFullReview prompt must omit the prior-review section")
+    }
+
     func testProviderResolutionPriorityPerRunOverridesRepoOverridesDefault() async throws {
         // Build a worker whose providerLookup returns ID-tagged stubs so
         // we can assert which one ran for each scenario.
@@ -326,6 +356,41 @@ private final class SlowStubProvider: ReviewProvider, @unchecked Sendable {
 /// touch this from MainActor in the tests anyway.
 private final class ProviderCallRecorder: @unchecked Sendable {
     var lastUsed: ProviderID?
+}
+
+/// Like `StubProvider` but retains the most recent `bundle.userPrompt` so
+/// tests can assert what the assembler actually sent to the model.
+private final class BundleCapturingStubProvider: ReviewProvider, @unchecked Sendable {
+    var id: String { "capture-stub" }
+    var displayName: String { "CaptureStub" }
+
+    var verdict: ReviewVerdict
+    var summary: String
+    var cost: Double
+    private(set) var callCount: Int = 0
+    private(set) var lastUserPrompt: String?
+
+    init(verdict: ReviewVerdict, summary: String, cost: Double) {
+        self.verdict = verdict
+        self.summary = summary
+        self.cost = cost
+    }
+
+    func availability() async -> ProviderAvailability { .ready }
+
+    func review(
+        bundle: PromptBundle,
+        options: ProviderOptions,
+        onProgress: (@Sendable (ReviewProgress) -> Void)?
+    ) async throws -> ProviderResult {
+        callCount += 1
+        lastUserPrompt = bundle.userPrompt
+        return ProviderResult(
+            verdict: verdict, confidence: 0.9, summaryMarkdown: summary,
+            annotations: [], costUsd: cost, toolCallCount: 0, toolNamesUsed: [],
+            rawJson: Data()
+        )
+    }
 }
 
 private final class ThrowingStubProvider: ReviewProvider, @unchecked Sendable {

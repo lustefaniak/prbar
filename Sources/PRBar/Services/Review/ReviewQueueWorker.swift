@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 
 /// One pending or completed AI review keyed by PR node ID. Drives the
 /// per-row "review status" UI in the inbox and the AI section in the
@@ -282,11 +283,14 @@ final class ReviewQueueWorker {
     /// run target a non-default backend (e.g. PRDetailView "Re-run with
     /// codex"); nil falls back to the repo + app defaults.
     func enqueue(_ pr: InboxPR, force: Bool = false, providerOverride: ProviderID? = nil) {
+        let cfg = configResolver(pr.owner, pr.repo)
         // Repo-level exclusion — silent skip, no review state recorded.
-        if configResolver(pr.owner, pr.repo).excluded {
+        if cfg.excluded {
+            PRBarLog.triage.notice("enqueue skip reason=excluded pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
             return
         }
         if !force, let existing = reviews[pr.nodeId], !existing.status.isTerminal {
+            PRBarLog.triage.debug("enqueue skip reason=in-flight pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
             return
         }
         // Cache hit + same SHA → reuse the verdict. Cache hit + different
@@ -298,6 +302,7 @@ final class ReviewQueueWorker {
                 // so it knows this PR is human-ready (otherwise restarts
                 // with persisted reviews never trigger a notification).
                 let settled = inFlight == 0 && pending.isEmpty
+                PRBarLog.triage.notice("enqueue cache-hit pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) settled=\(settled, privacy: .public)")
                 onReviewSettled?(pr.nodeId, settled)
                 return
             }
@@ -307,23 +312,27 @@ final class ReviewQueueWorker {
         // it as `priorReview` on the new entry. The UI surfaces it with a
         // stale banner during the retriage; the assembler folds the
         // previous verdict + summary into the prompt so the AI knows the
-        // PR has been updated since.
-        let prior: PriorReview? = {
+        // PR has been updated since. `forceFullReview` opts out — the
+        // model re-evaluates the whole diff with no incremental framing.
+        let priorCandidate: PriorReview? = {
             guard let existing = reviews[pr.nodeId],
                   case .completed(let agg) = existing.status,
                   existing.headSha != pr.headSha
             else { return nil }
             return PriorReview(headSha: existing.headSha, aggregated: agg)
         }()
+        let priorDroppedByFullReview = priorCandidate != nil && cfg.forceFullReview
+        let prior = cfg.forceFullReview ? nil : priorCandidate
 
         // Resolve provider at enqueue time so UI can show "Reviewing
         // with codex…" while the run is queued. Per-run override > repo
         // override > app default.
         let resolvedProviderId = providerOverride
-            ?? configResolver(pr.owner, pr.repo).providerOverride
+            ?? cfg.providerOverride
             ?? defaultProviderId
 
         if dailyCostCapEnabled && cumulativeSpend() >= dailyCostCap {
+            PRBarLog.triage.notice("enqueue blocked reason=daily-cap pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) cap=\(self.fmt(self.dailyCostCap), privacy: .public)")
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
                 providerId: resolvedProviderId,
@@ -345,6 +354,12 @@ final class ReviewQueueWorker {
             costUsd: 0,
             priorReview: prior
         )
+        let priorTag: String = {
+            if let p = prior { return "prior=\(self.short(p.headSha))" }
+            if priorDroppedByFullReview { return "prior=dropped(forceFullReview)" }
+            return "prior=none"
+        }()
+        PRBarLog.triage.notice("enqueue queued pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) provider=\(resolvedProviderId.rawValue, privacy: .public) force=\(force, privacy: .public) \(priorTag, privacy: .public)")
         persist()
         pending.append(PendingItem(pr: pr, providerOverride: providerOverride))
         drainIfPossible()
@@ -358,15 +373,24 @@ final class ReviewQueueWorker {
             let cfg = configResolver(pr.owner, pr.repo)
             // Repo opted out of AI triage entirely → ReadinessCoordinator
             // marks these as "ready" immediately on the human side.
-            if !cfg.aiReviewEnabled { continue }
+            if !cfg.aiReviewEnabled {
+                PRBarLog.triage.debug("auto-enqueue skip reason=ai-disabled pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+                continue
+            }
             // Skip drafts unless the repo config opts in — drafts churn a
             // lot and reviewing them burns cost on intermediate state.
-            if pr.isDraft && !cfg.reviewDrafts { continue }
+            if pr.isDraft && !cfg.reviewDrafts {
+                PRBarLog.triage.debug("auto-enqueue skip reason=draft pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+                continue
+            }
             // Skip PRs already reviewed by another human — the row stays
             // visible (filter is auto-enqueue-only) but we don't burn an
             // AI run on something already covered. Manual Re-run still
             // works.
-            if cfg.skipAIIfReviewedByOthers && Self.alreadyReviewedByOthers(pr) { continue }
+            if cfg.skipAIIfReviewedByOthers && Self.alreadyReviewedByOthers(pr) {
+                PRBarLog.triage.debug("auto-enqueue skip reason=already-reviewed-by-others pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) decision=\(pr.reviewDecision ?? "nil", privacy: .public)")
+                continue
+            }
             enqueue(pr)
         }
     }
@@ -405,6 +429,7 @@ final class ReviewQueueWorker {
 
     private func run(item: PendingItem) async {
         let pr = item.pr
+        let runStart = Date()
         defer {
             inFlight -= 1
             drainIfPossible()
@@ -421,6 +446,7 @@ final class ReviewQueueWorker {
         do {
             let config = configResolver(pr.owner, pr.repo)
             if config.excluded {
+                PRBarLog.triage.notice("run abort reason=excluded pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
                 reviews[pr.nodeId]?.status = .failed("Repo \(pr.owner)/\(pr.repo) is excluded by config.")
                 return
             }
@@ -428,9 +454,13 @@ final class ReviewQueueWorker {
             let effectiveToolMode = config.toolModeOverride ?? toolMode
             let subdiffs = MonorepoSplitter.split(diffText: diffText, config: config)
             guard !subdiffs.isEmpty else {
+                PRBarLog.triage.notice("run abort reason=empty-diff pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
                 reviews[pr.nodeId]?.status = .failed("Empty diff — nothing to review.")
                 return
             }
+            let priorAtStart = reviews[pr.nodeId]?.priorReview
+            let subpathSummary = subdiffs.map { $0.subpath.isEmpty ? "<root>" : $0.subpath }.joined(separator: ",")
+            PRBarLog.triage.notice("run start pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) toolMode=\(effectiveToolMode.rawValue, privacy: .public) split=\(config.splitMode.rawValue, privacy: .public) subdiffs=\(subdiffs.count, privacy: .public) subpaths=[\(subpathSummary, privacy: .public)] hasPrior=\(priorAtStart != nil, privacy: .public) diffBytes=\(diffText.utf8.count, privacy: .public)")
 
             // For .minimal mode, provision one worktree at the PR's headSha
             // and reuse it across all subreviews of this PR (they all
@@ -500,6 +530,7 @@ final class ReviewQueueWorker {
                     timeout: .seconds(120),
                     schema: try PromptLibrary.outputSchema()
                 )
+                let subStart = Date()
                 let result = try await chosenProvider.review(
                     bundle: bundle,
                     options: options,
@@ -511,15 +542,21 @@ final class ReviewQueueWorker {
                         }
                     }
                 )
+                let subElapsedMs = Int(Date().timeIntervalSince(subStart) * 1000)
+                let subpathTag = subdiff.subpath.isEmpty ? "<root>" : subdiff.subpath
+                PRBarLog.provider.notice("subreview done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) subpath=\(subpathTag, privacy: .public) verdict=\(result.verdict.rawValue, privacy: .public) confidence=\(self.fmt(result.confidence), privacy: .public) cost=\(self.fmt(result.costUsd ?? 0), privacy: .public) tools=\(result.toolCallCount, privacy: .public) elapsedMs=\(subElapsedMs, privacy: .public)")
                 outcomes.append(SubreviewOutcome(subpath: subdiff.subpath, result: result))
             }
             // Clear live progress once outcomes are aggregated below.
             liveProgress[prNodeId] = nil
 
             guard let aggregated = ResultAggregator.aggregate(outcomes) else {
+                PRBarLog.triage.error("run abort reason=no-aggregate pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
                 reviews[pr.nodeId]?.status = .failed("No subreviews aggregated.")
                 return
             }
+            let runElapsedMs = Int(Date().timeIntervalSince(runStart) * 1000)
+            PRBarLog.triage.notice("run done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) verdict=\(aggregated.verdict.rawValue, privacy: .public) confidence=\(self.fmt(aggregated.confidence), privacy: .public) cost=\(self.fmt(aggregated.costUsd), privacy: .public) annotations=\(aggregated.annotations.count, privacy: .public) elapsedMs=\(runElapsedMs, privacy: .public)")
             reviews[pr.nodeId]?.status = .completed(aggregated)
             reviews[pr.nodeId]?.costUsd = aggregated.costUsd
             // Successful retriage replaces the prior review.
@@ -527,10 +564,27 @@ final class ReviewQueueWorker {
             persist()
             stageAutoApproveIfEligible(pr: pr, review: aggregated, config: config)
         } catch {
+            PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
             liveProgress[pr.nodeId] = nil
             persist()
         }
+    }
+
+    /// First 7 chars of a SHA, or `<empty>` when blank. Lifted out so
+    /// every log call doesn't repeat the slice + guard inline.
+    private nonisolated func short(_ sha: String) -> String {
+        if sha.isEmpty { return "<empty>" }
+        return String(sha.prefix(7))
+    }
+
+    /// Format a Double for log output. `OSLogInterpolation` doesn't have
+    /// a `(_ value: Double, privacy:)` overload — only String / Int /
+    /// Bool / NSObject — so we stringify here and pass the result as a
+    /// String interpolation. Three-decimal precision is enough for cost
+    /// (cents) and confidence (per-mille).
+    private nonisolated func fmt(_ d: Double) -> String {
+        String(format: "%.3f", d)
     }
 
     /// Compute the cwd for a subreview. In `.minimal` mode with a shared
