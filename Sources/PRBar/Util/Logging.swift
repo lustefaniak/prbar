@@ -25,16 +25,16 @@ enum PRBarLog {
 
     /// AI triage decisions: enqueue / skip / cache-hit / start / done /
     /// fail. The headline category for "why did it decide X".
-    static let triage = Logger(subsystem: subsystem, category: "triage")
+    nonisolated(unsafe) static let triage = Logger(subsystem: subsystem, category: "triage")
 
     /// Provider-level events: per-subreview verdict + cost + tool count.
     /// Distinct from `triage` so you can grep just the LLM-facing layer.
-    static let provider = Logger(subsystem: subsystem, category: "provider")
+    nonisolated(unsafe) static let provider = Logger(subsystem: subsystem, category: "provider")
 
     /// Inbox poll lifecycle: start, success (with delta sizes), error.
-    static let poller = Logger(subsystem: subsystem, category: "poller")
+    nonisolated(unsafe) static let poller = Logger(subsystem: subsystem, category: "poller")
 
     /// Readiness coordinator: notification gating decisions, batch
     /// flushes, persistent dedup hits.
-    static let readiness = Logger(subsystem: subsystem, category: "readiness")
+    nonisolated(unsafe) static let readiness = Logger(subsystem: subsystem, category: "readiness")
 }
