@@ -144,3 +144,11 @@ When you add a field to `InboxPR`, every test file that constructs one (currentl
 ## Screenshots
 
 When a PR introduces an important visual change (action surfaces, new sections, layout reflows) or a new visual feature, regenerate the affected screenshots in `docs/screenshots/` as part of the same PR. Run `bin/screenshots <stage>...` for the affected stages only — don't regenerate untouched stages, since timestamps churn diff noise. Stages: `popover-my-prs`, `popover-inbox`, `popover-detail`, `window-detail`, `settings-general`, `settings-repositories`, `settings-diagnostics`. Pure logic changes don't need a regen.
+
+**Resolution must be 2× (Retina).** `screencapture -l<windowID>` writes at the window's backing-scale factor — there's no override flag. The committed reference set is 2× (popover-* are 1172×1332, settings-* are 1840×1536, window-detail is 2200×1664). On a 1× display (e.g. an external 3440×1440 ultrawide running native, no HiDPI), captures come out at half those dimensions and must NOT be committed. Before running `bin/screenshots`, verify your active display is Retina/HiDPI:
+
+```sh
+system_profiler SPDisplaysDataType | grep -E "Resolution|UI Looks"
+```
+
+If "UI Looks like" matches the native resolution (1×), move the cursor / drag the would-be window to a Retina display first (built-in MBP screen, or an external display set to a HiDPI scaled mode), or run from a machine that has one. After capture, sanity-check pixel dimensions with `sips -g pixelWidth -g pixelHeight docs/screenshots/<stage>.png` and compare against the reference numbers above. Half-resolution PNGs in a diff are the giveaway — `git checkout HEAD -- docs/screenshots/<stage>.png` to revert and rerun on a Retina display.
