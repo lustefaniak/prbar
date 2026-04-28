@@ -302,7 +302,7 @@ final class ReviewQueueWorker {
                 // so it knows this PR is human-ready (otherwise restarts
                 // with persisted reviews never trigger a notification).
                 let settled = inFlight == 0 && pending.isEmpty
-                PRBarLog.triage.notice("enqueue cache-hit pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(short(pr.headSha), privacy: .public) settled=\(settled, privacy: .public)")
+                PRBarLog.triage.notice("enqueue cache-hit pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) settled=\(settled, privacy: .public)")
                 onReviewSettled?(pr.nodeId, settled)
                 return
             }
@@ -332,7 +332,7 @@ final class ReviewQueueWorker {
             ?? defaultProviderId
 
         if dailyCostCapEnabled && cumulativeSpend() >= dailyCostCap {
-            PRBarLog.triage.notice("enqueue blocked reason=daily-cap pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) cap=\(self.dailyCostCap, privacy: .public)")
+            PRBarLog.triage.notice("enqueue blocked reason=daily-cap pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) cap=\(self.fmt(self.dailyCostCap), privacy: .public)")
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
                 providerId: resolvedProviderId,
@@ -355,11 +355,11 @@ final class ReviewQueueWorker {
             priorReview: prior
         )
         let priorTag: String = {
-            if let p = prior { return "prior=\(short(p.headSha))" }
+            if let p = prior { return "prior=\(self.short(p.headSha))" }
             if priorDroppedByFullReview { return "prior=dropped(forceFullReview)" }
             return "prior=none"
         }()
-        PRBarLog.triage.notice("enqueue queued pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(short(pr.headSha), privacy: .public) provider=\(resolvedProviderId.rawValue, privacy: .public) force=\(force, privacy: .public) \(priorTag, privacy: .public)")
+        PRBarLog.triage.notice("enqueue queued pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) provider=\(resolvedProviderId.rawValue, privacy: .public) force=\(force, privacy: .public) \(priorTag, privacy: .public)")
         persist()
         pending.append(PendingItem(pr: pr, providerOverride: providerOverride))
         drainIfPossible()
@@ -544,7 +544,7 @@ final class ReviewQueueWorker {
                 )
                 let subElapsedMs = Int(Date().timeIntervalSince(subStart) * 1000)
                 let subpathTag = subdiff.subpath.isEmpty ? "<root>" : subdiff.subpath
-                PRBarLog.provider.notice("subreview done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) subpath=\(subpathTag, privacy: .public) verdict=\(result.verdict.rawValue, privacy: .public) confidence=\(result.confidence, privacy: .public) cost=\(result.costUsd, privacy: .public) tools=\(result.toolCallCount, privacy: .public) elapsedMs=\(subElapsedMs, privacy: .public)")
+                PRBarLog.provider.notice("subreview done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) subpath=\(subpathTag, privacy: .public) verdict=\(result.verdict.rawValue, privacy: .public) confidence=\(self.fmt(result.confidence), privacy: .public) cost=\(self.fmt(result.costUsd), privacy: .public) tools=\(result.toolCallCount, privacy: .public) elapsedMs=\(subElapsedMs, privacy: .public)")
                 outcomes.append(SubreviewOutcome(subpath: subdiff.subpath, result: result))
             }
             // Clear live progress once outcomes are aggregated below.
@@ -556,7 +556,7 @@ final class ReviewQueueWorker {
                 return
             }
             let runElapsedMs = Int(Date().timeIntervalSince(runStart) * 1000)
-            PRBarLog.triage.notice("run done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) verdict=\(aggregated.verdict.rawValue, privacy: .public) confidence=\(aggregated.confidence, privacy: .public) cost=\(aggregated.costUsd, privacy: .public) annotations=\(aggregated.annotations.count, privacy: .public) elapsedMs=\(runElapsedMs, privacy: .public)")
+            PRBarLog.triage.notice("run done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) verdict=\(aggregated.verdict.rawValue, privacy: .public) confidence=\(self.fmt(aggregated.confidence), privacy: .public) cost=\(self.fmt(aggregated.costUsd), privacy: .public) annotations=\(aggregated.annotations.count, privacy: .public) elapsedMs=\(runElapsedMs, privacy: .public)")
             reviews[pr.nodeId]?.status = .completed(aggregated)
             reviews[pr.nodeId]?.costUsd = aggregated.costUsd
             // Successful retriage replaces the prior review.
@@ -576,6 +576,15 @@ final class ReviewQueueWorker {
     private nonisolated func short(_ sha: String) -> String {
         if sha.isEmpty { return "<empty>" }
         return String(sha.prefix(7))
+    }
+
+    /// Format a Double for log output. `OSLogInterpolation` doesn't have
+    /// a `(_ value: Double, privacy:)` overload — only String / Int /
+    /// Bool / NSObject — so we stringify here and pass the result as a
+    /// String interpolation. Three-decimal precision is enough for cost
+    /// (cents) and confidence (per-mille).
+    private nonisolated func fmt(_ d: Double) -> String {
+        String(format: "%.3f", d)
     }
 
     /// Compute the cwd for a subreview. In `.minimal` mode with a shared
