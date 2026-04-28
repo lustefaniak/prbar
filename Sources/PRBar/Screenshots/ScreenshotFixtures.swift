@@ -198,7 +198,7 @@ enum ScreenshotFixtures {
             triggeredAt: Date(timeIntervalSinceNow: -180),
             status: .completed(reviewForInReview),
             costUsd: 0.078,
-            priorReview: nil
+            priorReviews: []
         )
     ]
 

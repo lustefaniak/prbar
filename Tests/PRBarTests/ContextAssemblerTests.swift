@@ -135,51 +135,70 @@ final class ContextAssemblerTests: XCTestCase {
         XCTAssertTrue(bundle.systemPrompt.contains("Goroutine leaks"))
     }
 
-    func testPriorReviewSectionRendersWhenProvided() throws {
-        let prior = PriorReview(
-            headSha: "olds1234567",
-            aggregated: AggregatedReview(
-                verdict: .requestChanges,
-                confidence: 0.82,
-                summaryMarkdown: "Watch the goroutine leak in worker.go",
-                annotations: [
-                    DiffAnnotation(
-                        path: "worker.go",
-                        lineStart: 42, lineEnd: 42,
-                        severity: .blocker,
-                        title: "Goroutine leaks on error path",
-                        body: "..."
-                    )
-                ],
-                costUsd: 0.04,
-                toolCallCount: 2,
-                toolNamesUsed: ["Read"],
-                perSubreview: [],
-                isSubscriptionAuth: true
+    func testPriorReviewsSectionRendersWhenProvided() throws {
+        let priors: [PriorReview] = [
+            PriorReview(
+                headSha: "olds1234567",
+                aggregated: AggregatedReview(
+                    verdict: .comment,
+                    confidence: 0.6,
+                    summaryMarkdown: "Some early concern",
+                    annotations: [],
+                    costUsd: 0.01,
+                    toolCallCount: 0,
+                    toolNamesUsed: [],
+                    perSubreview: [],
+                    isSubscriptionAuth: true
+                )
+            ),
+            PriorReview(
+                headSha: "olds7654321",
+                aggregated: AggregatedReview(
+                    verdict: .requestChanges,
+                    confidence: 0.82,
+                    summaryMarkdown: "Watch the goroutine leak in worker.go",
+                    annotations: [
+                        DiffAnnotation(
+                            path: "worker.go",
+                            lineStart: 42, lineEnd: 42,
+                            severity: .blocker,
+                            title: "Goroutine leaks on error path",
+                            body: "..."
+                        )
+                    ],
+                    costUsd: 0.04,
+                    toolCallCount: 2,
+                    toolNamesUsed: ["Read"],
+                    perSubreview: [],
+                    isSubscriptionAuth: true
+                )
             )
-        )
+        ]
         let bundle = try ContextAssembler.assemble(
             pr: makePR(), subdiff: subdiff(), diffText: "<>",
             toolMode: .none,
             workdir: URL(fileURLWithPath: "/tmp"),
-            priorReview: prior
+            priorReviews: priors
         )
-        XCTAssertTrue(bundle.userPrompt.contains("Previous review"))
-        XCTAssertTrue(bundle.userPrompt.contains("olds123"),
-            "should include short prior SHA")
+        XCTAssertTrue(bundle.userPrompt.contains("Earlier internal review drafts"))
+        XCTAssertTrue(bundle.userPrompt.contains("NOT posted to GitHub"),
+            "framing must make clear the drafts were never sent")
+        XCTAssertTrue(bundle.userPrompt.contains("Draft 1 — commit `olds123"))
+        XCTAssertTrue(bundle.userPrompt.contains("Draft 2 — commit `olds765"))
         XCTAssertTrue(bundle.userPrompt.contains("`request_changes`"),
-            "should mention prior verdict")
+            "should mention prior verdicts")
         XCTAssertTrue(bundle.userPrompt.contains("Goroutine leaks on error path"),
-            "should list prior blocking annotations so the AI can verify they were addressed")
-        XCTAssertTrue(bundle.userPrompt.contains("avoid repeating non-blocking suggestions"))
+            "should list prior blocking annotations as memory aid")
+        XCTAssertTrue(bundle.userPrompt.contains("one consolidated final review"),
+            "should instruct the model to produce a single fresh final review")
     }
 
-    func testPriorReviewSectionAbsentWhenNotProvided() throws {
+    func testPriorReviewsSectionAbsentWhenEmpty() throws {
         let bundle = try ContextAssembler.assemble(
             pr: makePR(), subdiff: subdiff(), diffText: "<>",
             toolMode: .none, workdir: URL(fileURLWithPath: "/tmp")
         )
-        XCTAssertFalse(bundle.userPrompt.contains("Previous review"))
+        XCTAssertFalse(bundle.userPrompt.contains("Earlier internal review drafts"))
     }
 
     // MARK: helpers

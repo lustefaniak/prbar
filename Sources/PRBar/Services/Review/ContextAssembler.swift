@@ -30,7 +30,7 @@ enum ContextAssembler {
         workdir: URL,
         customSystemPrompt: String? = nil,
         replaceBaseSystemPrompt: Bool = false,
-        priorReview: PriorReview? = nil
+        priorReviews: [PriorReview] = []
     ) throws -> PromptBundle {
         let language = subdiff.dominantLanguage
         let basePrompt = try PromptLibrary.systemPrompt(for: language)
@@ -51,7 +51,7 @@ enum ContextAssembler {
             existingComments: existingComments,
             ciFailures: ciFailures,
             toolMode: toolMode,
-            priorReview: priorReview
+            priorReviews: priorReviews
         )
         return PromptBundle(
             systemPrompt: systemPrompt,
@@ -71,7 +71,7 @@ enum ContextAssembler {
         existingComments: [ExistingReviewComment],
         ciFailures: [CIFailureLog],
         toolMode: ToolMode,
-        priorReview: PriorReview? = nil
+        priorReviews: [PriorReview] = []
     ) -> String {
         var out = ""
         out += "# Pull Request Review\n\n"
@@ -84,8 +84,8 @@ enum ContextAssembler {
             out += pr.body.trimmingCharacters(in: .whitespacesAndNewlines)
             out += "\n\n"
         }
-        if let prior = priorReview {
-            out += priorReviewSection(prior, currentSha: pr.headSha)
+        if !priorReviews.isEmpty {
+            out += priorReviewsSection(priorReviews, currentSha: pr.headSha)
             out += "\n"
         }
         out += subfolderSection(subdiff: subdiff, toolMode: toolMode)
@@ -106,32 +106,45 @@ enum ContextAssembler {
         return out
     }
 
-    /// Frame the retriage so the AI can decide whether prior concerns
-    /// were addressed by the new commits, and avoid re-litigating
-    /// non-blockers it already flagged.
-    private static func priorReviewSection(_ prior: PriorReview, currentSha: String) -> String {
-        let oldShort = String(prior.headSha.prefix(7))
+    /// Render the chain of internal review drafts the user accumulated
+    /// without posting any of them. The framing is critical: the PR
+    /// author has seen *none* of these — they were drafted locally as
+    /// the head moved. The model must produce one final consolidated
+    /// review for the PR's current state, not a delta against a
+    /// non-existent earlier comment.
+    private static func priorReviewsSection(_ priors: [PriorReview], currentSha: String) -> String {
         let newShort = String(currentSha.prefix(7))
-        var s = "## Previous review (commit `\(oldShort)` → now `\(newShort)`)\n\n"
-        s += "You reviewed an earlier version of this PR. The author has pushed new commits since. "
-        s += "Use the previous verdict + summary as context — call out whether prior concerns were addressed, "
-        s += "and avoid repeating non-blocking suggestions you already gave.\n\n"
-        s += "- **Previous verdict**: `\(prior.aggregated.verdict.rawValue)` "
-        s += "(confidence \(String(format: "%.0f%%", prior.aggregated.confidence * 100)))\n"
-        let summary = prior.aggregated.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !summary.isEmpty {
-            s += "- **Previous summary**:\n\n"
-            for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
-                s += "  > \(line)\n"
+        var s = "## Earlier internal review drafts (NOT posted to GitHub)\n\n"
+        s += "The PR has moved through \(priors.count) earlier commit\(priors.count == 1 ? "" : "s") "
+        s += "that you previously triaged. **None of those drafts were posted** — the PR author "
+        s += "has not seen any of them. Treat them as your own private notes.\n\n"
+        s += "Your task now is to produce **one consolidated final review** for the PR at its current "
+        s += "head `\(newShort)`. Do **not** phrase findings as updates on a previous comment "
+        s += "(\"as I noted earlier\", \"this addresses my prior concern\") — from the author's "
+        s += "perspective there is no prior comment. State the current state of the PR plainly. "
+        s += "Use the drafts only as a memory aid: issues that were genuinely fixed by later commits "
+        s += "should be omitted; issues that persist should be raised fresh in your final review.\n\n"
+        for (idx, prior) in priors.enumerated() {
+            let shaShort = String(prior.headSha.prefix(7))
+            s += "### Draft \(idx + 1) — commit `\(shaShort)`\n\n"
+            s += "- **Verdict**: `\(prior.aggregated.verdict.rawValue)` "
+            s += "(confidence \(String(format: "%.0f%%", prior.aggregated.confidence * 100)))\n"
+            let summary = prior.aggregated.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !summary.isEmpty {
+                s += "- **Summary**:\n\n"
+                for line in summary.split(separator: "\n", omittingEmptySubsequences: false) {
+                    s += "  > \(line)\n"
+                }
             }
-        }
-        let blockers = prior.aggregated.annotations.filter { $0.severity.isBlocking }
-        if !blockers.isEmpty {
-            s += "\n- **Previous blocking annotations** (verify each was addressed):\n"
-            for ann in blockers.prefix(10) {
-                let title = ann.displayTitle.replacingOccurrences(of: "\n", with: " ")
-                s += "  - `\(ann.path):\(ann.lineStart)` — \(title)\n"
+            let blockers = prior.aggregated.annotations.filter { $0.severity.isBlocking }
+            if !blockers.isEmpty {
+                s += "\n- **Blocking annotations flagged then** (re-check whether each still applies):\n"
+                for ann in blockers.prefix(10) {
+                    let title = ann.displayTitle.replacingOccurrences(of: "\n", with: " ")
+                    s += "  - `\(ann.path):\(ann.lineStart)` — \(title)\n"
+                }
             }
+            s += "\n"
         }
         return s
     }

@@ -42,13 +42,69 @@ struct ReviewState: Sendable, Hashable, Codable {
     /// 0 while running).
     var costUsd: Double
 
-    /// When retriaging because the PR's head moved, the prior completed
-    /// review is preserved here so the UI keeps showing the previous
-    /// verdict (with a stale banner) and the new run can frame its
-    /// prompt as "did the new commits address prior concerns?". Cleared
-    /// when the new review completes successfully; on failure the prior
-    /// remains so the user doesn't lose their last good triage.
-    var priorReview: PriorReview? = nil
+    /// Chain of completed-but-unposted reviews from earlier commits,
+    /// oldest first. Grows when the PR's head moves before the user
+    /// posts the verdict; cleared when a new review completes
+    /// successfully. The model needs the *whole* chain so it can issue
+    /// one consolidated final review for the PR's current state instead
+    /// of a delta against a draft the PR author never saw.
+    var priorReviews: [PriorReview] = []
+
+    /// Convenience for UI consumers that only need the most recent
+    /// snapshot (verdict pill, stale banner).
+    var latestPrior: PriorReview? { priorReviews.last }
+
+    enum CodingKeys: String, CodingKey {
+        case prNodeId, providerId, headSha, triggeredAt, status, costUsd
+        case priorReviews
+        case priorReview // legacy singular
+    }
+
+    init(
+        prNodeId: String,
+        providerId: ProviderID = .claude,
+        headSha: String,
+        triggeredAt: Date,
+        status: Status,
+        costUsd: Double,
+        priorReviews: [PriorReview] = []
+    ) {
+        self.prNodeId = prNodeId
+        self.providerId = providerId
+        self.headSha = headSha
+        self.triggeredAt = triggeredAt
+        self.status = status
+        self.costUsd = costUsd
+        self.priorReviews = priorReviews
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(prNodeId, forKey: .prNodeId)
+        try c.encode(providerId, forKey: .providerId)
+        try c.encode(headSha, forKey: .headSha)
+        try c.encode(triggeredAt, forKey: .triggeredAt)
+        try c.encode(status, forKey: .status)
+        try c.encode(costUsd, forKey: .costUsd)
+        try c.encode(priorReviews, forKey: .priorReviews)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.prNodeId = try c.decode(String.self, forKey: .prNodeId)
+        self.providerId = try c.decodeIfPresent(ProviderID.self, forKey: .providerId) ?? .claude
+        self.headSha = try c.decode(String.self, forKey: .headSha)
+        self.triggeredAt = try c.decode(Date.self, forKey: .triggeredAt)
+        self.status = try c.decode(Status.self, forKey: .status)
+        self.costUsd = try c.decodeIfPresent(Double.self, forKey: .costUsd) ?? 0
+        if let chain = try c.decodeIfPresent([PriorReview].self, forKey: .priorReviews) {
+            self.priorReviews = chain
+        } else if let legacy = try c.decodeIfPresent(PriorReview.self, forKey: .priorReview) {
+            self.priorReviews = [legacy]
+        } else {
+            self.priorReviews = []
+        }
+    }
 }
 
 /// Snapshot of a completed AI review for an earlier commit, captured
@@ -308,21 +364,25 @@ final class ReviewQueueWorker {
             }
             // SHA mismatch or previously failed → fall through to re-queue.
         }
-        // If we already had a completed review for an earlier SHA, keep
-        // it as `priorReview` on the new entry. The UI surfaces it with a
-        // stale banner during the retriage; the assembler folds the
-        // previous verdict + summary into the prompt so the AI knows the
-        // PR has been updated since. `forceFullReview` opts out — the
-        // model re-evaluates the whole diff with no incremental framing.
-        let priorCandidate: PriorReview? = {
+        // If we already had a completed review for an earlier SHA, fold
+        // it into the new entry's `priorReviews` chain. The chain
+        // accumulates across multiple head-moves the user never posted,
+        // so the model gets the full history of internal drafts and can
+        // produce one consolidated final review for the current state.
+        // `forceFullReview` opts out — model re-evaluates from scratch.
+        let priorChain: [PriorReview] = {
             guard let existing = reviews[pr.nodeId],
                   case .completed(let agg) = existing.status,
                   existing.headSha != pr.headSha
-            else { return nil }
-            return PriorReview(headSha: existing.headSha, aggregated: agg)
+            else { return reviews[pr.nodeId]?.priorReviews ?? [] }
+            // Cap to the most recent 5 to keep prompt size bounded on
+            // long-lived PRs with many force-pushes.
+            let appended = (reviews[pr.nodeId]?.priorReviews ?? []) +
+                [PriorReview(headSha: existing.headSha, aggregated: agg)]
+            return Array(appended.suffix(5))
         }()
-        let priorDroppedByFullReview = priorCandidate != nil && cfg.forceFullReview
-        let prior = cfg.forceFullReview ? nil : priorCandidate
+        let priorDroppedByFullReview = !priorChain.isEmpty && cfg.forceFullReview
+        let priorReviews = cfg.forceFullReview ? [] : priorChain
 
         // Resolve provider at enqueue time so UI can show "Reviewing
         // with codex…" while the run is queued. Per-run override > repo
@@ -340,7 +400,7 @@ final class ReviewQueueWorker {
                 triggeredAt: Date(),
                 status: .failed("Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."),
                 costUsd: 0,
-                priorReview: prior
+                priorReviews: priorReviews
             )
             persist()
             return
@@ -352,12 +412,14 @@ final class ReviewQueueWorker {
             triggeredAt: Date(),
             status: .queued,
             costUsd: 0,
-            priorReview: prior
+            priorReviews: priorReviews
         )
         let priorTag: String = {
-            if let p = prior { return "prior=\(self.short(p.headSha))" }
-            if priorDroppedByFullReview { return "prior=dropped(forceFullReview)" }
-            return "prior=none"
+            if priorReviews.isEmpty {
+                return priorDroppedByFullReview ? "prior=dropped(forceFullReview)" : "prior=none"
+            }
+            let shas = priorReviews.map { self.short($0.headSha) }.joined(separator: ",")
+            return "prior=[\(shas)]"
         }()
         PRBarLog.triage.notice("enqueue queued pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) provider=\(resolvedProviderId.rawValue, privacy: .public) force=\(force, privacy: .public) \(priorTag, privacy: .public)")
         persist()
@@ -458,9 +520,9 @@ final class ReviewQueueWorker {
                 reviews[pr.nodeId]?.status = .failed("Empty diff — nothing to review.")
                 return
             }
-            let priorAtStart = reviews[pr.nodeId]?.priorReview
+            let priorAtStart = reviews[pr.nodeId]?.priorReviews ?? []
             let subpathSummary = subdiffs.map { $0.subpath.isEmpty ? "<root>" : $0.subpath }.joined(separator: ",")
-            PRBarLog.triage.notice("run start pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) toolMode=\(effectiveToolMode.rawValue, privacy: .public) split=\(config.splitMode.rawValue, privacy: .public) subdiffs=\(subdiffs.count, privacy: .public) subpaths=[\(subpathSummary, privacy: .public)] hasPrior=\(priorAtStart != nil, privacy: .public) diffBytes=\(diffText.utf8.count, privacy: .public)")
+            PRBarLog.triage.notice("run start pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) toolMode=\(effectiveToolMode.rawValue, privacy: .public) split=\(config.splitMode.rawValue, privacy: .public) subdiffs=\(subdiffs.count, privacy: .public) subpaths=[\(subpathSummary, privacy: .public)] priorChain=\(priorAtStart.count, privacy: .public) diffBytes=\(diffText.utf8.count, privacy: .public)")
 
             // For .minimal mode, provision one worktree at the PR's headSha
             // and reuse it across all subreviews of this PR (they all
@@ -480,7 +542,7 @@ final class ReviewQueueWorker {
                 }
             }
 
-            let prior = reviews[pr.nodeId]?.priorReview
+            let priorChainForPrompt = reviews[pr.nodeId]?.priorReviews ?? []
             let prNodeId = pr.nodeId
 
             // Pull the tail of every failed Actions job so the AI sees
@@ -519,7 +581,7 @@ final class ReviewQueueWorker {
                     workdir: workdir,
                     customSystemPrompt: config.customSystemPrompt,
                     replaceBaseSystemPrompt: config.replaceBaseSystemPrompt,
-                    priorReview: prior
+                    priorReviews: priorChainForPrompt
                 )
                 let options = ProviderOptions(
                     model: nil,
@@ -559,8 +621,10 @@ final class ReviewQueueWorker {
             PRBarLog.triage.notice("run done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) verdict=\(aggregated.verdict.rawValue, privacy: .public) confidence=\(self.fmt(aggregated.confidence), privacy: .public) cost=\(self.fmt(aggregated.costUsd), privacy: .public) annotations=\(aggregated.annotations.count, privacy: .public) elapsedMs=\(runElapsedMs, privacy: .public)")
             reviews[pr.nodeId]?.status = .completed(aggregated)
             reviews[pr.nodeId]?.costUsd = aggregated.costUsd
-            // Successful retriage replaces the prior review.
-            reviews[pr.nodeId]?.priorReview = nil
+            // Don't clear the chain on success — the previous draft is
+            // still "unposted from the user's perspective" until they
+            // actually push a review to GitHub. The chain naturally caps
+            // at 5 in `enqueue` so it can't grow unbounded.
             persist()
             stageAutoApproveIfEligible(pr: pr, review: aggregated, config: config)
         } catch {
