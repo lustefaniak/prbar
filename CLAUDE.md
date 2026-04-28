@@ -140,3 +140,7 @@ When you add a field to `InboxPR`, every test file that constructs one (currentl
 - Don't drop `--quiet` from `bin/build` (test output is silenced there on purpose) or *add* it to `bin/test` (we want test pass/fail visible).
 - Don't merge work without `bin/test` green locally. Integration tests catch real schema drift; ignoring them defeats the purpose.
 - Don't bake company-specific or repo-specific defaults into `RepoConfig.builtins`. Repo layouts belong with the repo (planned `.prbar.yml`) or in the user's `RepoConfigStore` overrides, not in app source.
+
+## Screenshots
+
+When a PR introduces an important visual change (action surfaces, new sections, layout reflows) or a new visual feature, regenerate the affected screenshots in `docs/screenshots/` as part of the same PR. Run `bin/screenshots <stage>...` for the affected stages only — don't regenerate untouched stages, since timestamps churn diff noise. Stages: `popover-my-prs`, `popover-inbox`, `popover-detail`, `window-detail`, `settings-general`, `settings-repositories`, `settings-diagnostics`. Pure logic changes don't need a regen.
