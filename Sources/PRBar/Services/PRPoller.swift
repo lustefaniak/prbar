@@ -39,16 +39,6 @@ final class PRPoller {
     @ObservationIgnored
     private let fetcher: @Sendable () async throws -> [InboxPR]
 
-    /// Optional second fetcher for the viewer's authored PRs via the
-    /// `viewer.pullRequests` connection (NOT search). Decouples My PRs
-    /// from the GitHub Search index so a search outage / lag doesn't
-    /// blank out the user's own PRs alongside the Inbox tab. Results
-    /// are merged with `fetcher`'s output by nodeId; on conflict the
-    /// search version wins because it has the full role calculation
-    /// (e.g. `.both` when the viewer is also a reviewer).
-    @ObservationIgnored
-    private let myPRsFetcher: (@Sendable () async throws -> [InboxPR])?
-
     @ObservationIgnored
     private let prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)?
 
@@ -92,14 +82,12 @@ final class PRPoller {
 
     init(
         fetcher: @Sendable @escaping () async throws -> [InboxPR],
-        myPRsFetcher: (@Sendable () async throws -> [InboxPR])? = nil,
         prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil,
         prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)? = nil,
         prReviewer: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ kind: ReviewActionKind, _ body: String) async throws -> Void)? = nil,
         cache: SnapshotCache? = nil
     ) {
         self.fetcher = fetcher
-        self.myPRsFetcher = myPRsFetcher
         self.prRefresher = prRefresher
         self.prMerger = prMerger
         self.prReviewer = prReviewer
@@ -133,10 +121,6 @@ final class PRPoller {
             fetcher: {
                 let c = try client ?? GHClient()
                 return try await c.fetchInbox()
-            },
-            myPRsFetcher: {
-                let c = try client ?? GHClient()
-                return try await c.fetchMyPRs()
             },
             prRefresher: { owner, repo, number in
                 let c = try client ?? GHClient()
@@ -324,92 +308,35 @@ final class PRPoller {
         isFetching = true
         defer { isFetching = false }
 
-        // Run both fetches in parallel. The search-based `fetcher`
-        // covers everything you're "involved in" (inbox + your own PRs
-        // GitHub knows you authored); the `myPRsFetcher` goes through
-        // `viewer.pullRequests` and is independent of the search index.
-        // Either failing alone is recoverable — we merge whatever
-        // succeeded so a search outage doesn't blank My PRs and a
-        // (theoretical) viewer-graph outage doesn't blank Inbox.
-        let fetcherSnapshot = self.fetcher
-        let myPRsFetcherSnapshot = self.myPRsFetcher
-        async let inboxOutcome: Result<[InboxPR], Error> = {
-            do { return .success(try await fetcherSnapshot()) }
-            catch { return .failure(error) }
-        }()
-        async let myPRsOutcome: Result<[InboxPR], Error>? = {
-            guard let f = myPRsFetcherSnapshot else { return nil }
-            do { return .success(try await f()) }
-            catch { return .failure(error) }
-        }()
-
-        let inboxResult = await inboxOutcome
-        let myPRsResult = await myPRsOutcome
-
-        var inboxList: [InboxPR] = []
-        var inboxError: Error?
-        switch inboxResult {
-        case .success(let v): inboxList = v
-        case .failure(let e): inboxError = e
-        }
-
-        var myPRsList: [InboxPR] = []
-        var myPRsError: Error?
-        if let outcome = myPRsResult {
-            switch outcome {
-            case .success(let v): myPRsList = v
-            case .failure(let e): myPRsError = e
-            }
-        }
-
-        // If both queries failed, surface the inbox error and bail —
-        // keep `prs` intact so the user keeps seeing the cached state.
-        if inboxError != nil && (myPRsResult == nil || myPRsError != nil) {
-            self.lastError = inboxError?.localizedDescription ?? "Fetch failed"
-            return
-        }
-
-        // Merge by nodeId — search wins on conflict (it has the full
-        // role calculation including `.both`). Anything authored that
-        // search dropped (search outage) gets added from myPRsList.
-        var merged: [String: InboxPR] = [:]
-        for pr in myPRsList { merged[pr.nodeId] = pr }
-        for pr in inboxList { merged[pr.nodeId] = pr }
-        let combined = applyTitleFilter(Array(merged.values))
-
-        let oldPRs = self.prs
-        self.prs = combined
-        let delta = Self.computeDelta(old: oldPRs, new: combined)
-        self.lastDelta = delta
-        self.lastFetchedAt = Date()
-
-        // Surface a soft warning if exactly one side failed — useful
-        // when GitHub Search is partially out (the Inbox tab will be
-        // stale but My PRs is fresh, or vice versa).
-        if let inboxError {
-            self.lastError = "Inbox search failed: \(inboxError.localizedDescription). Showing your authored PRs only."
-        } else if let myPRsError {
-            self.lastError = "My PRs fetch failed: \(myPRsError.localizedDescription). Showing search results only."
-        } else {
+        do {
+            let raw = try await fetcher()
+            let fetched = applyTitleFilter(raw)
+            let oldPRs = self.prs
+            self.prs = fetched
+            let delta = Self.computeDelta(old: oldPRs, new: fetched)
+            self.lastDelta = delta
+            self.lastFetchedAt = Date()
             self.lastError = nil
-        }
 
-        // Skip notifications on the very first successful poll — we
-        // don't want to wake the user with "5 PRs are ready to merge!"
-        // every time the app launches.
-        if !oldPRs.isEmpty, let notifier {
-            let events = EventDeriver.events(from: delta, oldPRs: oldPRs)
-            notifier.enqueue(events)
-        }
+            // Skip notifications on the very first successful poll — we
+            // don't want to wake the user with "5 PRs are ready to merge!"
+            // every time the app launches.
+            if !oldPRs.isEmpty, let notifier {
+                let events = EventDeriver.events(from: delta, oldPRs: oldPRs)
+                notifier.enqueue(events)
+            }
 
-        // Always fire — the coordinator owns its own first-poll logic
-        // and needs to see every poll to track membership transitions
-        // (PR drops out of inbox).
-        onPollSuccess?(combined)
+            // Always fire — the coordinator owns its own first-poll logic
+            // and needs to see every poll to track membership transitions
+            // (PR drops out of inbox).
+            onPollSuccess?(fetched)
 
-        // Persist asynchronously; don't block the poll on disk I/O.
-        if let cache {
-            Task.detached { await cache.save(combined) }
+            // Persist asynchronously; don't block the poll on disk I/O.
+            if let cache {
+                Task.detached { await cache.save(fetched) }
+            }
+        } catch {
+            self.lastError = error.localizedDescription
         }
     }
 

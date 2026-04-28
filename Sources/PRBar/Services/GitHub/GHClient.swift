@@ -54,35 +54,6 @@ actor GHClient {
         }
     }
 
-    /// Fetch the viewer's authored open PRs via `viewer.pullRequests`.
-    /// Independent of GitHub Search, so it keeps working when search
-    /// indexing is lagging or returning empty for `involves:@me`.
-    func fetchMyPRs() async throws -> [InboxPR] {
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: ["api", "graphql", "-f", "query=\(GraphQLQueries.myPRs)"]
-        )
-
-        guard result.succeeded else {
-            throw GHError.execFailed(
-                stderr: result.stderrString ?? "",
-                exitCode: result.exitCode
-            )
-        }
-
-        let response: MyPRsResponse
-        do {
-            response = try JSONDecoder().decode(MyPRsResponse.self, from: result.stdout)
-        } catch {
-            throw GHError.decodingFailed(String(describing: error))
-        }
-
-        let viewerLogin = response.data.viewer.login
-        return response.data.viewer.pullRequests.nodes.map {
-            InboxPR(node: $0, viewerLogin: viewerLogin)
-        }
-    }
-
     /// Refresh a single PR. Costs ~1 GraphQL point vs ~25 for fetchInbox.
     func fetchPR(owner: String, repo: String, number: Int) async throws -> InboxPR {
         let result = try await ProcessRunner.run(
