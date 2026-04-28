@@ -42,11 +42,11 @@ final class ReviewQueueWorkerTests: XCTestCase {
         let oldPR = makePR(nodeId: "PR_1", number: 1, headSha: "oldSha1")
         worker.enqueue(oldPR)
         try await waitUntil { self.isCompleted(worker.reviews["PR_1"]?.status) }
-        XCTAssertNil(worker.reviews["PR_1"]?.priorReview,
-            "first triage shouldn't have a priorReview yet")
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReviews ?? [], [],
+            "first triage shouldn't have any prior reviews yet")
 
         // PR head moves — re-enqueue with a slow provider so we can
-        // observe the .running state while priorReview is attached.
+        // observe the .running state while the chain is attached.
         let newPR = makePR(nodeId: "PR_1", number: 1, headSha: "newSha2")
         let slow = SlowStubProvider(verdict: .approve)
         worker.provider = slow
@@ -56,13 +56,43 @@ final class ReviewQueueWorkerTests: XCTestCase {
             if case .running = worker.reviews["PR_1"]?.status { return true }
             return false
         }
-        XCTAssertEqual(worker.reviews["PR_1"]?.priorReview?.headSha, "oldSha1")
-        XCTAssertEqual(worker.reviews["PR_1"]?.priorReview?.aggregated.summaryMarkdown, "first")
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReviews.count, 1)
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReviews.first?.headSha, "oldSha1")
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReviews.first?.aggregated.summaryMarkdown, "first")
         XCTAssertEqual(worker.reviews["PR_1"]?.headSha, "newSha2")
 
         try await waitUntil { self.isCompleted(worker.reviews["PR_1"]?.status) }
-        XCTAssertNil(worker.reviews["PR_1"]?.priorReview,
-            "successful retriage should clear the priorReview")
+        // Chain is preserved across successful retriages — earlier
+        // drafts stay "unposted from the user's perspective" until the
+        // user actually posts a review to GitHub. Capped at 5 in enqueue.
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReviews.map(\.headSha), ["oldSha1"],
+            "successful retriage keeps prior drafts in the chain")
+    }
+
+    func testRetriageAccumulatesChainAcrossMultipleHeadMoves() async throws {
+        // Three head-moves without the user posting between them: the
+        // chain should accumulate all completed-but-unposted drafts so
+        // the prompt reflects the full history.
+        let p1 = StubProvider(verdict: .comment, summary: "draft-1", cost: 0.01)
+        let worker = makeWorker(provider: p1, diffText: makeDiff())
+        worker.enqueue(makePR(nodeId: "PR_C", number: 9, headSha: "shaA"))
+        try await waitUntil { self.isCompleted(worker.reviews["PR_C"]?.status) }
+
+        worker.provider = StubProvider(verdict: .comment, summary: "draft-2", cost: 0.01)
+        worker.enqueue(makePR(nodeId: "PR_C", number: 9, headSha: "shaB"))
+        try await waitUntil { self.isCompleted(worker.reviews["PR_C"]?.status) }
+
+        let slow = SlowStubProvider(verdict: .approve)
+        worker.provider = slow
+        worker.enqueue(makePR(nodeId: "PR_C", number: 9, headSha: "shaC"))
+
+        try await waitUntil {
+            if case .running = worker.reviews["PR_C"]?.status { return true }
+            return false
+        }
+        let chain = worker.reviews["PR_C"]?.priorReviews ?? []
+        XCTAssertEqual(chain.map(\.headSha), ["shaA", "shaB"],
+            "chain should preserve oldest→newest order across head-moves")
     }
 
     func testForceFullReviewDropsPriorReviewFromPromptOnRetriage() async throws {
@@ -87,12 +117,12 @@ final class ReviewQueueWorkerTests: XCTestCase {
         worker.enqueue(newPR)
         try await waitUntil { self.isCompleted(worker.reviews["PR_F"]?.status) }
 
-        XCTAssertNil(worker.reviews["PR_F"]?.priorReview,
-            "forceFullReview should suppress priorReview on the new entry")
+        XCTAssertEqual(worker.reviews["PR_F"]?.priorReviews ?? [], [],
+            "forceFullReview should suppress the prior chain on the new entry")
         XCTAssertEqual(provider.callCount, 2, "retriage should still run the provider")
         let lastPrompt = provider.lastUserPrompt ?? ""
-        XCTAssertFalse(lastPrompt.contains("## Previous review"),
-            "forceFullReview prompt must omit the prior-review section")
+        XCTAssertFalse(lastPrompt.contains("Earlier internal review drafts"),
+            "forceFullReview prompt must omit the prior-reviews section")
     }
 
     func testProviderResolutionPriorityPerRunOverridesRepoOverridesDefault() async throws {

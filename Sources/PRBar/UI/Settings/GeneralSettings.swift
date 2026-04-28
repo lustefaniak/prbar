@@ -4,7 +4,7 @@ struct GeneralSettings: View {
     @Environment(ReviewQueueWorker.self) private var queue
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
-    @AppStorage("approveIncludesComment") private var approveIncludesComment = false
+    @AppStorage("postIncludesAISummary") private var postIncludesAISummary = false
     @AppStorage("badgeShowReadyToMerge")    private var badgeReadyToMerge    = true
     @AppStorage("badgeShowReviewRequested") private var badgeReviewRequested = true
     @AppStorage("badgeShowCIFailed")        private var badgeCIFailed        = true
@@ -37,12 +37,23 @@ struct GeneralSettings: View {
 
             Section {
                 Toggle("Advance to next ready PR after action", isOn: $sequentialFocusMode)
-                Toggle("Include comment body when approving by default",
-                       isOn: $approveIncludesComment)
+                Toggle("Pre-fill review body with AI summary",
+                       isOn: $postIncludesAISummary)
+                    .task {
+                        // One-shot migration of the legacy
+                        // `approveIncludesComment` key to the new combined
+                        // setting. Only runs if the new key is unset.
+                        let defaults = UserDefaults.standard
+                        if defaults.object(forKey: "postIncludesAISummary") == nil,
+                           let legacy = defaults.object(forKey: "approveIncludesComment") as? Bool {
+                            defaults.set(legacy, forKey: "postIncludesAISummary")
+                            postIncludesAISummary = legacy
+                        }
+                    }
             } header: {
                 Text("Review focus")
             } footer: {
-                Text("After Approve / Comment / Request changes, the detail pane jumps to the next ready review-requested PR instead of returning to the list. Reduces context switching when working through a batch.\n\nThe Approve split-button on the PR detail pane respects the second toggle, with the alternative always one click away in the chevron menu.")
+                Text("After Approve / Comment / Request changes, the detail pane jumps to the next ready review-requested PR instead of returning to the list.\n\nWhen pre-fill is on, completed AI reviews seed the editable body field on the PR detail pane. The button matching the AI's verdict is highlighted; you can pick any action and edit the body before posting.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

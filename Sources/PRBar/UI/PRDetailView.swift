@@ -22,7 +22,11 @@ struct PRDetailView: View {
     @Environment(DiffStore.self) private var diffStore
 
     @State private var bodyDraft: String = ""
-    @AppStorage("approveIncludesComment") private var approveIncludesCommentDefault = false
+    /// Tracks the SHA whose AI summary was used to seed `bodyDraft` so we
+    /// don't overwrite user edits when SwiftUI re-evaluates onChange, but
+    /// do re-seed when a fresh review for a new commit lands.
+    @State private var bodyDraftSeededForSha: String? = nil
+    @AppStorage("postIncludesAISummary") private var postIncludesAISummary = false
     @Environment(\.openWindow) private var openWindow
     @State private var showActionPicker: Bool = false
     @State private var descriptionExpanded: Bool = false
@@ -40,7 +44,7 @@ struct PRDetailView: View {
         // While retriaging, surface the prior review so annotations stay
         // visible against the diff. The new run replaces this on success;
         // on failure the user keeps their last good triage.
-        return queue.reviews[pr.nodeId]?.priorReview?.aggregated
+        return queue.reviews[pr.nodeId]?.latestPrior?.aggregated
     }
 
     private var reviewStatus: ReviewState.Status? {
@@ -51,7 +55,7 @@ struct PRDetailView: View {
     /// the retriage banner + lets us keep showing the previous verdict
     /// while the new run is in flight.
     private var priorReview: PriorReview? {
-        queue.reviews[pr.nodeId]?.priorReview
+        queue.reviews[pr.nodeId]?.latestPrior
     }
 
     /// True when the cached review was for an earlier commit than the
@@ -126,8 +130,52 @@ struct PRDetailView: View {
                 }
             }
         }
-        .onAppear { diffStore.ensureLoaded(for: pr) }
+        .onAppear {
+            diffStore.ensureLoaded(for: pr)
+            migrateLegacyPostBodyPreference()
+            seedBodyDraftFromAIIfNeeded()
+        }
         .onChange(of: pr.headSha) { _, _ in diffStore.ensureLoaded(for: pr) }
+        .onChange(of: pr.nodeId) { _, _ in
+            // Switching PRs in the popover: drop the per-PR draft so the
+            // next PR starts clean.
+            bodyDraft = ""
+            bodyDraftSeededForSha = nil
+            seedBodyDraftFromAIIfNeeded()
+        }
+        .onChange(of: review?.summaryMarkdown ?? "") { _, _ in
+            seedBodyDraftFromAIIfNeeded()
+        }
+        .onChange(of: postIncludesAISummary) { _, _ in
+            seedBodyDraftFromAIIfNeeded()
+        }
+    }
+
+    /// One-shot migration of the old `approveIncludesComment` @AppStorage
+    /// key to the new `postIncludesAISummary` key. Runs once per launch
+    /// per detail view; cheap (UserDefaults reads only).
+    private func migrateLegacyPostBodyPreference() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: "postIncludesAISummary") == nil,
+              let legacy = defaults.object(forKey: "approveIncludesComment") as? Bool
+        else { return }
+        defaults.set(legacy, forKey: "postIncludesAISummary")
+    }
+
+    /// Pre-fill the editable body with the AI's summary the first time
+    /// we see a completed review for this PR's current head, IF the
+    /// setting opts in. Never overwrites user edits and never re-seeds
+    /// for the same SHA twice.
+    private func seedBodyDraftFromAIIfNeeded() {
+        guard postIncludesAISummary,
+              let summary = review?.summaryMarkdown,
+              !summary.isEmpty
+        else { return }
+        let sha = queue.reviews[pr.nodeId]?.headSha ?? pr.headSha
+        if bodyDraftSeededForSha == sha { return }
+        if !bodyDraft.isEmpty { return }
+        bodyDraft = summary
+        bodyDraftSeededForSha = sha
     }
 
     // MARK: - sections
@@ -607,135 +655,152 @@ struct PRDetailView: View {
     @ViewBuilder
     private var actionsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Actions")
+            Text("Post review")
                 .font(.subheadline.bold())
 
+            // Single editable body. Pre-seeded with the AI summary on
+            // review-completion when `postIncludesAISummary` is on; user
+            // is free to edit, replace, or clear before posting.
             TextEditor(text: $bodyDraft)
                 .font(.system(.caption, design: .monospaced))
-                .frame(minHeight: 60, maxHeight: 120)
+                .frame(minHeight: 60, maxHeight: 160)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(.secondary.opacity(0.2))
                 )
-                .help("Optional body for Approve/Comment/Request changes.")
+                .help("Body for the review. Pre-fills with the AI summary when the matching setting is on; edit freely.")
 
-            HStack(spacing: 6) {
-                let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
-                let primaryIncludesBody = approveIncludesCommentDefault
-
-                // Split button: primary fires the user's chosen default
-                // (with-comment vs no-comment), chevron offers the
-                // alternative. Avoids posting trivial "LGTM" bodies by
-                // accident while keeping comment-on-approve one click
-                // away.
-                Menu {
-                    Button {
-                        approve(includeBody: !primaryIncludesBody)
-                    } label: {
-                        if primaryIncludesBody {
-                            Label("Approve without comment",
-                                  systemImage: "hand.thumbsup")
-                        } else {
-                            Label("Approve with comment",
-                                  systemImage: "hand.thumbsup.fill")
-                        }
-                    }
-                    .disabled(!primaryIncludesBody && bodyDraft.isEmpty)
-                } label: {
-                    Label(primaryIncludesBody ? "Approve with comment" : "Approve",
-                          systemImage: "hand.thumbsup")
-                } primaryAction: {
-                    approve(includeBody: primaryIncludesBody)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .disabled(isPosting || (primaryIncludesBody && bodyDraft.isEmpty))
-
-                Button {
-                    poller.postReview(pr, kind: .comment, body: bodyDraft)
-                    bodyDraft = ""
-                    onPostedAction()
-                } label: {
-                    Label("Comment", systemImage: "bubble.left")
-                }
-                .disabled(isPosting || bodyDraft.isEmpty)
-                .help("Comment requires a body.")
-
-                Button {
-                    poller.postReview(pr, kind: .requestChanges, body: bodyDraft)
-                    bodyDraft = ""
-                    onPostedAction()
-                } label: {
-                    Label("Request changes", systemImage: "hand.thumbsdown")
-                }
-                .disabled(isPosting)
-
-                if isPosting {
-                    ProgressView().controlSize(.small)
-                }
-            }
-
-            if let err = poller.lastError {
-                Text(err)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-            }
+            actionsToolbar
         }
     }
 
-    /// The verdict badge under "AI Review" doubles as a one-click way
-    /// to post that exact verdict back to GitHub with the AI's summary
-    /// as the body. Only fires when (a) we're allowed to review this PR
-    /// (not own-only) and (b) the verdict maps to an actual review action
-    /// (`abstain` does not). On unauthorised cases it renders as a plain
-    /// label so the user still sees what the AI said.
     @ViewBuilder
-    private func verdictBadge(_ verdict: ReviewVerdict, summary: String) -> some View {
-        let (label, color) = verdictAppearance(verdict)
+    private var actionsToolbar: some View {
         let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
-        let action = reviewAction(for: verdict)
+        let aiVerdict = review?.verdict
+        let preferredAction: ReviewActionKind? = aiVerdict.flatMap(reviewAction(for:))
 
-        let pill = HStack(spacing: 4) {
-            Text(label)
-            if showsReviewActions, action != nil {
-                Image(systemName: "paperplane.fill")
-                    .font(.caption2)
+        HStack(spacing: 6) {
+            actionButton(.approve, isPreferred: preferredAction == .approve, isPosting: isPosting)
+            actionButton(.comment, isPreferred: preferredAction == .comment, isPosting: isPosting)
+            actionButton(.requestChanges, isPreferred: preferredAction == .requestChanges, isPosting: isPosting)
+
+            if !bodyDraft.isEmpty {
+                Button {
+                    bodyDraft = ""
+                    bodyDraftSeededForSha = nil
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .buttonStyle(.borderless)
+                .help("Clear body")
+                .disabled(isPosting)
             }
+
+            if isPosting {
+                ProgressView().controlSize(.small)
+            }
+
+            Spacer()
+        }
+
+        if let err = poller.lastError {
+            Text(err)
+                .font(.caption2)
+                .foregroundStyle(.red)
+                .lineLimit(2)
+                .truncationMode(.middle)
+        }
+    }
+
+    @ViewBuilder
+    private func actionButton(
+        _ kind: ReviewActionKind,
+        isPreferred: Bool,
+        isPosting: Bool
+    ) -> some View {
+        let needsBody = (kind == .comment) // GitHub rejects empty Comment reviews.
+        let disabled = isPosting || (needsBody && bodyDraft.isEmpty)
+
+        Group {
+            if isPreferred {
+                Button {
+                    postReview(kind: kind)
+                } label: {
+                    actionButtonLabel(kind)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(actionButtonTint(kind))
+            } else {
+                Button {
+                    postReview(kind: kind)
+                } label: {
+                    actionButtonLabel(kind)
+                }
+                .buttonStyle(.bordered)
+                .tint(actionButtonTint(kind))
+            }
+        }
+        .disabled(disabled)
+        .help(actionButtonHelp(kind, isPreferred: isPreferred, needsBody: needsBody))
+    }
+
+    @ViewBuilder
+    private func actionButtonLabel(_ kind: ReviewActionKind) -> some View {
+        switch kind {
+        case .approve:
+            Label("Approve", systemImage: "hand.thumbsup")
+        case .comment:
+            Label("Comment", systemImage: "bubble.left")
+        case .requestChanges:
+            Label("Request changes", systemImage: "hand.thumbsdown")
+        }
+    }
+
+    private func actionButtonTint(_ kind: ReviewActionKind) -> Color {
+        switch kind {
+        case .approve:        return .green
+        case .comment:        return .blue
+        case .requestChanges: return .orange
+        }
+    }
+
+    private func actionButtonHelp(_ kind: ReviewActionKind, isPreferred: Bool, needsBody: Bool) -> String {
+        let base: String
+        switch kind {
+        case .approve:        base = "Approve this PR"
+        case .comment:        base = "Post a Comment review"
+        case .requestChanges: base = "Request changes"
+        }
+        var extra: [String] = []
+        if isPreferred { extra.append("matches the AI verdict") }
+        if needsBody && bodyDraft.isEmpty { extra.append("body required") }
+        return extra.isEmpty ? base : "\(base) — \(extra.joined(separator: "; "))"
+    }
+
+    /// Informational verdict pill. Posting now happens through the
+    /// unified action row in `actionsSection`, where the matching button
+    /// gets prominent styling. The pill itself is a plain badge — no
+    /// click target — so the user always sees both the AI's verdict and
+    /// the posting controls without confusion about what one click does.
+    @ViewBuilder
+    private func verdictBadge(_ verdict: ReviewVerdict, summary _: String) -> some View {
+        let (label, color) = verdictAppearance(verdict)
+        HStack(spacing: 4) {
+            Text(label)
         }
         .font(.caption.bold())
         .foregroundStyle(.white)
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(color, in: Capsule())
-
-        if showsReviewActions, let action {
-            // Approve action obeys the global "include AI summary as body"
-            // toggle so a single setting controls every approve path
-            // (split button below + this pill). Comment / Request-changes
-            // are inherently body-bearing actions and always include the
-            // summary — posting them with an empty body would be useless.
-            let body: String = (action == .approve && !approveIncludesCommentDefault) ? "" : summary
-            Button {
-                poller.postReview(pr, kind: action, body: body)
-                onPostedAction()
-            } label: {
-                pill
-            }
-            .buttonStyle(.plain)
-            .disabled(isPosting)
-            .opacity(isPosting ? 0.5 : 1)
-            .help("Post this AI review to GitHub as \(action.displayName)")
-        } else {
-            pill
-        }
+        .help("AI verdict — use the buttons below to post a review")
     }
 
-    private func approve(includeBody: Bool) {
-        let body = includeBody ? bodyDraft : ""
-        poller.postReview(pr, kind: .approve, body: body)
+    private func postReview(kind: ReviewActionKind) {
+        poller.postReview(pr, kind: kind, body: bodyDraft)
         bodyDraft = ""
+        bodyDraftSeededForSha = nil
         onPostedAction()
     }
 
