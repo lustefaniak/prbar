@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 
 struct PollDelta: Sendable, Hashable {
     let added: [InboxPR]
@@ -308,6 +309,7 @@ final class PRPoller {
         isFetching = true
         defer { isFetching = false }
 
+        let started = Date()
         do {
             let raw = try await fetcher()
             let fetched = applyTitleFilter(raw)
@@ -317,6 +319,8 @@ final class PRPoller {
             self.lastDelta = delta
             self.lastFetchedAt = Date()
             self.lastError = nil
+            let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
+            PRBarLog.poller.notice("poll success prs=\(fetched.count, privacy: .public) added=\(delta.added.count, privacy: .public) removed=\(delta.removed.count, privacy: .public) changed=\(delta.changed.count, privacy: .public) titleFiltered=\(raw.count - fetched.count, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)")
 
             // Skip notifications on the very first successful poll — we
             // don't want to wake the user with "5 PRs are ready to merge!"
@@ -337,6 +341,7 @@ final class PRPoller {
             }
         } catch {
             self.lastError = error.localizedDescription
+            PRBarLog.poller.error("poll failed error=\(error.localizedDescription, privacy: .public)")
         }
     }
 

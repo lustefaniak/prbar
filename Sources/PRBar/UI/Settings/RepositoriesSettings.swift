@@ -339,6 +339,9 @@ struct RepoConfigEditor: View {
                     Toggle("Enable AI triage on this repo",
                            isOn: $config.aiReviewEnabled)
                         .help("When off, PRs go straight to 'ready for review' — the AI never runs. Manual Re-run still works from the detail view.")
+                    Toggle("Always do a full review (ignore prior verdict)",
+                           isOn: $config.forceFullReview)
+                        .help("When the PR head moves, retriages re-evaluate the whole diff with no incremental framing. Default off — the prior summary is folded into the prompt so the AI can focus on what changed; this saves cost but biases toward judging only the increment.")
                     Picker("Provider", selection: providerOverrideBinding) {
                         Text("(use app default)").tag("default")
                         ForEach(ProviderID.allCases, id: \.self) { p in

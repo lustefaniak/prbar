@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OSLog
 
 /// Routes "this PR is ready for human review" signals into the Notifier
 /// according to each repo's `NotifyPolicy`. Replaces the old per-poll
@@ -127,6 +128,7 @@ final class ReadinessCoordinator {
             $0.policy == .eachReady && $0.isReadyForHuman && !$0.hasNotified
         }
         guard !toFire.isEmpty, let notifier else { return }
+        PRBarLog.readiness.notice("flush each-ready count=\(toFire.count, privacy: .public)")
         let events = toFire.map { Self.event(for: $0.pr) }
         notifier.enqueue(events)
         for entry in toFire {
@@ -143,6 +145,7 @@ final class ReadinessCoordinator {
             $0.policy == .batchSettled && $0.isReadyForHuman && !$0.hasNotified
         }
         guard !toFire.isEmpty, let notifier else { return }
+        PRBarLog.readiness.notice("flush batch-settled count=\(toFire.count, privacy: .public)")
         let events = toFire.map { Self.event(for: $0.pr) }
         notifier.enqueue(events)
         for entry in toFire {
