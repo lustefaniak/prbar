@@ -147,27 +147,6 @@ struct InboxResponse: Decodable, Sendable {
     }
 }
 
-/// Response shape for the viewer's authored PRs (GraphQLQueries.myPRs).
-/// Goes through `viewer.pullRequests` (not search), so it survives
-/// GitHub Search index outages.
-struct MyPRsResponse: Decodable, Sendable {
-    let data: ResponseData
-
-    struct ResponseData: Decodable, Sendable {
-        let viewer: ViewerData
-        let rateLimit: InboxResponse.RateLimit
-    }
-
-    struct ViewerData: Decodable, Sendable {
-        let login: String
-        let pullRequests: PullRequests
-    }
-
-    struct PullRequests: Decodable, Sendable {
-        let nodes: [InboxResponse.PullRequestNode]
-    }
-}
-
 /// Response shape for the single-PR refresh query (GraphQLQueries.singlePR).
 struct SinglePRResponse: Decodable, Sendable {
     let data: ResponseData
