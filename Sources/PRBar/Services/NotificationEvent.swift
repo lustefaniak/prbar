@@ -25,12 +25,17 @@ enum EventDeriver {
     /// per-repo `NotifyPolicy` (immediate vs. wait-for-AI-to-settle).
     /// EventDeriver still handles author-side state transitions
     /// (ready-to-merge, CI failures).
-    static func events(from delta: PollDelta, oldPRs: [InboxPR]) -> [NotificationEvent] {
+    static func events(
+        from delta: PollDelta,
+        oldPRs: [InboxPR],
+        includeAuthoredDrafts: Bool = true
+    ) -> [NotificationEvent] {
         var events: [NotificationEvent] = []
         let oldByID = Dictionary(uniqueKeysWithValues: oldPRs.map { ($0.nodeId, $0) })
 
         // PRs I authored that just became ready-to-merge (transition).
         for pr in delta.changed where pr.role == .authored || pr.role == .both {
+            if pr.isDraft && !includeAuthoredDrafts { continue }
             let was = oldByID[pr.nodeId].map(isReadyToMerge) ?? false
             let now = isReadyToMerge(pr)
             if !was && now {
@@ -62,7 +67,9 @@ enum EventDeriver {
         // Newly-added PRs I authored that are already mergeable (e.g. I
         // re-opened the app and a long-pending PR finally got approved
         // while we were away).
-        for pr in delta.added where (pr.role == .authored || pr.role == .both) && isReadyToMerge(pr) {
+        for pr in delta.added where (pr.role == .authored || pr.role == .both)
+            && (!pr.isDraft || includeAuthoredDrafts)
+            && isReadyToMerge(pr) {
             events.append(.init(
                 kind: .readyToMerge,
                 prNodeId: pr.nodeId,

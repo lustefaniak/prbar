@@ -8,6 +8,8 @@ struct GeneralSettings: View {
     @AppStorage("badgeShowReadyToMerge")    private var badgeReadyToMerge    = true
     @AppStorage("badgeShowReviewRequested") private var badgeReviewRequested = true
     @AppStorage("badgeShowCIFailed")        private var badgeCIFailed        = true
+    @AppStorage(MyDraftHandling.storageKey) private var draftHandlingRaw     =
+        MyDraftHandling.default.rawValue
     @AppStorage("defaultProviderId")        private var defaultProviderRaw   = ProviderID.claude.rawValue
     @AppStorage("dailyCostCapEnabled")      private var costCapEnabled       = true
     @AppStorage("dailyCostCapUsd")          private var costCapUsd: Double   = 5.0
@@ -108,6 +110,20 @@ struct GeneralSettings: View {
                 Text("Menu bar badge")
             } footer: {
                 Text("Show a count next to the menu-bar icon when there's something actionable. Toggle each source independently; turn them all off to hide the badge entirely.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Drafts you authored", selection: $draftHandlingRaw) {
+                    ForEach(MyDraftHandling.allCases, id: \.rawValue) { v in
+                        Text(v.pickerLabel).tag(v.rawValue)
+                    }
+                }
+            } header: {
+                Text("My PRs")
+            } footer: {
+                Text("Silence keeps drafts visible in the My PRs list but excludes them from the menu-bar badge and CI / ready-to-merge notifications. Hide also removes them from the list until promoted to ready. Review-requested drafts (other people's) are always silenced — that path is separate.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -18,20 +18,41 @@ enum BadgeCounter {
         var readyToMerge: Bool
         var reviewRequested: Bool
         var ciFailed: Bool
+        /// When false, authored drafts don't contribute to any counter
+        /// (review-requested is independent — drafts are always excluded
+        /// from that branch). Default true preserves prior behavior for
+        /// callers that don't care.
+        var includeAuthoredDrafts: Bool
 
         static let allOn = Sources(
             readyToMerge: true,
             reviewRequested: true,
-            ciFailed: true
+            ciFailed: true,
+            includeAuthoredDrafts: true
         )
+
+        init(
+            readyToMerge: Bool,
+            reviewRequested: Bool,
+            ciFailed: Bool,
+            includeAuthoredDrafts: Bool = true
+        ) {
+            self.readyToMerge = readyToMerge
+            self.reviewRequested = reviewRequested
+            self.ciFailed = ciFailed
+            self.includeAuthoredDrafts = includeAuthoredDrafts
+        }
     }
 
     /// Derive the (filtered) counts. Only enabled sources contribute.
     static func counts(prs: [InboxPR], sources: Sources) -> Counts {
         var c = Counts()
         for pr in prs {
+            let authoredSide = pr.role == .authored || pr.role == .both
+            let suppressAuthoredDraft = authoredSide && pr.isDraft && !sources.includeAuthoredDrafts
             if sources.readyToMerge,
-               (pr.role == .authored || pr.role == .both),
+               authoredSide,
+               !suppressAuthoredDraft,
                EventDeriver.isReadyToMerge(pr) {
                 c.readyToMerge += 1
             }
@@ -42,7 +63,8 @@ enum BadgeCounter {
                 c.reviewRequested += 1
             }
             if sources.ciFailed,
-               (pr.role == .authored || pr.role == .both),
+               authoredSide,
+               !suppressAuthoredDraft,
                (pr.checkRollupState == "FAILURE" || pr.checkRollupState == "ERROR") {
                 c.ciFailed += 1
             }

@@ -2,11 +2,19 @@ import SwiftUI
 
 struct MyPRsView: View {
     @Environment(PRPoller.self) private var poller
+    @AppStorage(MyDraftHandling.storageKey) private var draftHandlingRaw =
+        MyDraftHandling.default.rawValue
     let onSelect: (InboxPR) -> Void
 
+    private var draftHandling: MyDraftHandling {
+        MyDraftHandling(rawValue: draftHandlingRaw) ?? .default
+    }
+
     private var myPRs: [InboxPR] {
-        poller.prs
+        let hideDrafts = draftHandling.hidesFromMyPRs
+        return poller.prs
             .filter { $0.role == .authored || $0.role == .both }
+            .filter { !(hideDrafts && $0.isDraft) }
             .sorted(by: Self.priority)
     }
 

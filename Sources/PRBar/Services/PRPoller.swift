@@ -58,6 +58,12 @@ final class PRPoller {
     @ObservationIgnored
     weak var notifier: Notifier?
 
+    /// When false, draft PRs you authored don't fire ready-to-merge or
+    /// CI-failed notifications. AppDelegate keeps this in sync with the
+    /// `MyDraftHandling` user setting; tests leave it at the default.
+    @ObservationIgnored
+    var includeAuthoredDrafts: Bool = true
+
     /// Action history sink. When set, `postReview` and `mergePR` record
     /// one entry per attempt (success and failure both logged).
     @ObservationIgnored
@@ -326,7 +332,11 @@ final class PRPoller {
             // don't want to wake the user with "5 PRs are ready to merge!"
             // every time the app launches.
             if !oldPRs.isEmpty, let notifier {
-                let events = EventDeriver.events(from: delta, oldPRs: oldPRs)
+                let events = EventDeriver.events(
+                    from: delta,
+                    oldPRs: oldPRs,
+                    includeAuthoredDrafts: includeAuthoredDrafts
+                )
                 notifier.enqueue(events)
             }
 

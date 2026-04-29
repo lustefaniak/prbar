@@ -433,11 +433,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let defaults = UserDefaults.standard
         // Default each toggle to true if the key has never been set so
         // a fresh install lights up the badge instead of staying silent.
+        let draftHandling = MyDraftHandling.current(defaults)
         let sources = BadgeCounter.Sources(
             readyToMerge:   defaults.object(forKey: Self.kBadgeReadyToMerge) as? Bool ?? true,
             reviewRequested: defaults.object(forKey: Self.kBadgeReviewRequested) as? Bool ?? true,
-            ciFailed:       defaults.object(forKey: Self.kBadgeCIFailed) as? Bool ?? true
+            ciFailed:       defaults.object(forKey: Self.kBadgeCIFailed) as? Bool ?? true,
+            includeAuthoredDrafts: !draftHandling.silencesAuthoredDrafts
         )
+        // Keep the poller's notification gate in lockstep so author-side
+        // CI / ready-to-merge events agree with the badge.
+        poller.includeAuthoredDrafts = !draftHandling.silencesAuthoredDrafts
         let title = BadgeCounter.title(prs: poller.prs, sources: sources)
         guard let button = statusItem?.button else { return }
         // A leading hair-space (U+200A) keeps the count from kissing the
