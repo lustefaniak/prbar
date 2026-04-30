@@ -45,6 +45,8 @@ struct PRBarApp: App {
                 .environment(delegate.repoConfigs)
                 .environment(delegate.readiness)
                 .environment(delegate.actionLog)
+                .environment(delegate.reviewLog)
+                .modelContainer(delegate.reviewLog.container)
         }
 
         // Standalone full-size detail window. Opened from the popover's
@@ -63,6 +65,7 @@ struct PRBarApp: App {
                     .environment(delegate.repoConfigs)
                     .environment(delegate.readiness)
                     .environment(delegate.actionLog)
+                    .environment(delegate.reviewLog)
             } else {
                 Text("No PR selected")
                     .frame(minWidth: 400, minHeight: 200)

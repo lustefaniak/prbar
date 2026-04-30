@@ -265,6 +265,12 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     weak var actionLog: ActionLogStore?
 
+    /// AI-triage history sink. Appends one row per terminal triage
+    /// (completed or failed). Owns the spend ledger queried by the
+    /// daily-cost-cap check. Weak: the store outlives this worker.
+    @ObservationIgnored
+    weak var reviewLog: ReviewLogStore?
+
     /// Hook fired after a successful auto-approve post so the inbox row
     /// reflects the new reviewDecision without waiting for the next 60s
     /// poll. Wired to `PRPoller.refreshPR` from `AppDelegate`.
@@ -315,6 +321,9 @@ final class ReviewQueueWorker {
             cache: ReviewCache.live(),
             failureLogStore: FailureLogStore.live()
         )
+        // reviewLog is wired separately by AppDelegate so all stores
+        // share one ModelContainer (sharing the container keeps SwiftData
+        // notifications consistent across @Query consumers).
     }
 
     /// Test/preview only: pre-populate the reviews map without going
@@ -393,16 +402,27 @@ final class ReviewQueueWorker {
 
         if dailyCostCapEnabled && cumulativeSpend() >= dailyCostCap {
             PRBarLog.triage.notice("enqueue blocked reason=daily-cap pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) cap=\(self.fmt(self.dailyCostCap), privacy: .public)")
+            let now = Date()
+            let capMessage = "Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
                 providerId: resolvedProviderId,
                 headSha: pr.headSha,
-                triggeredAt: Date(),
-                status: .failed("Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."),
+                triggeredAt: now,
+                status: .failed(capMessage),
                 costUsd: 0,
                 priorReviews: priorReviews
             )
             persist()
+            reviewLog?.recordFailed(
+                pr: pr,
+                headSha: pr.headSha,
+                providerId: resolvedProviderId,
+                triggeredAt: now,
+                completedAt: now,
+                errorMessage: capMessage,
+                costUsd: 0
+            )
             return
         }
         reviews[pr.nodeId] = ReviewState(
@@ -467,10 +487,16 @@ final class ReviewQueueWorker {
         }
     }
 
-    /// Cumulative spend across this worker's lifetime (proxy for "today" —
-    /// menu-bar apps don't run multi-day so often it's fine for MVP).
+    /// Spend used by the daily cap. Queries the `ReviewLog` ledger for
+    /// rows with `triggeredAt >= startOfLocalDay`. Local-calendar reset
+    /// (not UTC) — a user's "today" matches their work day. Falls back
+    /// to the in-memory `reviews` total if the log isn't wired (tests
+    /// that don't construct a store).
     func cumulativeSpend() -> Double {
-        reviews.values.reduce(0) { $0 + $1.costUsd }
+        if let log = reviewLog {
+            return log.todaysSpend()
+        }
+        return reviews.values.reduce(0) { $0 + $1.costUsd }
     }
 
     // MARK: - private
@@ -492,6 +518,12 @@ final class ReviewQueueWorker {
     private func run(item: PendingItem) async {
         let pr = item.pr
         let runStart = Date()
+        // Triage start time is what gets logged as `triggeredAt` on the
+        // history row — the moment the run was committed, not when it
+        // finished. Pulled from the in-memory state (set by enqueue) so
+        // a worker restart doesn't lose the original timestamp.
+        let triggeredAt = reviews[pr.nodeId]?.triggeredAt ?? runStart
+        let provId = reviews[pr.nodeId]?.providerId ?? defaultProviderId
         defer {
             inFlight -= 1
             drainIfPossible()
@@ -509,7 +541,12 @@ final class ReviewQueueWorker {
             let config = configResolver(pr.owner, pr.repo)
             if config.excluded {
                 PRBarLog.triage.notice("run abort reason=excluded pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
-                reviews[pr.nodeId]?.status = .failed("Repo \(pr.owner)/\(pr.repo) is excluded by config.")
+                let msg = "Repo \(pr.owner)/\(pr.repo) is excluded by config."
+                reviews[pr.nodeId]?.status = .failed(msg)
+                reviewLog?.recordFailed(
+                    pr: pr, headSha: pr.headSha, providerId: provId,
+                    triggeredAt: triggeredAt, errorMessage: msg, costUsd: 0
+                )
                 return
             }
             let diffText = try await diffFetcher(pr.owner, pr.repo, pr.number)
@@ -517,7 +554,12 @@ final class ReviewQueueWorker {
             let subdiffs = MonorepoSplitter.split(diffText: diffText, config: config)
             guard !subdiffs.isEmpty else {
                 PRBarLog.triage.notice("run abort reason=empty-diff pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
-                reviews[pr.nodeId]?.status = .failed("Empty diff — nothing to review.")
+                let msg = "Empty diff — nothing to review."
+                reviews[pr.nodeId]?.status = .failed(msg)
+                reviewLog?.recordFailed(
+                    pr: pr, headSha: pr.headSha, providerId: provId,
+                    triggeredAt: triggeredAt, errorMessage: msg, costUsd: 0
+                )
                 return
             }
             let priorAtStart = reviews[pr.nodeId]?.priorReviews ?? []
@@ -612,9 +654,22 @@ final class ReviewQueueWorker {
             // Clear live progress once outcomes are aggregated below.
             liveProgress[prNodeId] = nil
 
+            // Sum of costUsd across subreviews completed so far. Used as
+            // best-effort cost reporting if the run fails after one or
+            // more subreviews succeeded — the user pays for those even
+            // when a later subreview blows up. Computed live so it's
+            // available in both the no-aggregate and catch branches.
+            let partialSpend = outcomes.compactMap { $0.result.costUsd }.reduce(0, +)
+
             guard let aggregated = ResultAggregator.aggregate(outcomes) else {
                 PRBarLog.triage.error("run abort reason=no-aggregate pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
-                reviews[pr.nodeId]?.status = .failed("No subreviews aggregated.")
+                let msg = "No subreviews aggregated."
+                reviews[pr.nodeId]?.status = .failed(msg)
+                reviewLog?.recordFailed(
+                    pr: pr, headSha: pr.headSha, providerId: provId,
+                    triggeredAt: triggeredAt, errorMessage: msg,
+                    costUsd: partialSpend > 0 ? partialSpend : nil
+                )
                 return
             }
             let runElapsedMs = Int(Date().timeIntervalSince(runStart) * 1000)
@@ -626,12 +681,20 @@ final class ReviewQueueWorker {
             // actually push a review to GitHub. The chain naturally caps
             // at 5 in `enqueue` so it can't grow unbounded.
             persist()
+            reviewLog?.recordCompleted(
+                pr: pr, headSha: pr.headSha, providerId: provId,
+                triggeredAt: triggeredAt, review: aggregated
+            )
             stageAutoApproveIfEligible(pr: pr, review: aggregated, config: config)
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
             liveProgress[pr.nodeId] = nil
             persist()
+            reviewLog?.recordFailed(
+                pr: pr, headSha: pr.headSha, providerId: provId,
+                triggeredAt: triggeredAt, errorMessage: error.localizedDescription
+            )
         }
     }
 

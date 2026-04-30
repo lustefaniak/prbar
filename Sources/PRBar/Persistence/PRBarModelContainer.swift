@@ -15,6 +15,7 @@ enum PRBarModelContainer {
     static let schema: Schema = Schema([
         ActionLogEntry.self,
         ReviewStateEntry.self,
+        ReviewLogEntry.self,
         RepoConfigEntry.self,
         InboxSnapshotEntry.self,
         DiffCacheEntry.self,

@@ -97,7 +97,7 @@ struct GeneralSettings: View {
             } header: {
                 Text("Budgets")
             } footer: {
-                Text("Stops new reviews from queuing once the cumulative session spend hits the cap. Per-subreview cost cap (live SIGTERM mid-stream) is set per-repo in Settings → Repositories.")
+                Text("Stops new reviews from queuing once today's spend hits the cap. The window resets at local midnight (your calendar's start of day). Spend is tallied from the Review History ledger — codex runs and claude runs killed before their final cost-report event count as $0 against the cap. Per-subreview cost cap (live SIGTERM mid-stream) is set per-repo in Settings → Repositories.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

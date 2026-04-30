@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let repoConfigs: RepoConfigStore
     let readiness: ReadinessCoordinator
     let actionLog: ActionLogStore
+    let reviewLog: ReviewLogStore
 
     /// Routes UNUserNotification action-button taps back into services.
     /// Held strongly because UNUserNotificationCenter retains its
@@ -91,8 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rc = RepoConfigStore()
         let coord = ReadinessCoordinator(notifier: n)
         let log = ActionLogStore.live()
+        let rlog = ReviewLogStore.live()
         p.actionLog = log
         q.actionLog = log
+        q.reviewLog = rlog
         // Auto-approve fire posts via gh in the worker; refresh the
         // PR through the poller (with the same race-tolerant double-
         // refresh as user-initiated approve) so the row reflects the
@@ -158,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.repoConfigs = rc
         self.readiness = coord
         self.actionLog = log
+        self.reviewLog = rlog
         super.init()
         // Install the notification action router *before* requesting
         // authorization so the registered categories are visible the
@@ -305,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(1, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
             openSettings(nil)
         case .settingsDiagnostics:
-            UserDefaults.standard.set(2, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
+            UserDefaults.standard.set(3, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
             openSettings(nil)
         }
     }
@@ -325,6 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(repoConfigs)
             .environment(readiness)
             .environment(actionLog)
+            .environment(reviewLog)
         let host = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: host)
         window.title = "\(pr.nameWithOwner) #\(pr.numberString) — \(pr.title)"
@@ -471,6 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(repoConfigs)
             .environment(readiness)
             .environment(actionLog)
+            .environment(reviewLog)
         popover.contentViewController = NSHostingController(rootView: root)
     }
 
