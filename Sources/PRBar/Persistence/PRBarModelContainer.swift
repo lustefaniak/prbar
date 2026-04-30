@@ -15,6 +15,7 @@ enum PRBarModelContainer {
     static let schema: Schema = Schema([
         ActionLogEntry.self,
         ReviewStateEntry.self,
+        ReviewLogEntry.self,
         RepoConfigEntry.self,
         InboxSnapshotEntry.self,
         DiffCacheEntry.self,
@@ -31,7 +32,21 @@ enum PRBarModelContainer {
         return dir
     }()
 
+    /// Process-wide singleton. Every `*.live()` factory routes through
+    /// here so all stores share one `ModelContainer` instance — that's
+    /// what makes a write through `ReviewLogStore`'s `ModelContext`
+    /// reach a `@Query` reading from the same container in another
+    /// view without manual refresh. Pre-singleton, each store built
+    /// its own container against the same SQLite file; SwiftData
+    /// tolerates that, but cross-container `@Query` notifications
+    /// are not guaranteed and "two containers on one file" was a
+    /// latent footgun waiting on the next view to switch from
+    /// `store.fetchAll()` to `@Query`.
     static func live() -> ModelContainer {
+        liveContainer
+    }
+
+    private static let liveContainer: ModelContainer = {
         let url = appSupportDirectory.appendingPathComponent("store.sqlite")
         do {
             let config = ModelConfiguration(url: url)
@@ -41,9 +56,11 @@ enum PRBarModelContainer {
             // than crashing on a corrupt store. The user loses history
             // on restart, which is preferable to a stuck launch.
             NSLog("PRBarModelContainer.live failed (%@), falling back to in-memory", String(describing: error))
-            return inMemory()
+            let config = ModelConfiguration(isStoredInMemoryOnly: true)
+            // swiftlint:disable:next force_try
+            return try! ModelContainer(for: schema, configurations: [config])
         }
-    }
+    }()
 
     static func inMemory() -> ModelContainer {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)

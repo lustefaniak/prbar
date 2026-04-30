@@ -316,12 +316,12 @@ final class ReviewQueueWorkerTests: XCTestCase {
 
 // MARK: - test stubs
 
-private enum TestError: Error, LocalizedError {
+enum TestError: Error, LocalizedError {
     case boom
     var errorDescription: String? { "boom" }
 }
 
-private final class StubProvider: ReviewProvider, @unchecked Sendable {
+final class StubProvider: ReviewProvider, @unchecked Sendable {
     var id: String { "stub" }
     var displayName: String { "Stub" }
 
@@ -352,7 +352,7 @@ private final class StubProvider: ReviewProvider, @unchecked Sendable {
     }
 }
 
-private final class SlowStubProvider: ReviewProvider, @unchecked Sendable {
+final class SlowStubProvider: ReviewProvider, @unchecked Sendable {
     var id: String { "slow-stub" }
     var displayName: String { "SlowStub" }
     let verdict: ReviewVerdict
@@ -423,7 +423,7 @@ private final class BundleCapturingStubProvider: ReviewProvider, @unchecked Send
     }
 }
 
-private final class ThrowingStubProvider: ReviewProvider, @unchecked Sendable {
+final class ThrowingStubProvider: ReviewProvider, @unchecked Sendable {
     var id: String { "throw-stub" }
     var displayName: String { "ThrowStub" }
     let error: Error
