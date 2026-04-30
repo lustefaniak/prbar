@@ -524,6 +524,10 @@ final class ReviewQueueWorker {
         // a worker restart doesn't lose the original timestamp.
         let triggeredAt = reviews[pr.nodeId]?.triggeredAt ?? runStart
         let provId = reviews[pr.nodeId]?.providerId ?? defaultProviderId
+        // Hoisted out of the do-block so the catch branch can sum cost
+        // from subreviews that completed before the throw — otherwise a
+        // mid-run failure under-reports against the daily cap.
+        var completedOutcomes: [SubreviewOutcome] = []
         defer {
             inFlight -= 1
             drainIfPossible()
@@ -611,6 +615,8 @@ final class ReviewQueueWorker {
             } else {
                 chosenProvider = provider
             }
+            // Local alias for the loop; the outer `completedOutcomes`
+            // is what survives a throw. We append to both in lockstep.
             var outcomes: [SubreviewOutcome] = []
             for subdiff in subdiffs {
                 let workdir = resolveWorkdir(handle: sharedHandle, subpath: subdiff.subpath)
@@ -649,7 +655,9 @@ final class ReviewQueueWorker {
                 let subElapsedMs = Int(Date().timeIntervalSince(subStart) * 1000)
                 let subpathTag = subdiff.subpath.isEmpty ? "<root>" : subdiff.subpath
                 PRBarLog.provider.notice("subreview done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) subpath=\(subpathTag, privacy: .public) verdict=\(result.verdict.rawValue, privacy: .public) confidence=\(self.fmt(result.confidence), privacy: .public) cost=\(self.fmt(result.costUsd ?? 0), privacy: .public) tools=\(result.toolCallCount, privacy: .public) elapsedMs=\(subElapsedMs, privacy: .public)")
-                outcomes.append(SubreviewOutcome(subpath: subdiff.subpath, result: result))
+                let outcome = SubreviewOutcome(subpath: subdiff.subpath, result: result)
+                outcomes.append(outcome)
+                completedOutcomes.append(outcome)
             }
             // Clear live progress once outcomes are aggregated below.
             liveProgress[prNodeId] = nil
@@ -659,7 +667,7 @@ final class ReviewQueueWorker {
             // more subreviews succeeded — the user pays for those even
             // when a later subreview blows up. Computed live so it's
             // available in both the no-aggregate and catch branches.
-            let partialSpend = outcomes.compactMap { $0.result.costUsd }.reduce(0, +)
+            let partialSpend = completedOutcomes.compactMap { $0.result.costUsd }.reduce(0, +)
 
             guard let aggregated = ResultAggregator.aggregate(outcomes) else {
                 PRBarLog.triage.error("run abort reason=no-aggregate pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
@@ -691,9 +699,16 @@ final class ReviewQueueWorker {
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
             liveProgress[pr.nodeId] = nil
             persist()
+            // Cost from any subreviews that completed before the throw
+            // counts toward the daily cap. Without this, a 5-subreview
+            // PR that errors on subreview 4 reports $0 even though we
+            // already paid for the first three.
+            let partialSpend = completedOutcomes.compactMap { $0.result.costUsd }.reduce(0, +)
             reviewLog?.recordFailed(
                 pr: pr, headSha: pr.headSha, providerId: provId,
-                triggeredAt: triggeredAt, errorMessage: error.localizedDescription
+                triggeredAt: triggeredAt,
+                errorMessage: error.localizedDescription,
+                costUsd: partialSpend > 0 ? partialSpend : nil
             )
         }
     }
