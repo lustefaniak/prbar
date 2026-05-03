@@ -23,6 +23,33 @@ bin/run     # bin/build + open .app (kills prior instance first)
 
 Whenever you change `project.yml` or add a new file under `Sources/` or `Tests/`, run `bin/regen` (or `bin/build`, which regenerates first) so XcodeGen picks it up.
 
+## Release / signing / auto-update
+
+Sparkle 2 is fully integrated — don't treat it as a TODO. The full auto-update chain (appcast generation, EdDSA signing, gh-pages publishing, in-app updater) ships on every tagged release.
+
+Bits and where they live:
+- **Sparkle SPM dep** (`Sparkle 2.6.0+`) declared in `project.yml`; `SUFeedURL` (`https://lustefaniak.github.io/prbar/appcast.xml`) and `SUPublicEDKey` baked into `Resources/PRBar-Info.plist`. The matching EdDSA private key is in the macOS Keychain (generated once via `bin/sparkle-keygen`) and in the `SPARKLE_ED_PRIVATE_KEY` GitHub secret.
+- **`SPUStandardUpdaterController`** wired in `AppDelegate`; "Check for Updates…" / About surface live in `Sources/PRBar/UI/Settings/AboutView.swift`.
+- **`bin/sparkle-tools`** caches the Sparkle CLI tools; `bin/sparkle-keygen` (one-time), `bin/sparkle-sign` (signs a DMG → emits `sparkle:edSignature` attrs), `bin/sparkle-appcast-add` (builds/updates `appcast.xml`).
+- **Release pipeline**: tag push `v*.*.*` → `.github/workflows/release.yml` → `bin/release-dmg` builds + Developer-ID-signs + notarizes + staples → DMG attached to GH Release; appcast entry built and committed to `gh-pages` branch.
+
+**Code signing + Apple notarization** are wired in via env-driven overrides on top of `project.yml`'s ad-hoc-by-default settings. Release-config defaults (`ENABLE_HARDENED_RUNTIME=YES`, `OTHER_CODE_SIGN_FLAGS=--timestamp`, `CODE_SIGN_ENTITLEMENTS=Resources/PRBar.entitlements`) are baked into `project.yml`'s Release config; the Developer ID identity + team are injected at build time. `bin/release-dmg` reads:
+- `DEVELOPMENT_TEAM` — 10-char team id; presence enables the full sign/notarize path. Absent ⇒ ad-hoc, ship anyway.
+- Notary credentials, two flavors:
+  - Local: `NOTARY_KEYCHAIN_PROFILE` (default `prbar-notary`, set up once via `xcrun notarytool store-credentials`).
+  - CI: `NOTARY_API_KEY_PATH` + `NOTARY_API_KEY_ID` + `NOTARY_API_ISSUER_ID` for ephemeral runners.
+
+Local Developer ID + notarized release:
+```sh
+DEVELOPMENT_TEAM=6NN252Q36S NOTARY_KEYCHAIN_PROFILE=prbar-notary ./bin/release-dmg
+```
+
+`Resources/PRBar.entitlements` is intentionally empty — non-sandboxed hardened-runtime apps spawning subprocesses (`gh`, `claude`) need no extra entitlements. Adding entitlements like `com.apple.security.cs.disable-library-validation` would weaken hardened runtime; only do it if a verified failure forces it.
+
+**The Sparkle nested-binary re-sign gotcha.** Xcode's `archive` step does NOT re-sign the helpers bundled inside `Sparkle.framework/Versions/B/` (`Updater.app`, `Autoupdate`, `XPCServices/Downloader.xpc`, `XPCServices/Installer.xpc`). They keep Sparkle's distribution signature, which Apple's notary service rejects ("not signed with a valid Developer ID certificate"). `bin/release-dmg` re-signs each one explicitly, inside-out, with `--preserve-metadata=entitlements` (Sparkle's helpers need their bundled entitlements intact — clobbering them breaks the updater). If you regenerate or upgrade Sparkle and add new nested binaries, extend the loop in `bin/release-dmg`.
+
+**Apple notary queue is variable.** Median is 2-5 minutes; bad days are 30-60 minutes; rare incidents stall submissions for 24h+ as "In Progress" (the GitHub Action's 6h job timeout is well past Apple's normal worst case). Check https://developer.apple.com/system-status/ if a build is stuck. Killing a stuck `notarytool --wait` and resubmitting fresh is safe — the duplicate just waits in the same queue.
+
 Run a single test class:
 ```sh
 xcodebuild -project PRBar.xcodeproj -scheme PRBar -configuration Debug \
