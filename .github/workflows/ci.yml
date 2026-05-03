@@ -3,6 +3,15 @@ name: ci
 on:
   push:
     branches: [main]
+    # Doc-only direct-to-main pushes (the admin-override escape hatch
+    # described in CLAUDE.md) don't need CI. PRs still always run CI
+    # regardless of paths so a doc-only PR's required check still
+    # reports — no merge-block surprise.
+    paths-ignore:
+      - CLAUDE.md
+      - PLAN.md
+      - README.md
+      - docs/**
   pull_request:
 
 # Cancel any in-flight CI run for the same ref when a new commit lands.
