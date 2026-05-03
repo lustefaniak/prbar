@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
 # Build a universal (arm64 + x86_64) PRBar.app and wrap it in a DMG.
-# Output: build/PRBar-<version>.dmg
+# Output: build/release/PRBar-<version>.dmg
 #
-# Used by both `gh act`-style local testing and the
-# .github/workflows/release.yml on tag pushes. The app is ad-hoc signed
-# (the project uses CODE_SIGN_IDENTITY="-"); Gatekeeper users will need
-# to right-click → Open the first time. Notarization is a follow-up
-# (requires a Developer ID cert, AC API key, and notarytool steps).
+# Two signing modes, selected by env:
+#
+#  * Ad-hoc (default): no DEVELOPMENT_TEAM set. CODE_SIGN_IDENTITY="-".
+#    First-launch users get a Gatekeeper prompt and have to right-click
+#    → Open. Fine for personal builds.
+#
+#  * Developer ID + notarized: DEVELOPMENT_TEAM=<10-char team id> set.
+#    The .app is signed with "Developer ID Application", hardened
+#    runtime + timestamp are required (set in project.yml's Release
+#    config), the DMG is signed with the same identity, then submitted
+#    to Apple's notary service via xcrun notarytool and stapled.
+#
+#    Notary credentials, two ways:
+#      - Local: NOTARY_KEYCHAIN_PROFILE (default "prbar-notary") names
+#        a profile previously created with
+#        `xcrun notarytool store-credentials`.
+#      - CI: NOTARY_API_KEY_PATH + NOTARY_API_KEY_ID + NOTARY_API_ISSUER_ID
+#        bypass the keychain (ephemeral runners don't have one). The
+#        key file is the .p8 downloaded from App Store Connect.
+#
+# Used by both local dev and .github/workflows/release.yml on tag pushes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -34,14 +50,29 @@ APP="$APP_DIR/PRBar.app"
 STAGING="build/release/dmg-staging"
 DMG="build/release/PRBar-${VERSION_SUFFIX}.dmg"
 
+DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
+NOTARY_KEYCHAIN_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-prbar-notary}"
+
+XCODEBUILD_SIGNING_ARGS=()
+if [[ -n "$DEVELOPMENT_TEAM" ]]; then
+  echo "==> Building with Developer ID signing (team $DEVELOPMENT_TEAM)"
+  XCODEBUILD_SIGNING_ARGS=(
+    CODE_SIGN_STYLE=Manual
+    CODE_SIGN_IDENTITY="Developer ID Application"
+    DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"
+  )
+else
+  echo "==> Building ad-hoc signed (set DEVELOPMENT_TEAM to enable Developer ID + notarization)"
+fi
+
 rm -rf build/release
 mkdir -p build/release
 
 ./bin/regen
 
-# `archive` builds Release + universal in one shot. We don't need
-# Apple's exportArchive step since the app is ad-hoc signed and the
-# .app inside the xcarchive is already runnable.
+# `archive` builds Release + universal in one shot. xcodebuild handles
+# signing the .app and every nested bundle (Sparkle.framework, its
+# XPC services) when CODE_SIGN_IDENTITY + DEVELOPMENT_TEAM are passed.
 xcodebuild \
   -project PRBar.xcodeproj \
   -scheme PRBar \
@@ -53,6 +84,7 @@ xcodebuild \
   ONLY_ACTIVE_ARCH=NO \
   MARKETING_VERSION="$MARKETING_VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  "${XCODEBUILD_SIGNING_ARGS[@]}" \
   archive
 
 if [[ ! -d "$APP" ]]; then
@@ -73,6 +105,47 @@ if ! lipo -info "$EXEC" 2>/dev/null | grep -q "x86_64"; then
   exit 1
 fi
 
+if [[ -n "$DEVELOPMENT_TEAM" ]]; then
+  # Xcode's archive step does not re-sign Sparkle's bundled helpers
+  # (Updater.app, Autoupdate, XPCServices/*.xpc) — they ship with
+  # Sparkle's own pre-baked signature which is rejected by Apple's
+  # Developer-ID-only notary check. We have to re-sign each one
+  # individually with our Developer ID + hardened runtime + timestamp,
+  # inside-out, ending with the .app itself.
+  #
+  # `--preserve-metadata=entitlements` is critical for the XPC
+  # services and Updater.app — Sparkle ships them with very specific
+  # entitlements that the framework's runtime depends on. Re-signing
+  # without preserving them breaks the updater.
+  echo "==> Re-signing Sparkle nested binaries"
+  IDENT="Developer ID Application"
+  SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+  for nested in \
+    "$SPARKLE/Updater.app/Contents/MacOS/Updater" \
+    "$SPARKLE/Updater.app" \
+    "$SPARKLE/Autoupdate" \
+    "$SPARKLE/XPCServices/Downloader.xpc" \
+    "$SPARKLE/XPCServices/Installer.xpc"; do
+    if [[ -e "$nested" ]]; then
+      codesign --force --options=runtime --timestamp \
+        --sign "$IDENT" \
+        --preserve-metadata=entitlements \
+        "$nested"
+    fi
+  done
+  # Sparkle.framework itself, then the app bundle.
+  codesign --force --options=runtime --timestamp \
+    --sign "$IDENT" \
+    "$APP/Contents/Frameworks/Sparkle.framework"
+  codesign --force --options=runtime --timestamp \
+    --sign "$IDENT" \
+    --entitlements Resources/PRBar.entitlements \
+    "$APP"
+
+  echo "==> Verifying app signature"
+  codesign --verify --deep --strict --verbose=2 "$APP"
+fi
+
 # Stage the .app + a symlink to /Applications so the DMG drag-install
 # pattern works out of the box.
 mkdir -p "$STAGING"
@@ -86,6 +159,36 @@ hdiutil create \
   -format UDZO \
   "$DMG" >/dev/null
 
+if [[ -n "$DEVELOPMENT_TEAM" ]]; then
+  echo "==> Signing DMG"
+  codesign --force --sign "Developer ID Application" \
+    --timestamp \
+    "$DMG"
+
+  echo "==> Submitting to Apple notary service (this can take a few minutes)"
+  NOTARY_ARGS=()
+  if [[ -n "${NOTARY_API_KEY_PATH:-}" ]]; then
+    NOTARY_ARGS=(
+      --key "$NOTARY_API_KEY_PATH"
+      --key-id "${NOTARY_API_KEY_ID:?NOTARY_API_KEY_ID required when NOTARY_API_KEY_PATH set}"
+      --issuer "${NOTARY_API_ISSUER_ID:?NOTARY_API_ISSUER_ID required when NOTARY_API_KEY_PATH set}"
+    )
+  else
+    NOTARY_ARGS=(--keychain-profile "$NOTARY_KEYCHAIN_PROFILE")
+  fi
+  xcrun notarytool submit "$DMG" "${NOTARY_ARGS[@]}" --wait
+
+  echo "==> Stapling notarization ticket to DMG"
+  xcrun stapler staple "$DMG"
+
+  echo "==> Final Gatekeeper check"
+  spctl -a -vv -t install "$DMG"
+
+  SIGNED_LABEL="Developer ID, notarized"
+else
+  SIGNED_LABEL="ad-hoc signed"
+fi
+
 echo "Built: $DMG"
-echo "      $(du -h "$DMG" | cut -f1) (universal, ad-hoc signed)"
+echo "      $(du -h "$DMG" | cut -f1) (universal, $SIGNED_LABEL)"
 echo "      version $MARKETING_VERSION (build $BUILD_NUMBER, $VERSION_SUFFIX)"

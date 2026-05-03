@@ -34,7 +34,46 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Build universal DMG
+      - name: Import Developer ID certificate into temporary keychain
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Standard Apple-recommended ephemeral-keychain recipe. The
+          # keychain lives in $RUNNER_TEMP and dies with the runner.
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert \
+            -f pkcs12 -k "$KEYCHAIN_PATH"
+          # Without this, codesign prompts interactively for keychain
+          # access on every signature — fatal on a headless runner.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # Add to the search list so codesign / xcodebuild see it.
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            "$(security default-keychain -d user | tr -d '" ')"
+          rm -f "$CERT_PATH"
+
+      - name: Decode notary API key
+        env:
+          APPSTORE_API_KEY_BASE64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/notary-key.p8"
+          echo "$APPSTORE_API_KEY_BASE64" | base64 --decode -o "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "NOTARY_API_KEY_PATH=$KEY_PATH" >>"$GITHUB_ENV"
+
+      - name: Build, sign, notarize, staple universal DMG
+        env:
+          DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARY_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          # NOTARY_API_KEY_PATH is exported above.
         run: ./bin/release-dmg
 
       - name: Locate built DMG
@@ -95,11 +134,9 @@ jobs:
         with:
           files: ${{ steps.artifact.outputs.path }}
           body: |
-            Universal (arm64 + x86_64), ad-hoc signed.
+            Universal (arm64 + x86_64), Developer ID signed and notarized by Apple.
 
-            First launch will hit Gatekeeper — right-click the app and
-            choose Open, then confirm. Notarization is a follow-up;
-            this build is intended for personal / internal use.
+            Drag PRBar.app into /Applications. No Gatekeeper prompt on first launch.
 
             Auto-update: PRBar checks the [appcast feed](https://lustefaniak.github.io/prbar/appcast.xml) on launch via Sparkle.
           fail_on_unmatched_files: true
