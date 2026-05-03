@@ -31,8 +31,8 @@ jobs:
         with:
           xcode-version: '26.4'
 
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Install build tools
+        run: brew install xcodegen create-dmg
 
       - name: Import Developer ID certificate into temporary keychain
         env:
