@@ -146,18 +146,26 @@ if [[ -n "$DEVELOPMENT_TEAM" ]]; then
   codesign --verify --deep --strict --verbose=2 "$APP"
 fi
 
-# Stage the .app + a symlink to /Applications so the DMG drag-install
-# pattern works out of the box.
+# Stage just the .app — create-dmg adds its own Applications drop-link
+# at the configured icon position, so we don't pre-stage a symlink.
 mkdir -p "$STAGING"
 cp -R "$APP" "$STAGING/"
-ln -s /Applications "$STAGING/Applications"
 
-hdiutil create \
-  -volname "PRBar $MARKETING_VERSION" \
-  -srcfolder "$STAGING" \
-  -ov \
-  -format UDZO \
-  "$DMG" >/dev/null
+# create-dmg refuses to overwrite an existing output file.
+rm -f "$DMG"
+
+# Polished install window: 540×400, big PRBar icon on the left, the
+# Applications drop-target on the right. No background image yet —
+# adding one is straightforward (--background path/to/png).
+create-dmg \
+  --volname "PRBar $MARKETING_VERSION" \
+  --window-size 540 400 \
+  --icon-size 96 \
+  --icon "PRBar.app" 140 200 \
+  --app-drop-link 400 200 \
+  --hide-extension "PRBar.app" \
+  --no-internet-enable \
+  "$DMG" "$STAGING/"
 
 if [[ -n "$DEVELOPMENT_TEAM" ]]; then
   echo "==> Signing DMG"
