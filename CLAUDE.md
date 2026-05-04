@@ -160,6 +160,9 @@ When you add a field to `InboxPR`, every test file that constructs one (currentl
 - **`open -n APP --args …` forwards remaining args to the launched binary's `CommandLine.arguments`.** Used by `bin/screenshots` to dispatch one stage per launch (`--screenshot-stage <name>`); generic mechanism for any future one-shot launch mode (no URL schemes, no env vars).
 - **`gh api` paths with `?query=…` need shell quoting in zsh.** Bare `gh api repos/.../runs?per_page=3` fails with `(eval):1: no matches found` — zsh expands `?` as a glob. Always quote: `gh api "repos/.../runs?per_page=3"`.
 - **Branch protection on a solo-author repo: `required_approving_review_count: 0`.** GitHub blocks PR authors from approving their own PRs, so any non-zero requirement deadlocks every PR. Combine with `enforce_admins: false` for a clean "PR + CI gate for code, admin override for doc-only edits" setup.
+- **Sticky-on-scroll headers need `LazyVStack`.** `Section { … } header: { … }` only pins when the parent is `LazyVStack(pinnedViews: [.sectionHeaders])` — plain `VStack` silently ignores `pinnedViews`. Pinned headers also need an opaque background (`.background(.background)`) or scrolled content bleeds through. `PRDetailView`'s action bar uses this pattern.
+- **`gh api -F` can't pass arrays of objects.** `-F key[][sub]=val` flattens primitives but not nested object arrays (e.g. `comments[]` on `POST /pulls/N/reviews`). Workaround: encode the JSON body to a temp file, run `gh api … --method POST --input <path>`. See `GHClient.postReviewWithComments`.
+- **GitHub create-review inline comments**: each `comments[]` entry must point at an added or context line on the new side of the diff (removed-only ranges 422). For multi-line spans, `start_line` must be **strictly less than** `line` — omit `start_line` for single-line comments. `PRDetailView.inlineComments(from:hunks:)` filters annotations against the diff before posting.
 
 ## Don't
 
