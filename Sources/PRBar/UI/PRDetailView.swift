@@ -26,9 +26,19 @@ struct PRDetailView: View {
     /// don't overwrite user edits when SwiftUI re-evaluates onChange, but
     /// do re-seed when a fresh review for a new commit lands.
     @State private var bodyDraftSeededForSha: String? = nil
+    /// App-wide preference (Settings → General). Controls whether the
+    /// AI summary pre-fills the review body by default. The action bar
+    /// also exposes a per-PR override (`includeAISummary`) so the user
+    /// can flip the default for the current PR without rummaging in
+    /// Settings.
+    @AppStorage("postIncludesAISummary") private var postIncludesAISummary = true
     /// Persisted across launches so the user can opt out of the
     /// "include N annotations as inline comments" default behaviour.
     @AppStorage("postIncludesInlineAnnotations") private var includeInlineAnnotations = true
+    /// Per-PR override of `postIncludesAISummary`. `nil` = follow the
+    /// app-wide default; `true` / `false` = explicit override for this
+    /// PR's lifetime in the popover. Reset on PR switch.
+    @State private var includeAISummaryOverride: Bool? = nil
     @Environment(\.openWindow) private var openWindow
     @State private var bodyExpanded: Bool = false
     @State private var descriptionExpanded: Bool = false
@@ -82,6 +92,12 @@ struct PRDetailView: View {
         pr.role == .reviewRequested || pr.role == .both
     }
 
+    /// Effective per-PR include-AI-summary state: explicit override
+    /// when present, else the global setting.
+    private var includeAISummary: Bool {
+        includeAISummaryOverride ?? postIncludesAISummary
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             navHeader
@@ -95,7 +111,14 @@ struct PRDetailView: View {
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
+                        // LazyVStack + Section/header pinning gives us
+                        // "sticky on scroll" for the action bar: it
+                        // sits naturally below the AI section when the
+                        // user is at the top, and pins to the viewport
+                        // top once they scroll into the diff so Approve
+                        // stays one click away. Plain VStack doesn't
+                        // honour `pinnedViews`.
+                        LazyVStack(alignment: .leading, spacing: 12, pinnedViews: [.sectionHeaders]) {
                             // Anchor target for the scroll-to-top button.
                             Color.clear.frame(height: 0).id("top")
                             if !pr.body.isEmpty {
@@ -107,18 +130,16 @@ struct PRDetailView: View {
                                 Divider()
                             }
                             aiSection
-                            // Post-review controls sit directly under
-                            // the AI section (verdict + summary +
-                            // annotations) so the user never has to
-                            // scroll past the diff to act on what the
-                            // AI just decided. Only rendered when the
-                            // viewer is actually being asked to review.
-                            if showsReviewActions {
-                                Divider()
-                                actionsSection
+
+                            Section {
+                                diffSection
+                            } header: {
+                                if showsReviewActions {
+                                    stickyActionHeader
+                                } else {
+                                    Divider()
+                                }
                             }
-                            Divider()
-                            diffSection
                         }
                     }
                     scrollToTopButton(proxy: proxy)
@@ -151,9 +172,12 @@ struct PRDetailView: View {
         .onChange(of: pr.headSha) { _, _ in diffStore.ensureLoaded(for: pr) }
         .onChange(of: pr.nodeId) { _, _ in
             // Switching PRs in the popover: drop the per-PR draft so the
-            // next PR starts clean.
+            // next PR starts clean. Also drop the per-PR include-summary
+            // override so the global setting takes over for the next PR
+            // (overrides are intentionally short-lived).
             bodyDraft = ""
             bodyDraftSeededForSha = nil
+            includeAISummaryOverride = nil
             seedBodyDraftFromAIIfNeeded()
         }
         .onChange(of: review?.summaryMarkdown ?? "") { _, _ in
@@ -162,17 +186,35 @@ struct PRDetailView: View {
     }
 
     /// Pre-fill the editable body with the AI's summary the first time
-    /// we see a completed review for this PR's current head. Never
-    /// overwrites user edits and never re-seeds for the same SHA twice.
-    /// The body is then sent verbatim when the user clicks the primary
-    /// post button — no copy-paste required for the common path.
+    /// we see a completed review for this PR's current head — only
+    /// when `includeAISummary` is true (global setting + per-PR override).
+    /// Never overwrites user edits and never re-seeds for the same SHA
+    /// twice. The body is then sent verbatim when the user clicks the
+    /// primary post button — no copy-paste required for the common path.
     private func seedBodyDraftFromAIIfNeeded() {
+        guard includeAISummary else { return }
         guard let summary = review?.summaryMarkdown, !summary.isEmpty else { return }
         let sha = queue.reviews[pr.nodeId]?.headSha ?? pr.headSha
         if bodyDraftSeededForSha == sha { return }
         if !bodyDraft.isEmpty { return }
         bodyDraft = summary
         bodyDraftSeededForSha = sha
+    }
+
+    /// React to the user flipping the per-PR "Include AI summary"
+    /// toggle: ON seeds the body, OFF clears it (so they can see the
+    /// effect immediately rather than discovering it at post time).
+    /// Only clears when the body matches the AI summary — preserves
+    /// any free-form edits the user typed.
+    private func handleIncludeSummaryToggle(_ newValue: Bool) {
+        includeAISummaryOverride = newValue
+        if newValue {
+            bodyDraftSeededForSha = nil
+            seedBodyDraftFromAIIfNeeded()
+        } else if bodyDraft == (review?.summaryMarkdown ?? "<n/a>") || bodyDraft.isEmpty {
+            bodyDraft = ""
+            bodyDraftSeededForSha = nil
+        }
     }
 
     // MARK: - sections
@@ -673,6 +715,22 @@ struct PRDetailView: View {
         return outcomes.map(\.subpath)
     }
 
+    /// Wraps `actionsSection` with a top divider + opaque background so
+    /// it works as a `Section { } header:` that pins on scroll. The
+    /// background prevents scrolled content from bleeding through; the
+    /// `Divider` mirrors the inline divider the section had before
+    /// pinning so it doesn't visually fuse with the AI section above.
+    @ViewBuilder
+    private var stickyActionHeader: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Divider()
+            actionsSection
+                .padding(.vertical, 8)
+            Divider()
+        }
+        .background(.background)
+    }
+
     /// Action surface, sits directly under the AI verdict + summary +
     /// annotations so verdict and post controls are co-located. The
     /// primary button is driven by the AI's verdict (or "Approve" if
@@ -726,23 +784,48 @@ struct PRDetailView: View {
                 .buttonStyle(.borderless)
             }
 
-            // Inline-comments toggle: only meaningful when the review
-            // has annotations the API would actually accept (i.e. lines
-            // present in the PR's diff). Hidden when there are none —
-            // saves a row that would always be off and confusing.
-            if !postable.isEmpty {
-                Toggle(isOn: $includeInlineAnnotations) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "text.bubble")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("Post \(postable.count) annotation\(postable.count == 1 ? "" : "s") as inline comments")
-                            .font(.caption)
+            // What's about to be sent — shown inline so the user
+            // doesn't have to expand the body editor to know whether
+            // the AI summary is going along for the ride. Two
+            // checkboxes: AI summary (body) and inline annotations
+            // (line-anchored comments). Both default to the user's
+            // global setting; both can be flipped per-PR right here.
+            HStack(spacing: 14) {
+                if let summary = review?.summaryMarkdown, !summary.isEmpty {
+                    Toggle(isOn: Binding(
+                        get: { includeAISummary },
+                        set: { handleIncludeSummaryToggle($0) }
+                    )) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.text")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Include AI summary as body")
+                                .font(.caption)
+                        }
                     }
+                    .toggleStyle(.checkbox)
+                    .help("When on, the AI's `summary` text is sent as the body of the review. Per-PR override of the Settings → General default. Toggle off to send an empty (or hand-edited) body.")
                 }
-                .toggleStyle(.checkbox)
-                .help("When on, each annotation becomes a line-anchored review comment in the same submission. Annotations targeting lines not in the PR's diff are skipped automatically.")
+
+                if !postable.isEmpty {
+                    Toggle(isOn: $includeInlineAnnotations) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "text.bubble")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("\(postable.count) inline annotation\(postable.count == 1 ? "" : "s")")
+                                .font(.caption)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .help("When on, each annotation becomes a line-anchored review comment in the same submission. Annotations targeting lines not in the PR's diff are skipped automatically.")
+                }
+
+                Spacer()
             }
+
+            willPostPreview(primary: primary, postableCount: postable.count)
 
             if bodyExpanded {
                 TextEditor(text: $bodyDraft)
@@ -787,6 +870,41 @@ struct PRDetailView: View {
                     .truncationMode(.middle)
             }
         }
+    }
+
+    /// One-line summary of what the next click of the primary button
+    /// will send to GitHub. Lists the GitHub event, body status, and
+    /// inline-comment count so the user never has to expand the body
+    /// editor to know what's about to be posted.
+    @ViewBuilder
+    private func willPostPreview(primary: ReviewActionKind, postableCount: Int) -> some View {
+        let event: String = {
+            switch primary {
+            case .approve:        return "APPROVE"
+            case .comment:        return "COMMENT"
+            case .requestChanges: return "REQUEST_CHANGES"
+            }
+        }()
+        let bodySummary: String = {
+            if bodyDraft.isEmpty { return "no body" }
+            let trimmed = bodyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            // 60-char clip is enough to recognise "this is the AI
+            // summary" without taking a second line of UI.
+            let preview = trimmed.replacingOccurrences(of: "\n", with: " ")
+            return preview.count > 60
+                ? "body: \"\(preview.prefix(60))…\""
+                : "body: \"\(preview)\""
+        }()
+        let inlinePart: String = {
+            guard includeInlineAnnotations, postableCount > 0 else { return "" }
+            return " · \(postableCount) inline comment\(postableCount == 1 ? "" : "s")"
+        }()
+        Text("Will post: \(event) · \(bodySummary)\(inlinePart)")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(bodyDraft.isEmpty ? "Empty body" : bodyDraft)
     }
 
     @ViewBuilder

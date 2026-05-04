@@ -4,7 +4,7 @@ struct GeneralSettings: View {
     @Environment(ReviewQueueWorker.self) private var queue
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
-    @AppStorage("postIncludesAISummary") private var postIncludesAISummary = false
+    @AppStorage("postIncludesAISummary") private var postIncludesAISummary = true
     @AppStorage("badgeShowReadyToMerge")    private var badgeReadyToMerge    = true
     @AppStorage("badgeShowReviewRequested") private var badgeReviewRequested = true
     @AppStorage("badgeShowCIFailed")        private var badgeCIFailed        = true
