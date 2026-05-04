@@ -14,6 +14,8 @@ struct PRListView: View {
     let onMergePR: (InboxPR, MergeMethod) -> Void
     let onSelect: (InboxPR) -> Void
 
+    @Environment(DiffStore.self) private var diffStore
+
     private let visibleLimit = 12
 
     var body: some View {
@@ -47,6 +49,16 @@ struct PRListView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                // Warm the diff cache for visible rows so clicking a PR
+                // typically lands on a cached diff. Each call is a no-op
+                // when the (prNodeId, headSha) is already loaded or in
+                // flight, so this is safe to call on every list re-render.
+                Color.clear.frame(height: 0)
+                    .task(id: prs.map(\.headSha).joined(separator: "|")) {
+                        for pr in prs.prefix(visibleLimit) {
+                            diffStore.ensureLoaded(for: pr)
+                        }
+                    }
                 if let error = lastError {
                     Text("Last fetch failed: \(error)")
                         .font(.caption2)

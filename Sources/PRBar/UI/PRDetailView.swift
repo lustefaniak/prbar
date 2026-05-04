@@ -141,6 +141,12 @@ struct PRDetailView: View {
         .onAppear {
             diffStore.ensureLoaded(for: pr)
             seedBodyDraftFromAIIfNeeded()
+            // Snapshot in `poller.prs` may be up to ~60s stale by the
+            // time the user clicks. Kick a single-PR refresh in the
+            // background so reviewDecision / mergeStateStatus / CI
+            // status reflect reality without waiting for the next
+            // scheduled poll.
+            poller.refreshPR(pr)
         }
         .onChange(of: pr.headSha) { _, _ in diffStore.ensureLoaded(for: pr) }
         .onChange(of: pr.nodeId) { _, _ in
@@ -171,6 +177,20 @@ struct PRDetailView: View {
 
     // MARK: - sections
 
+    /// Anything pending that the user can't act on yet — surfaced as a
+    /// small spinner + label in the nav bar so the view never looks
+    /// "stuck" while async work is in flight. Distinct from the per-
+    /// section spinners (diff "Loading diff…", AI "Reviewing…") which
+    /// stay where they are; this is the at-a-glance pulse.
+    private var inFlightSummary: String? {
+        var parts: [String] = []
+        if poller.refreshingPRs.contains(pr.nodeId) { parts.append("PR") }
+        if case .loading = diffStore.status(for: pr) { parts.append("diff") }
+        if case .running = reviewStatus { parts.append("AI") }
+        if case .queued  = reviewStatus { parts.append("AI") }
+        return parts.isEmpty ? nil : "Loading \(parts.joined(separator: ", "))…"
+    }
+
     private var navHeader: some View {
         HStack {
             if !inWindow {
@@ -180,6 +200,16 @@ struct PRDetailView: View {
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.cancelAction)
+            }
+
+            if let summary = inFlightSummary {
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.small)
+                    Text(summary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .transition(.opacity)
             }
 
             Spacer()
