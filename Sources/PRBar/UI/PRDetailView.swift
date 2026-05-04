@@ -26,9 +26,11 @@ struct PRDetailView: View {
     /// don't overwrite user edits when SwiftUI re-evaluates onChange, but
     /// do re-seed when a fresh review for a new commit lands.
     @State private var bodyDraftSeededForSha: String? = nil
-    @AppStorage("postIncludesAISummary") private var postIncludesAISummary = false
+    /// Persisted across launches so the user can opt out of the
+    /// "include N annotations as inline comments" default behaviour.
+    @AppStorage("postIncludesInlineAnnotations") private var includeInlineAnnotations = true
     @Environment(\.openWindow) private var openWindow
-    @State private var showActionPicker: Bool = false
+    @State private var bodyExpanded: Bool = false
     @State private var descriptionExpanded: Bool = false
     @State private var branchCopied: Bool = false
 
@@ -105,12 +107,18 @@ struct PRDetailView: View {
                                 Divider()
                             }
                             aiSection
-                            Divider()
-                            diffSection
+                            // Post-review controls sit directly under
+                            // the AI section (verdict + summary +
+                            // annotations) so the user never has to
+                            // scroll past the diff to act on what the
+                            // AI just decided. Only rendered when the
+                            // viewer is actually being asked to review.
                             if showsReviewActions {
                                 Divider()
                                 actionsSection
                             }
+                            Divider()
+                            diffSection
                         }
                     }
                     scrollToTopButton(proxy: proxy)
@@ -132,7 +140,6 @@ struct PRDetailView: View {
         }
         .onAppear {
             diffStore.ensureLoaded(for: pr)
-            migrateLegacyPostBodyPreference()
             seedBodyDraftFromAIIfNeeded()
         }
         .onChange(of: pr.headSha) { _, _ in diffStore.ensureLoaded(for: pr) }
@@ -146,31 +153,15 @@ struct PRDetailView: View {
         .onChange(of: review?.summaryMarkdown ?? "") { _, _ in
             seedBodyDraftFromAIIfNeeded()
         }
-        .onChange(of: postIncludesAISummary) { _, _ in
-            seedBodyDraftFromAIIfNeeded()
-        }
-    }
-
-    /// One-shot migration of the old `approveIncludesComment` @AppStorage
-    /// key to the new `postIncludesAISummary` key. Runs once per launch
-    /// per detail view; cheap (UserDefaults reads only).
-    private func migrateLegacyPostBodyPreference() {
-        let defaults = UserDefaults.standard
-        guard defaults.object(forKey: "postIncludesAISummary") == nil,
-              let legacy = defaults.object(forKey: "approveIncludesComment") as? Bool
-        else { return }
-        defaults.set(legacy, forKey: "postIncludesAISummary")
     }
 
     /// Pre-fill the editable body with the AI's summary the first time
-    /// we see a completed review for this PR's current head, IF the
-    /// setting opts in. Never overwrites user edits and never re-seeds
-    /// for the same SHA twice.
+    /// we see a completed review for this PR's current head. Never
+    /// overwrites user edits and never re-seeds for the same SHA twice.
+    /// The body is then sent verbatim when the user clicks the primary
+    /// post button — no copy-paste required for the common path.
     private func seedBodyDraftFromAIIfNeeded() {
-        guard postIncludesAISummary,
-              let summary = review?.summaryMarkdown,
-              !summary.isEmpty
-        else { return }
+        guard let summary = review?.summaryMarkdown, !summary.isEmpty else { return }
         let sha = queue.reviews[pr.nodeId]?.headSha ?? pr.headSha
         if bodyDraftSeededForSha == sha { return }
         if !bodyDraft.isEmpty { return }
@@ -652,108 +643,195 @@ struct PRDetailView: View {
         return outcomes.map(\.subpath)
     }
 
+    /// Action surface, sits directly under the AI verdict + summary +
+    /// annotations so verdict and post controls are co-located. The
+    /// primary button is driven by the AI's verdict (or "Approve" if
+    /// the AI abstained / hasn't run yet); secondary actions live in
+    /// a dropdown so the user can override.
     @ViewBuilder
     private var actionsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Post review")
-                .font(.subheadline.bold())
-
-            // Single editable body. Pre-seeded with the AI summary on
-            // review-completion when `postIncludesAISummary` is on; user
-            // is free to edit, replace, or clear before posting.
-            TextEditor(text: $bodyDraft)
-                .font(.system(.caption, design: .monospaced))
-                .frame(minHeight: 60, maxHeight: 160)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(.secondary.opacity(0.2))
-                )
-                .help("Body for the review. Pre-fills with the AI summary when the matching setting is on; edit freely.")
-
-            actionsToolbar
-        }
-    }
-
-    @ViewBuilder
-    private var actionsToolbar: some View {
         let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
         let aiVerdict = review?.verdict
-        let preferredAction: ReviewActionKind? = aiVerdict.flatMap(reviewAction(for:))
+        // For the action bar: `.comment` verdict ("approve with notes")
+        // maps to a GitHub APPROVE review carrying the body. The neutral
+        // `.comment` action is still reachable from the override menu.
+        let primary: ReviewActionKind = aiVerdict.flatMap(reviewAction(for:)) ?? .approve
+        let postable = postableInlineComments
+        let primaryNeedsBody = (primary == .requestChanges)
+        let primaryDisabled = isPosting || (primaryNeedsBody && bodyDraft.isEmpty)
 
-        HStack(spacing: 6) {
-            actionButton(.approve, isPreferred: preferredAction == .approve, isPosting: isPosting)
-            actionButton(.comment, isPreferred: preferredAction == .comment, isPosting: isPosting)
-            actionButton(.requestChanges, isPreferred: preferredAction == .requestChanges, isPosting: isPosting)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                primaryActionButton(primary, disabled: primaryDisabled)
 
-            if !bodyDraft.isEmpty {
-                Button {
-                    bodyDraft = ""
-                    bodyDraftSeededForSha = nil
+                Menu {
+                    overrideActionItems(except: primary)
                 } label: {
-                    Image(systemName: "arrow.uturn.backward")
+                    Image(systemName: "ellipsis.circle")
+                        .font(.title3)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Post a different review action")
+                .disabled(isPosting)
+
+                if isPosting {
+                    ProgressView().controlSize(.small)
+                }
+
+                Spacer()
+
+                Button {
+                    bodyExpanded.toggle()
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: bodyExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                        Text(bodyExpanded ? "Hide body" : "Edit body")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
-                .help("Clear body")
-                .disabled(isPosting)
             }
 
-            if isPosting {
-                ProgressView().controlSize(.small)
+            // Inline-comments toggle: only meaningful when the review
+            // has annotations the API would actually accept (i.e. lines
+            // present in the PR's diff). Hidden when there are none —
+            // saves a row that would always be off and confusing.
+            if !postable.isEmpty {
+                Toggle(isOn: $includeInlineAnnotations) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "text.bubble")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("Post \(postable.count) annotation\(postable.count == 1 ? "" : "s") as inline comments")
+                            .font(.caption)
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .help("When on, each annotation becomes a line-anchored review comment in the same submission. Annotations targeting lines not in the PR's diff are skipped automatically.")
             }
 
-            Spacer()
-        }
+            if bodyExpanded {
+                TextEditor(text: $bodyDraft)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(minHeight: 80, maxHeight: 200)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(.secondary.opacity(0.2))
+                    )
+                    .help("Body for the review. Pre-fills with the AI summary; edit freely.")
 
-        if let err = poller.lastError {
-            Text(err)
-                .font(.caption2)
-                .foregroundStyle(.red)
-                .lineLimit(2)
-                .truncationMode(.middle)
+                HStack(spacing: 8) {
+                    if !bodyDraft.isEmpty {
+                        Button("Clear") {
+                            bodyDraft = ""
+                            bodyDraftSeededForSha = nil
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .disabled(isPosting)
+                    }
+                    if let summary = review?.summaryMarkdown, !summary.isEmpty, bodyDraft != summary {
+                        Button("Reset to AI summary") {
+                            bodyDraft = summary
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                        .disabled(isPosting)
+                    }
+                    Spacer()
+                    Text("\(bodyDraft.count) chars")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let err = poller.lastError {
+                Text(err)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
         }
     }
 
     @ViewBuilder
-    private func actionButton(
-        _ kind: ReviewActionKind,
-        isPreferred: Bool,
-        isPosting: Bool
-    ) -> some View {
-        let needsBody = (kind == .comment) // GitHub rejects empty Comment reviews.
-        let disabled = isPosting || (needsBody && bodyDraft.isEmpty)
-
-        Group {
-            if isPreferred {
-                Button {
-                    postReview(kind: kind)
-                } label: {
-                    actionButtonLabel(kind)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(actionButtonTint(kind))
-            } else {
-                Button {
-                    postReview(kind: kind)
-                } label: {
-                    actionButtonLabel(kind)
-                }
-                .buttonStyle(.bordered)
-                .tint(actionButtonTint(kind))
+    private func primaryActionButton(_ kind: ReviewActionKind, disabled: Bool) -> some View {
+        Button {
+            postReview(kind: kind, includeInline: includeInlineAnnotations)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: actionButtonIcon(kind))
+                Text(primaryActionLabel(kind))
             }
+            .frame(minWidth: 140)
         }
+        .buttonStyle(.borderedProminent)
+        .tint(actionButtonTint(kind))
+        .controlSize(.large)
         .disabled(disabled)
-        .help(actionButtonHelp(kind, isPreferred: isPreferred, needsBody: needsBody))
+        .help(primaryActionHelp(kind))
+        .keyboardShortcut(.defaultAction)
     }
 
     @ViewBuilder
-    private func actionButtonLabel(_ kind: ReviewActionKind) -> some View {
+    private func overrideActionItems(except primary: ReviewActionKind) -> some View {
+        // Three GitHub review actions, plus the inline-comments toggle
+        // mirrored in the menu so a user who hides the toolbar still
+        // has access. Greyed-out items are kept clickable and just
+        // rerun the same call so we don't over-engineer disabled state.
+        let postable = postableInlineComments
+        let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
+
+        if primary != .approve {
+            Button {
+                postReview(kind: .approve, includeInline: includeInlineAnnotations)
+            } label: { Label("Approve", systemImage: "hand.thumbsup") }
+                .disabled(isPosting)
+        }
+        if primary != .requestChanges {
+            Button {
+                postReview(kind: .requestChanges, includeInline: includeInlineAnnotations)
+            } label: { Label("Request changes", systemImage: "hand.thumbsdown") }
+                .disabled(isPosting || bodyDraft.isEmpty)
+        }
+        if primary != .comment {
+            Button {
+                postReview(kind: .comment, includeInline: includeInlineAnnotations)
+            } label: { Label("Comment (neutral)", systemImage: "bubble.left") }
+                .disabled(isPosting || bodyDraft.isEmpty)
+        }
+        if !postable.isEmpty {
+            Divider()
+            Toggle(isOn: $includeInlineAnnotations) {
+                Text("Include \(postable.count) inline annotation\(postable.count == 1 ? "" : "s")")
+            }
+        }
+    }
+
+    private func actionButtonIcon(_ kind: ReviewActionKind) -> String {
+        switch kind {
+        case .approve:        return "hand.thumbsup"
+        case .comment:        return "bubble.left"
+        case .requestChanges: return "hand.thumbsdown"
+        }
+    }
+
+    /// Label for the primary action button. When the AI's verdict is
+    /// `.comment` ("approve with notes"), kind is `.approve` but the
+    /// label is "Approve with notes" so the user knows their summary
+    /// will travel with the approval.
+    private func primaryActionLabel(_ kind: ReviewActionKind) -> String {
+        let aiVerdict = review?.verdict
         switch kind {
         case .approve:
-            Label("Approve", systemImage: "hand.thumbsup")
-        case .comment:
-            Label("Comment", systemImage: "bubble.left")
-        case .requestChanges:
-            Label("Request changes", systemImage: "hand.thumbsdown")
+            return aiVerdict == .comment ? "Approve with notes" : "Approve"
+        case .comment:        return "Comment"
+        case .requestChanges: return "Request changes"
         }
     }
 
@@ -765,17 +843,67 @@ struct PRDetailView: View {
         }
     }
 
-    private func actionButtonHelp(_ kind: ReviewActionKind, isPreferred: Bool, needsBody: Bool) -> String {
-        let base: String
+    private func primaryActionHelp(_ kind: ReviewActionKind) -> String {
         switch kind {
-        case .approve:        base = "Approve this PR"
-        case .comment:        base = "Post a Comment review"
-        case .requestChanges: base = "Request changes"
+        case .approve:
+            return review?.verdict == .comment
+                ? "Approve with the AI summary as the body and any inline annotations."
+                : "Approve this PR."
+        case .comment:        return "Post a neutral Comment review (no approval signal)."
+        case .requestChanges: return "Request changes — body required."
         }
-        var extra: [String] = []
-        if isPreferred { extra.append("matches the AI verdict") }
-        if needsBody && bodyDraft.isEmpty { extra.append("body required") }
-        return extra.isEmpty ? base : "\(base) — \(extra.joined(separator: "; "))"
+    }
+
+    /// Annotations that have a corresponding line on the new side of
+    /// the PR's diff — i.e. lines GitHub will accept inline comments
+    /// for. Anything outside this set is dropped silently when posting,
+    /// so the toolbar's count matches what actually goes through.
+    private var postableInlineComments: [GHClient.InlineComment] {
+        guard let annotations = review?.annotations, !annotations.isEmpty else { return [] }
+        guard case .loaded(let hunks) = diffStore.status(for: pr) else { return [] }
+        return Self.inlineComments(from: annotations, hunks: hunks)
+    }
+
+    /// Map annotations whose `(path, lineEnd)` lands on an added or
+    /// context line in the new file to a GHClient.InlineComment. Body
+    /// is the annotation's body (full text); the title isn't included
+    /// because GitHub renders the comment as plain Markdown.
+    static func inlineComments(
+        from annotations: [DiffAnnotation],
+        hunks: [Hunk]
+    ) -> [GHClient.InlineComment] {
+        // Build per-path map of valid new-file line numbers.
+        var validByPath: [String: Set<Int>] = [:]
+        for h in hunks {
+            var newLine = h.newStart
+            var valid: Set<Int> = []
+            for line in h.lines {
+                switch line {
+                case .added, .context:
+                    valid.insert(newLine)
+                    newLine += 1
+                case .removed:
+                    break
+                }
+            }
+            validByPath[h.filePath, default: []].formUnion(valid)
+        }
+        return annotations.compactMap { ann in
+            guard let valid = validByPath[ann.path] else { return nil }
+            guard valid.contains(ann.lineEnd) else { return nil }
+            let startLine = ann.lineStart < ann.lineEnd && valid.contains(ann.lineStart)
+                ? ann.lineStart : nil
+            let header: String = {
+                if let t = ann.title, !t.isEmpty { return "**\(t)**\n\n" }
+                return ""
+            }()
+            return GHClient.InlineComment(
+                path: ann.path,
+                line: ann.lineEnd,
+                startLine: startLine,
+                body: header + ann.body
+            )
+        }
     }
 
     /// Informational verdict pill. Posting now happens through the
@@ -797,17 +925,23 @@ struct PRDetailView: View {
         .help("AI verdict — use the buttons below to post a review")
     }
 
-    private func postReview(kind: ReviewActionKind) {
-        poller.postReview(pr, kind: kind, body: bodyDraft)
+    private func postReview(kind: ReviewActionKind, includeInline: Bool) {
+        let comments = includeInline ? postableInlineComments : []
+        poller.postReview(pr, kind: kind, body: bodyDraft, comments: comments)
         bodyDraft = ""
         bodyDraftSeededForSha = nil
         onPostedAction()
     }
 
+    /// Map AI verdict → the GitHub review action the primary button
+    /// should fire. `.comment` ("approve with notes") fires APPROVE
+    /// with a body — what most "I approve, with these observations"
+    /// reviews actually want. The neutral GitHub Comment review is
+    /// reachable via the override menu.
     private func reviewAction(for verdict: ReviewVerdict) -> ReviewActionKind? {
         switch verdict {
         case .approve:        return .approve
-        case .comment:        return .comment
+        case .comment:        return .approve
         case .requestChanges: return .requestChanges
         case .abstain:        return nil
         }
@@ -821,7 +955,7 @@ struct PRDetailView: View {
         // that case — see `reviewAction(for:)`).
         switch v {
         case .approve:        return ("Approve", .green)
-        case .comment:        return ("Comment", .blue)
+        case .comment:        return ("Approve with notes", .blue)
         case .requestChanges: return ("Request changes", .red)
         case .abstain:        return ("Abstain", .gray)
         }

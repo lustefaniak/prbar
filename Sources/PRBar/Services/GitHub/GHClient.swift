@@ -157,6 +157,92 @@ actor GHClient {
         }
     }
 
+    /// One inline review comment, anchored to a span in the PR's diff
+    /// against the PR's head commit. `line` is the last line of the span
+    /// (the GitHub API places the comment there); `startLine` is set for
+    /// multi-line ranges, omitted for single-line.
+    struct InlineComment: Sendable, Hashable {
+        let path: String
+        let line: Int
+        let startLine: Int?
+        let body: String
+    }
+
+    /// Submit a review with inline (line-anchored) comments in a single
+    /// API call. Uses `POST /repos/{o}/{r}/pulls/{n}/reviews` because
+    /// `gh pr review` doesn't expose `comments[]`.
+    ///
+    /// `event`: `"APPROVE"`, `"REQUEST_CHANGES"`, or `"COMMENT"` (neutral).
+    /// `body`: review body — required for REQUEST_CHANGES and COMMENT,
+    /// optional for APPROVE. `comments`: zero or more inline comments;
+    /// each anchors against the PR's current head SHA (the API defaults
+    /// `commit_id` to head when omitted).
+    ///
+    /// GitHub rejects inline comments whose `line` isn't part of the
+    /// PR's diff. Caller is responsible for filtering out annotations
+    /// against unchanged regions before passing them in.
+    func postReviewWithComments(
+        owner: String,
+        repo: String,
+        number: Int,
+        event: String,
+        body: String,
+        comments: [InlineComment]
+    ) async throws {
+        struct CommentPayload: Encodable {
+            let path: String
+            let body: String
+            let line: Int
+            // GitHub's create-review endpoint takes `start_line` only
+            // when the range spans more than one line; encoding it
+            // unconditionally with the same value as `line` triggers
+            // 422 "start_line must be less than line".
+            let start_line: Int?
+        }
+        struct ReviewPayload: Encodable {
+            let event: String
+            let body: String?
+            let comments: [CommentPayload]
+        }
+
+        let payload = ReviewPayload(
+            event: event,
+            body: body.isEmpty ? nil : body,
+            comments: comments.map {
+                CommentPayload(
+                    path: $0.path,
+                    body: $0.body,
+                    line: $0.line,
+                    start_line: ($0.startLine != nil && $0.startLine! < $0.line) ? $0.startLine : nil
+                )
+            }
+        )
+        let data = try JSONEncoder().encode(payload)
+
+        // gh api --input <file> reads the JSON body from disk so we
+        // don't have to thread stdin through ProcessRunner.
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prbar-review-\(UUID().uuidString).json")
+        try data.write(to: tmp)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: [
+                "api",
+                "--method", "POST",
+                "repos/\(owner)/\(repo)/pulls/\(number)/reviews",
+                "--input", tmp.path,
+            ]
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+    }
+
     /// Merge a pull request. Throws GHError.execFailed on any non-zero exit
     /// (which includes "PR not mergeable" and "approval required" — gh's
     /// stderr text is descriptive and surfaces in lastError as-is).

@@ -82,6 +82,18 @@ enum ReviewActionKind: String, Codable, Sendable, Hashable, CaseIterable {
         case .requestChanges: return .requestChanges
         }
     }
+
+    /// Event string accepted by the GitHub REST endpoint
+    /// `POST /repos/{o}/{r}/pulls/{n}/reviews`. Used by the inline-
+    /// comments path; `gh pr review` (which takes flags, not events)
+    /// uses `ghFlag` instead.
+    var apiEvent: String {
+        switch self {
+        case .approve:        return "APPROVE"
+        case .comment:        return "COMMENT"
+        case .requestChanges: return "REQUEST_CHANGES"
+        }
+    }
 }
 
 enum MergeMethod: String, Codable, Sendable, Hashable, CaseIterable {

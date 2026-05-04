@@ -9,6 +9,8 @@ struct PopoverView: View {
     @State private var selectedPR: InboxPR?
     @State private var toolResults: [ToolProbeResult] = []
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
+    @AppStorage(MyDraftHandling.storageKey) private var myDraftHandlingRaw =
+        MyDraftHandling.default.rawValue
     private let probedTools = ["gh", "claude", "codex", "git"]
 
     enum Tab: String, CaseIterable, Identifiable, Hashable {
@@ -23,7 +25,15 @@ struct PopoverView: View {
     }
 
     private var myPRsCount: Int {
-        poller.prs.filter { $0.role == .authored || $0.role == .both }.count
+        // Match what MyPRsView actually renders — when the user has
+        // opted to hide drafts from My PRs, those drafts must not
+        // count towards the segmented-tab badge either, otherwise the
+        // badge says e.g. "3" while the list shows 1.
+        let hideDrafts = (MyDraftHandling(rawValue: myDraftHandlingRaw) ?? .default).hidesFromMyPRs
+        return poller.prs.filter {
+            ($0.role == .authored || $0.role == .both)
+                && !(hideDrafts && $0.isDraft)
+        }.count
     }
     private var inboxCount: Int {
         poller.prs.filter { $0.role == .reviewRequested || $0.role == .both }.count

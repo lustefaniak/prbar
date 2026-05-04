@@ -220,6 +220,8 @@ private struct EntryRow: View {
     let isExpanded: Bool
     let onToggle: () -> Void
 
+    @Environment(\.openWindow) private var openWindow
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button(action: onToggle) {
@@ -280,6 +282,25 @@ private struct EntryRow: View {
 
     @ViewBuilder
     private var expandedDetail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Spacer()
+                Button {
+                    openWindow(id: HistoricalReviewWindowID.id, value: entry.id)
+                } label: {
+                    Label("Open in PR context", systemImage: "macwindow.on.rectangle")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Open this cached review in a full-size window. Tries to refetch the PR live; gracefully falls back to the cached review if the PR is no longer accessible.")
+            }
+            innerExpandedDetail
+        }
+    }
+
+    @ViewBuilder
+    private var innerExpandedDetail: some View {
         if entry.status == .failed {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Failure reason")
@@ -296,9 +317,13 @@ private struct EntryRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !agg.annotations.isEmpty {
-                    Text("\(agg.annotations.count) annotation\(agg.annotations.count == 1 ? "" : "s")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // Reuse the same row component as PRDetailView so
+                    // history entries are first-class — clicking a row
+                    // expands its body inline, severity dot + path:line
+                    // are immediately visible. No diff-locator here
+                    // (the PR may have moved on or been merged) so we
+                    // pass a nil onLocate.
+                    AnnotationsSummaryView(annotations: agg.annotations)
                 }
                 Text("Tools: \(agg.toolCallCount) call\(agg.toolCallCount == 1 ? "" : "s")\(agg.toolNamesUsed.isEmpty ? "" : " (\(agg.toolNamesUsed.joined(separator: ", ")))")")
                     .font(.caption)

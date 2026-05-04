@@ -49,6 +49,18 @@ final class PRPoller {
     @ObservationIgnored
     private let prReviewer: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ kind: ReviewActionKind, _ body: String) async throws -> Void)?
 
+    /// Optional richer reviewer that posts a review with inline (line-
+    /// anchored) comments in one API call. When unset, postReview with
+    /// non-empty comments falls back to the simpler `prReviewer` and
+    /// drops the inline comments — kept this way so existing tests that
+    /// only inject `prReviewer` still work.
+    @ObservationIgnored
+    private let prInlineReviewer: (@Sendable (
+        _ owner: String, _ repo: String, _ number: Int,
+        _ kind: ReviewActionKind, _ body: String,
+        _ comments: [GHClient.InlineComment]
+    ) async throws -> Void)?
+
     /// PRs currently being reviewed (approve/comment/requestChanges). Same
     /// purpose as refreshingPRs / mergingPRs.
     private(set) var postingReviewPRs: Set<String> = []
@@ -92,12 +104,18 @@ final class PRPoller {
         prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil,
         prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)? = nil,
         prReviewer: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ kind: ReviewActionKind, _ body: String) async throws -> Void)? = nil,
+        prInlineReviewer: (@Sendable (
+            _ owner: String, _ repo: String, _ number: Int,
+            _ kind: ReviewActionKind, _ body: String,
+            _ comments: [GHClient.InlineComment]
+        ) async throws -> Void)? = nil,
         cache: SnapshotCache? = nil
     ) {
         self.fetcher = fetcher
         self.prRefresher = prRefresher
         self.prMerger = prMerger
         self.prReviewer = prReviewer
+        self.prInlineReviewer = prInlineReviewer
         self.cache = cache
     }
 
@@ -148,6 +166,13 @@ final class PRPoller {
                 try await c.postReview(
                     owner: owner, repo: repo, number: number,
                     kind: kind, body: body
+                )
+            },
+            prInlineReviewer: { owner, repo, number, kind, body, comments in
+                let c = try client ?? GHClient()
+                try await c.postReviewWithComments(
+                    owner: owner, repo: repo, number: number,
+                    event: kind.apiEvent, body: body, comments: comments
                 )
             },
             cache: snapshotCache
@@ -216,16 +241,40 @@ final class PRPoller {
     /// Post a review (approve / comment / request changes) on a PR. After
     /// success, refreshes the PR so the row reflects the new
     /// reviewDecision. On failure, surfaces error text in `lastError`.
-    func postReview(_ pr: InboxPR, kind: ReviewActionKind, body: String = "") {
+    ///
+    /// `comments` is an optional list of inline (line-anchored) comments
+    /// to attach to the same review. Non-empty values use the richer
+    /// `prInlineReviewer` path (single REST POST with `comments[]`); the
+    /// caller is responsible for filtering annotations down to lines
+    /// actually present in the PR's diff (GitHub rejects comments on
+    /// lines outside the diff).
+    func postReview(
+        _ pr: InboxPR,
+        kind: ReviewActionKind,
+        body: String = "",
+        comments: [GHClient.InlineComment] = []
+    ) {
         let nodeId = pr.nodeId
-        guard let reviewer = prReviewer else { return }
         guard !postingReviewPRs.contains(nodeId) else { return }
+
+        // Pick the richer path when comments are present and a richer
+        // reviewer is configured. Empty comments → plain `gh pr review`
+        // through the existing reviewer (kept for tests + back-compat).
+        let useInline = !comments.isEmpty && prInlineReviewer != nil
+        guard prReviewer != nil || useInline else { return }
+
         postingReviewPRs.insert(nodeId)
 
         Task {
             defer { postingReviewPRs.remove(nodeId) }
             do {
-                try await reviewer(pr.owner, pr.repo, pr.number, kind, body)
+                if useInline, let inline = prInlineReviewer {
+                    try await inline(pr.owner, pr.repo, pr.number, kind, body, comments)
+                } else if let reviewer = prReviewer {
+                    try await reviewer(pr.owner, pr.repo, pr.number, kind, body)
+                } else {
+                    return
+                }
                 self.lastError = nil
                 self.actionLog?.record(
                     kind: kind.actionLogKind, outcome: .success, pr: pr,

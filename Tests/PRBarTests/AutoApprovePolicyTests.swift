@@ -25,7 +25,10 @@ final class AutoApprovePolicyTests: XCTestCase {
             config: onConfig
         )
         if case .skip(let reason) = result {
-            XCTAssertTrue(reason.contains("Comment"))
+            // Verdict display label changed: `.comment` is now
+            // surfaced as "Approve with notes" — auto-approve still
+            // skips it, but the reason text reads accordingly.
+            XCTAssertTrue(reason.contains("Approve with notes"), "got reason: \(reason)")
         } else {
             XCTFail("expected skip")
         }

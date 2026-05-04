@@ -72,5 +72,32 @@ struct PRBarApp: App {
             }
         }
         .defaultSize(width: 1100, height: 800)
+
+        // Historical-review window: opened from Settings → Review
+        // History to look at a cached AggregatedReview in the same
+        // detail layout (verdict + summary + annotations + diff). Keyed
+        // by the ReviewLogEntry's UUID so each row gets its own window;
+        // the view re-fetches the PR fresh from gh to surface live
+        // diff/CI/body when the PR still exists, and falls back to the
+        // cached review only when it doesn't.
+        WindowGroup(id: HistoricalReviewWindowID.id, for: UUID.self) { $logId in
+            if let id = logId {
+                HistoricalReviewWindowView(logEntryId: id)
+                    .environment(delegate.poller)
+                    .environment(delegate.queue)
+                    .environment(delegate.diffStore)
+                    .environment(delegate.repoConfigs)
+                    .environment(delegate.actionLog)
+                    .environment(delegate.reviewLog)
+                    .environment(delegate.failureLogs)
+                    .environment(delegate.notifier)
+                    .environment(delegate.readiness)
+                    .modelContainer(delegate.reviewLog.container)
+            } else {
+                Text("No review selected")
+                    .frame(minWidth: 400, minHeight: 200)
+            }
+        }
+        .defaultSize(width: 1100, height: 800)
     }
 }

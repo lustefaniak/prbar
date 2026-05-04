@@ -2,6 +2,12 @@ import Foundation
 
 enum ReviewVerdict: String, Codable, Sendable, Hashable, CaseIterable {
     case approve
+    /// "Approve with non-blocking notes." Raw value stays `comment` so
+    /// reviews cached before the rename still decode; user-facing label
+    /// and the GitHub action it maps to changed: this now posts a
+    /// GitHub APPROVE review (with body), not a neutral Comment review.
+    /// The neutral Comment review remains available as a manual override
+    /// in the action menu.
     case comment
     case requestChanges = "request_changes"
     case abstain
@@ -9,7 +15,7 @@ enum ReviewVerdict: String, Codable, Sendable, Hashable, CaseIterable {
     var displayName: String {
         switch self {
         case .approve:        return "Approve"
-        case .comment:        return "Comment"
+        case .comment:        return "Approve with notes"
         case .requestChanges: return "Request changes"
         case .abstain:        return "Abstain"
         }
