@@ -37,4 +37,8 @@ enum PRBarLog {
     /// Readiness coordinator: notification gating decisions, batch
     /// flushes, persistent dedup hits.
     nonisolated(unsafe) static let readiness = Logger(subsystem: subsystem, category: "readiness")
+
+    /// GitHub write queue: enqueue / dedup-skip / retry / run failure for
+    /// post-review / merge / auto-approve actions.
+    nonisolated(unsafe) static let actions = Logger(subsystem: subsystem, category: "actions")
 }

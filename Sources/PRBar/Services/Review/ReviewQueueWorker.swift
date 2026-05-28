@@ -240,6 +240,8 @@ final class ReviewQueueWorker {
 
     /// Closure that posts the actual `gh pr review --approve`. Injected
     /// so tests don't shell out. Default uses the shared `GHClient`.
+    /// Only used by the fallback path when `enqueueAutoApprove` is nil
+    /// (i.e. in tests); production routes through `ActionQueue` instead.
     @ObservationIgnored
     var approvePoster: @Sendable (_ pr: InboxPR, _ body: String) async throws -> Void = { pr, body in
         let c = try GHClient()
@@ -248,6 +250,14 @@ final class ReviewQueueWorker {
             kind: .approve, body: body
         )
     }
+
+    /// When set, `fireBatch` hands each staged approval to the shared
+    /// `ActionQueue` instead of posting it inline — so auto-approve shares
+    /// the same serialization, dedup, retry, and action-log path as manual
+    /// writes. Nil keeps the legacy `approvePoster` path (tests). Wired by
+    /// `AppDelegate`.
+    @ObservationIgnored
+    var enqueueAutoApprove: (@MainActor (_ pr: InboxPR, _ body: String, _ costUsd: Double) -> Void)?
 
     @ObservationIgnored
     private var batchTimer: Task<Void, Never>?
@@ -804,6 +814,16 @@ final class ReviewQueueWorker {
         batchUndoDeadline = nil
         for entry in toApprove {
             let body = "Auto-approved by PRBar (\(formatConfidence(entry.review.confidence)) confidence)."
+            // Production: route through the shared ActionQueue so the post
+            // is serialized + dedup'd + retryable + logged on the one path.
+            // The queue records its own ActionLog entry and triggers the
+            // PR refresh via onActionCompleted, so we don't duplicate that
+            // here.
+            if let enqueueAutoApprove {
+                enqueueAutoApprove(entry.pr, body, entry.review.costUsd)
+                continue
+            }
+            // Fallback (tests / no queue wired): post inline.
             Task { [poster = approvePoster, weak self] in
                 do {
                     try await poster(entry.pr, body)

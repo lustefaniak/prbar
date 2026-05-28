@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let poller: PRPoller
     let notifier: Notifier
     let queue: ReviewQueueWorker
+    let actionQueue: ActionQueue
     let diffStore: DiffStore
     let failureLogs: FailureLogStore
     let repoConfigs: RepoConfigStore
@@ -70,18 +71,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let n = Notifier()
         let p: PRPoller
         let q: ReviewQueueWorker
+        let a: ActionQueue
         if ScreenshotMode.isActive {
             // Screenshot launch path: never poll, never call gh, never
             // touch the network. Build inert services seeded with
             // ScreenshotFixtures so every UI surface has the data it
-            // needs to render fully populated.
+            // needs to render fully populated. The ActionQueue keeps its
+            // no-op default executors so no gh write can fire.
             p = PRPoller(fetcher: { ScreenshotFixtures.allPRs })
             q = ReviewQueueWorker(diffFetcher: { _, _, _ in "" })
+            a = ActionQueue()
             p._setPRsForScreenshot(ScreenshotFixtures.allPRs)
             q._setReviewsForScreenshot(ScreenshotFixtures.allReviewStates)
         } else {
             p = PRPoller.live()
             q = ReviewQueueWorker.live()
+            a = ActionQueue.live()
         }
         let d = DiffStore.sharing(q)
         // Reuse the worker's FailureLogStore so the UI's expandable
@@ -93,19 +98,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let coord = ReadinessCoordinator(notifier: n)
         let log = ActionLogStore.live()
         let rlog = ReviewLogStore.live()
-        p.actionLog = log
         q.actionLog = log
         q.reviewLog = rlog
-        // Auto-approve fire posts via gh in the worker; refresh the
-        // PR through the poller (with the same race-tolerant double-
-        // refresh as user-initiated approve) so the row reflects the
-        // new reviewDecision without waiting for the next 60s poll.
-        q.onAutoApproved = { [weak p] pr in
+        a.actionLog = log
+        // Every successful gh write refreshes the PR through the poller.
+        // GitHub's GraphQL read-model lags the REST write, so refresh now
+        // for the optimistic intermediate state and again after ~1.2s as a
+        // belt-and-suspenders catch for the propagation.
+        a.onActionCompleted = { [weak p] pr in
             p?.refreshPR(pr)
             Task { @MainActor [weak p] in
                 try? await Task.sleep(for: .seconds(1.2))
                 p?.refreshPR(pr, force: true)
             }
+        }
+        // Auto-approve posts route through the ActionQueue so they share
+        // the one serialized + dedup'd + retryable + logged write path.
+        q.enqueueAutoApprove = { [weak a] pr, body, cost in
+            a?.enqueue(
+                pr,
+                kind: .review(kind: .approve, body: body, comments: []),
+                source: .autoApprove,
+                costUsd: cost
+            )
         }
         q.configResolver = rc.makeResolver()
         // Resolve the persisted default provider. Stored value can be
@@ -156,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.poller = p
         self.notifier = n
         self.queue = q
+        self.actionQueue = a
         self.diffStore = d
         self.failureLogs = fls
         self.repoConfigs = rc
@@ -167,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // authorization so the registered categories are visible the
         // first time macOS shows the auth prompt — otherwise the user
         // may grant permission on a stale category set with no buttons.
-        let router = NotificationActionRouter(poller: p)
+        let router = NotificationActionRouter(poller: p, actionQueue: a)
         router.install()
         self.notificationRouter = router
         // In screenshot mode we deliberately skip the OS auth prompt
@@ -324,6 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(poller)
             .environment(notifier)
             .environment(queue)
+            .environment(actionQueue)
             .environment(diffStore)
             .environment(failureLogs)
             .environment(repoConfigs)
@@ -471,6 +488,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(poller)
             .environment(notifier)
             .environment(queue)
+            .environment(actionQueue)
             .environment(diffStore)
             .environment(failureLogs)
             .environment(repoConfigs)

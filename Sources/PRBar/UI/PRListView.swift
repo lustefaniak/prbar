@@ -9,12 +9,12 @@ struct PRListView: View {
     let isFetching: Bool
     let lastError: String?
     let refreshingPRs: Set<String>
-    let mergingPRs: Set<String>
     let onRefreshPR: (InboxPR) -> Void
     let onMergePR: (InboxPR, MergeMethod) -> Void
     let onSelect: (InboxPR) -> Void
 
     @Environment(DiffStore.self) private var diffStore
+    @Environment(ActionQueue.self) private var actionQueue
 
     /// Cap how many rows we eagerly warm the diff cache for. The list
     /// itself scrolls and shows every PR; this is just a courtesy
@@ -42,9 +42,11 @@ struct PRListView: View {
                             PRRowView(
                                 pr: pr,
                                 isRefreshing: refreshingPRs.contains(pr.nodeId),
-                                isMerging: mergingPRs.contains(pr.nodeId),
+                                actionState: actionQueue.state(for: pr.nodeId),
                                 onRefresh: { onRefreshPR(pr) },
-                                onMerge: { method in onMergePR(pr, method) }
+                                onMerge: { method in onMergePR(pr, method) },
+                                onRetryAction: { actionQueue.retry(pr.nodeId) },
+                                onDismissAction: { actionQueue.dismissFailure(pr.nodeId) }
                             )
                             .contentShape(Rectangle())
                             .onTapGesture { onSelect(pr) }

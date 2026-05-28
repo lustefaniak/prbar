@@ -95,73 +95,8 @@ final class PRPollerTests: XCTestCase {
         XCTAssertEqual(poller.lastError, "rate limited")
     }
 
-    func testMergePRCallsMergerThenRefreshes() async throws {
-        let pr = makePR(nodeId: "PR_a", number: 7, title: "ready")
-        let updated = makePR(nodeId: "PR_a", number: 7, title: "merged")
-
-        let mergeRecorder = AsyncRecorder()
-
-        let poller = PRPoller(
-            fetcher: { [pr] },
-            prRefresher: { _, _, _ in updated },
-            prMerger: { owner, repo, number, method in
-                await mergeRecorder.record("\(owner)/\(repo)#\(number) [\(method.rawValue)]")
-            }
-        )
-        poller.pollNow()
-        try await waitUntil { poller.prs.first?.title == "ready" }
-
-        poller.mergePR(pr, method: .squash)
-        try await waitUntil { poller.prs.first?.title == "merged" }
-
-        let calls = await mergeRecorder.calls
-        XCTAssertEqual(calls, ["o/r#7 [squash]"])
-        XCTAssertTrue(poller.mergingPRs.isEmpty, "should clear after merge")
-    }
-
-    func testMergePRRefusesDisallowedMethod() async throws {
-        // Repo configured to disallow merge commits (e.g. linear history).
-        let pr = makePR(
-            nodeId: "PR_a", number: 7, title: "linear-only",
-            allowedMergeMethods: [.squash, .rebase]
-        )
-        let mergeRecorder = AsyncRecorder()
-        let poller = PRPoller(
-            fetcher: { [pr] },
-            prMerger: { owner, repo, number, method in
-                await mergeRecorder.record("\(owner)/\(repo)#\(number) [\(method.rawValue)]")
-            }
-        )
-        poller.pollNow()
-        try await waitUntil { poller.prs.count == 1 }
-
-        poller.mergePR(pr, method: .merge)   // disallowed
-        try await waitUntil { poller.lastError != nil }
-
-        let calls = await mergeRecorder.calls
-        XCTAssertTrue(calls.isEmpty, "merger must not be called for a disallowed method")
-        XCTAssertNotNil(poller.lastError)
-        XCTAssertTrue(poller.lastError!.contains("disabled"))
-    }
-
-    func testMergePRSurfacesError() async throws {
-        struct StubError: Error, LocalizedError {
-            var errorDescription: String? { "PR not in mergeable state" }
-        }
-        let pr = makePR(nodeId: "PR_a", number: 7, title: "blocked")
-        let poller = PRPoller(
-            fetcher: { [pr] },
-            prMerger: { _, _, _, _ in throw StubError() }
-        )
-        poller.pollNow()
-        try await waitUntil { poller.prs.count == 1 }
-
-        poller.mergePR(pr, method: .squash)
-        try await waitUntil { poller.lastError != nil }
-
-        XCTAssertEqual(poller.lastError, "PR not in mergeable state")
-        XCTAssertEqual(poller.prs.first?.title, "blocked")
-    }
+    // Merge tests moved to ActionQueueTests — merge now goes through the
+    // ActionQueue rather than PRPoller.
 
     func testRefreshPRWithoutRefresherFallsBackToPollNow() async throws {
         let counter = AsyncCounter()
@@ -265,9 +200,4 @@ final class PRPollerTests: XCTestCase {
 private actor AsyncCounter {
     private(set) var value: Int = 0
     func increment() { value += 1 }
-}
-
-private actor AsyncRecorder {
-    private(set) var calls: [String] = []
-    func record(_ s: String) { calls.append(s) }
 }

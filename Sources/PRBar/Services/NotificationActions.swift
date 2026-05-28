@@ -39,9 +39,11 @@ enum NotificationUserInfoKey {
 @MainActor
 final class NotificationActionRouter: NSObject {
     private weak var poller: PRPoller?
+    private weak var actionQueue: ActionQueue?
 
-    init(poller: PRPoller) {
+    init(poller: PRPoller, actionQueue: ActionQueue) {
         self.poller = poller
+        self.actionQueue = actionQueue
         super.init()
     }
 
@@ -114,7 +116,7 @@ final class NotificationActionRouter: NSObject {
     }
 
     private func mergeAllReadyPRs(payload: Payload) {
-        guard let poller else { return }
+        guard let poller, let actionQueue else { return }
         guard !payload.nodeIds.isEmpty else {
             openPrimaryURL(payload: payload)
             return
@@ -124,9 +126,10 @@ final class NotificationActionRouter: NSObject {
             guard let pr = byId[id] else { continue }
             guard EventDeriver.isReadyToMerge(pr) else { continue }
             // Prefer squash (matches the row's default primary action);
-            // fall back to whatever the repo allows.
+            // fall back to whatever the repo allows. The queue's per-PR
+            // dedup absorbs a double tap on "Merge all".
             let method = preferredMergeMethod(for: pr) ?? .squash
-            poller.mergePR(pr, method: method)
+            actionQueue.enqueue(pr, kind: .merge(method: method))
         }
     }
 

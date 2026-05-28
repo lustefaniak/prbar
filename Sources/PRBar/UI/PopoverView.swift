@@ -285,6 +285,7 @@ struct PopoverView: View {
         .environment(PRPoller(fetcher: { [] }))
         .environment(Notifier(deliverer: NoopDeliverer()))
         .environment(ReviewQueueWorker(diffFetcher: { _, _, _ in "" }))
+        .environment(ActionQueue())
 }
 
 private struct NoopDeliverer: NotificationDeliverer {

@@ -4,9 +4,13 @@ import AppKit
 struct PRRowView: View {
     let pr: InboxPR
     let isRefreshing: Bool
-    let isMerging: Bool
+    /// In-flight / queued / failed state of a GitHub write for this PR,
+    /// from `ActionQueue`. Nil when there's no pending action.
+    let actionState: ActionRunState?
     let onRefresh: () -> Void
     let onMerge: (MergeMethod) -> Void
+    var onRetryAction: () -> Void = {}
+    var onDismissAction: () -> Void = {}
 
     @State private var isHovering = false
     @State private var showMergeConfirm = false
@@ -75,29 +79,73 @@ struct PRRowView: View {
 
     @ViewBuilder
     private var trailingControl: some View {
-        if isMerging {
-            ProgressView()
-                .controlSize(.small)
-                .help("Merging…")
-        } else if isRefreshing {
-            ProgressView()
-                .controlSize(.small)
-                .help("Refreshing…")
-        } else {
+        switch actionState {
+        case .queued:
+            // A write is scheduled but not yet running — the requested
+            // indicator that "an action is queued for this PR".
             HStack(spacing: 4) {
-                if pr.isReadyToMerge {
-                    mergeSplitButton
-                }
-                // Always make the secondary actions reachable. When ready
-                // to merge, the … sits next to the prominent merge button
-                // so the user can still hit "Open in browser" / "Refresh"
-                // without losing it. Hover-only for non-ready rows so it
-                // doesn't clutter the inbox.
-                if isHovering || pr.isReadyToMerge {
-                    secondaryActionsMenu
+                Image(systemName: "hourglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Queued")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .help("An action is queued for this PR")
+        case .running:
+            ProgressView()
+                .controlSize(.small)
+                .help("Action in progress…")
+        case .failed(let msg):
+            failedControl(message: msg)
+        case .none:
+            if isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+                    .help("Refreshing…")
+            } else {
+                HStack(spacing: 4) {
+                    if pr.isReadyToMerge {
+                        mergeSplitButton
+                    }
+                    // Always make the secondary actions reachable. When
+                    // ready to merge, the … sits next to the prominent
+                    // merge button so the user can still hit "Open in
+                    // browser" / "Refresh" without losing it. Hover-only
+                    // for non-ready rows so it doesn't clutter the inbox.
+                    if isHovering || pr.isReadyToMerge {
+                        secondaryActionsMenu
+                    }
                 }
             }
         }
+    }
+
+    /// Failed-write control: a red badge plus a small menu to retry or
+    /// dismiss. Keeps the captured action recoverable when gh/network
+    /// flaked, without re-deriving it.
+    @ViewBuilder
+    private func failedControl(message: String) -> some View {
+        Menu {
+            Button {
+                onRetryAction()
+            } label: {
+                Label("Retry", systemImage: "arrow.clockwise")
+            }
+            Button {
+                onDismissAction()
+            } label: {
+                Label("Dismiss", systemImage: "xmark")
+            }
+        } label: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Action failed: \(message)")
     }
 
     /// Hover-only "…" menu — Open in browser + Refresh. Merge actions

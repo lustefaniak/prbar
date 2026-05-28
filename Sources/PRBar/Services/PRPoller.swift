@@ -34,36 +34,11 @@ final class PRPoller {
     /// can show a per-row spinner while a refresh is in flight.
     private(set) var refreshingPRs: Set<String> = []
 
-    /// Tracks PRs currently being merged. Same purpose as refreshingPRs.
-    private(set) var mergingPRs: Set<String> = []
-
     @ObservationIgnored
     private let fetcher: @Sendable () async throws -> [InboxPR]
 
     @ObservationIgnored
     private let prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)?
-
-    @ObservationIgnored
-    private let prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)?
-
-    @ObservationIgnored
-    private let prReviewer: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ kind: ReviewActionKind, _ body: String) async throws -> Void)?
-
-    /// Optional richer reviewer that posts a review with inline (line-
-    /// anchored) comments in one API call. When unset, postReview with
-    /// non-empty comments falls back to the simpler `prReviewer` and
-    /// drops the inline comments — kept this way so existing tests that
-    /// only inject `prReviewer` still work.
-    @ObservationIgnored
-    private let prInlineReviewer: (@Sendable (
-        _ owner: String, _ repo: String, _ number: Int,
-        _ kind: ReviewActionKind, _ body: String,
-        _ comments: [GHClient.InlineComment]
-    ) async throws -> Void)?
-
-    /// PRs currently being reviewed (approve/comment/requestChanges). Same
-    /// purpose as refreshingPRs / mergingPRs.
-    private(set) var postingReviewPRs: Set<String> = []
 
     /// Optional Notifier; when set, the poller forwards derived events
     /// after each successful poll. Tests typically don't wire one.
@@ -75,11 +50,6 @@ final class PRPoller {
     /// `MyDraftHandling` user setting; tests leave it at the default.
     @ObservationIgnored
     var includeAuthoredDrafts: Bool = true
-
-    /// Action history sink. When set, `postReview` and `mergePR` record
-    /// one entry per attempt (success and failure both logged).
-    @ObservationIgnored
-    weak var actionLog: ActionLogStore?
 
     /// Per-repo config resolver. When set, fetched PRs are filtered
     /// against the config's `excludeTitlePatterns` before exposure —
@@ -102,20 +72,10 @@ final class PRPoller {
     init(
         fetcher: @Sendable @escaping () async throws -> [InboxPR],
         prRefresher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> InboxPR)? = nil,
-        prMerger: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ method: MergeMethod) async throws -> Void)? = nil,
-        prReviewer: (@Sendable (_ owner: String, _ repo: String, _ number: Int, _ kind: ReviewActionKind, _ body: String) async throws -> Void)? = nil,
-        prInlineReviewer: (@Sendable (
-            _ owner: String, _ repo: String, _ number: Int,
-            _ kind: ReviewActionKind, _ body: String,
-            _ comments: [GHClient.InlineComment]
-        ) async throws -> Void)? = nil,
         cache: SnapshotCache? = nil
     ) {
         self.fetcher = fetcher
         self.prRefresher = prRefresher
-        self.prMerger = prMerger
-        self.prReviewer = prReviewer
-        self.prInlineReviewer = prInlineReviewer
         self.cache = cache
     }
 
@@ -150,30 +110,6 @@ final class PRPoller {
             prRefresher: { owner, repo, number in
                 let c = try client ?? GHClient()
                 return try await c.fetchPR(owner: owner, repo: repo, number: number)
-            },
-            prMerger: { owner, repo, number, method in
-                let c = try client ?? GHClient()
-                // Always pass --delete-branch when the repo opts into it
-                // server-side. gh ignores the flag if not applicable, so
-                // it's safe to leave at the repo's default behavior.
-                try await c.mergePR(
-                    owner: owner, repo: repo, number: number,
-                    method: method, deleteBranch: false
-                )
-            },
-            prReviewer: { owner, repo, number, kind, body in
-                let c = try client ?? GHClient()
-                try await c.postReview(
-                    owner: owner, repo: repo, number: number,
-                    kind: kind, body: body
-                )
-            },
-            prInlineReviewer: { owner, repo, number, kind, body, comments in
-                let c = try client ?? GHClient()
-                try await c.postReviewWithComments(
-                    owner: owner, repo: repo, number: number,
-                    event: kind.apiEvent, body: body, comments: comments
-                )
             },
             cache: snapshotCache
         )
@@ -234,105 +170,6 @@ final class PRPoller {
                 }
             } catch {
                 self.lastError = error.localizedDescription
-            }
-        }
-    }
-
-    /// Post a review (approve / comment / request changes) on a PR. After
-    /// success, refreshes the PR so the row reflects the new
-    /// reviewDecision. On failure, surfaces error text in `lastError`.
-    ///
-    /// `comments` is an optional list of inline (line-anchored) comments
-    /// to attach to the same review. Non-empty values use the richer
-    /// `prInlineReviewer` path (single REST POST with `comments[]`); the
-    /// caller is responsible for filtering annotations down to lines
-    /// actually present in the PR's diff (GitHub rejects comments on
-    /// lines outside the diff).
-    func postReview(
-        _ pr: InboxPR,
-        kind: ReviewActionKind,
-        body: String = "",
-        comments: [GHClient.InlineComment] = []
-    ) {
-        let nodeId = pr.nodeId
-        guard !postingReviewPRs.contains(nodeId) else { return }
-
-        // Pick the richer path when comments are present and a richer
-        // reviewer is configured. Empty comments → plain `gh pr review`
-        // through the existing reviewer (kept for tests + back-compat).
-        let useInline = !comments.isEmpty && prInlineReviewer != nil
-        guard prReviewer != nil || useInline else { return }
-
-        postingReviewPRs.insert(nodeId)
-
-        Task {
-            defer { postingReviewPRs.remove(nodeId) }
-            do {
-                if useInline, let inline = prInlineReviewer {
-                    try await inline(pr.owner, pr.repo, pr.number, kind, body, comments)
-                } else if let reviewer = prReviewer {
-                    try await reviewer(pr.owner, pr.repo, pr.number, kind, body)
-                } else {
-                    return
-                }
-                self.lastError = nil
-                self.actionLog?.record(
-                    kind: kind.actionLogKind, outcome: .success, pr: pr,
-                    detail: body.isEmpty ? nil : body
-                )
-                // GitHub's GraphQL read-model can lag the REST write
-                // gh just made — refresh now to surface optimistic
-                // intermediate state, then again after ~1.2s as a
-                // belt-and-suspenders catch for the propagation.
-                self.refreshPR(pr)
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(1.2))
-                    self?.refreshPR(pr, force: true)
-                }
-            } catch {
-                self.lastError = error.localizedDescription
-                self.actionLog?.record(
-                    kind: kind.actionLogKind, outcome: .failure, pr: pr,
-                    errorMessage: error.localizedDescription,
-                    detail: body.isEmpty ? nil : body
-                )
-            }
-        }
-    }
-
-    /// Merge a PR via gh, then refresh it so the UI reflects the new state
-    /// (closed, mergeStateStatus, etc.). On failure, surfaces error text in
-    /// `lastError` and the row stays in the list.
-    func mergePR(_ pr: InboxPR, method: MergeMethod = .squash) {
-        let nodeId = pr.nodeId
-        let owner = pr.owner
-        let repo = pr.repo
-        let number = pr.number
-        guard let merger = prMerger else { return }
-        guard pr.allowedMergeMethods.contains(method) else {
-            self.lastError = "\(method.displayName) is disabled on \(pr.nameWithOwner)."
-            return
-        }
-        guard !mergingPRs.contains(nodeId) else { return }
-        mergingPRs.insert(nodeId)
-
-        Task {
-            defer { mergingPRs.remove(nodeId) }
-            do {
-                try await merger(owner, repo, number, method)
-                self.lastError = nil
-                self.actionLog?.record(
-                    kind: .merge, outcome: .success, pr: pr,
-                    detail: method.rawValue
-                )
-                self.refreshPR(pr)
-            } catch {
-                self.lastError = error.localizedDescription
-                self.actionLog?.record(
-                    kind: .merge, outcome: .failure, pr: pr,
-                    errorMessage: error.localizedDescription,
-                    detail: method.rawValue
-                )
             }
         }
     }

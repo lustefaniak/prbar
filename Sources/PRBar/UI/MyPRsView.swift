@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MyPRsView: View {
     @Environment(PRPoller.self) private var poller
+    @Environment(ActionQueue.self) private var actionQueue
     @AppStorage(MyDraftHandling.storageKey) private var draftHandlingRaw =
         MyDraftHandling.default.rawValue
     let onSelect: (InboxPR) -> Void
@@ -25,9 +26,8 @@ struct MyPRsView: View {
             isFetching: poller.isFetching,
             lastError: poller.lastError,
             refreshingPRs: poller.refreshingPRs,
-            mergingPRs: poller.mergingPRs,
             onRefreshPR: { poller.refreshPR($0) },
-            onMergePR: { pr, method in poller.mergePR(pr, method: method) },
+            onMergePR: { pr, method in actionQueue.enqueue(pr, kind: .merge(method: method)) },
             onSelect: onSelect
         )
     }

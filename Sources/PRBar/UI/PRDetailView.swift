@@ -25,6 +25,7 @@ struct PRDetailView: View {
 
     @Environment(PRPoller.self) private var poller
     @Environment(ReviewQueueWorker.self) private var queue
+    @Environment(ActionQueue.self) private var actionQueue
     @Environment(DiffStore.self) private var diffStore
 
     @State private var bodyDraft: String = ""
@@ -753,7 +754,7 @@ struct PRDetailView: View {
     /// a dropdown so the user can override.
     @ViewBuilder
     private var actionsSection: some View {
-        let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
+        let isPosting = actionQueue.isBusy(pr.nodeId)
         let aiVerdict = review?.verdict
         // For the action bar: `.comment` verdict ("approve with notes")
         // maps to a GitHub APPROVE review carrying the body. The neutral
@@ -877,7 +878,9 @@ struct PRDetailView: View {
                 }
             }
 
-            if let err = poller.lastError {
+            if case .failed(let msg) = actionQueue.state(for: pr.nodeId) {
+                actionFailedBanner(message: msg)
+            } else if let err = poller.lastError {
                 Text(err)
                     .font(.caption2)
                     .foregroundStyle(.red)
@@ -885,6 +888,38 @@ struct PRDetailView: View {
                     .truncationMode(.middle)
             }
         }
+    }
+
+    /// Shown when the queued review post failed (gh/network error). The
+    /// captured action is retained by `ActionQueue`, so Retry re-runs it
+    /// verbatim without the user re-typing anything.
+    @ViewBuilder
+    private func actionFailedBanner(message: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Posting failed")
+                    .font(.caption.bold())
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            Button("Retry") { actionQueue.retry(pr.nodeId) }
+                .buttonStyle(.borderless)
+                .font(.caption)
+            Button("Dismiss") { actionQueue.dismissFailure(pr.nodeId) }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(8)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
     }
 
     /// One-line summary of what the next click of the primary button
@@ -948,7 +983,7 @@ struct PRDetailView: View {
         // has access. Greyed-out items are kept clickable and just
         // rerun the same call so we don't over-engineer disabled state.
         let postable = postableInlineComments
-        let isPosting = poller.postingReviewPRs.contains(pr.nodeId)
+        let isPosting = actionQueue.isBusy(pr.nodeId)
 
         if primary != .approve {
             Button {
@@ -1090,7 +1125,11 @@ struct PRDetailView: View {
 
     private func postReview(kind: ReviewActionKind, includeInline: Bool) {
         let comments = includeInline ? postableInlineComments : []
-        poller.postReview(pr, kind: kind, body: bodyDraft, comments: comments)
+        actionQueue.enqueue(
+            pr,
+            kind: .review(kind: kind, body: bodyDraft, comments: comments),
+            source: .manual
+        )
         bodyDraft = ""
         bodyDraftSeededForSha = nil
         onPostedAction()
