@@ -11,6 +11,12 @@ struct PRDetailView: View {
     /// based on the user's "Advance to next ready PR" preference. Default
     /// no-op so previews / fallback callers don't need to wire it.
     var onPostedAction: () -> Void = {}
+    /// Called when the user skips this PR for now. The popover records
+    /// the skip for the current review session and advances to the next
+    /// non-skipped review-requested PR (returning to the list, and
+    /// forgetting the skips, once none remain). Default no-op so the
+    /// standalone window / previews don't need to wire it.
+    var onSkip: () -> Void = {}
     /// True when this view is hosted inside `PRDetailWindowView` — the
     /// standalone full-size window. Hides the "open in window" button
     /// (we're already in one) and rebinds the back button to close the
@@ -242,6 +248,15 @@ struct PRDetailView: View {
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.cancelAction)
+
+                if showsReviewActions {
+                    Button(action: onSkip) {
+                        Label("Skip for now", systemImage: "forward.end")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Skip this PR for now — jump to the next review-requested PR. Skipped PRs aren't shown again until the list is empty, then the skips are forgotten.")
+                }
             }
 
             if let summary = inFlightSummary {

@@ -7,6 +7,11 @@ struct PopoverView: View {
 
     @State private var selectedTab: Tab = .myPRs
     @State private var selectedPR: InboxPR?
+    /// Node IDs the user chose to "Skip for now" during the current
+    /// review session. Excluded from sequential auto-advance so the user
+    /// isn't bounced back onto a PR they deferred. Forgotten (cleared)
+    /// once advancing finds nothing left to review — see `advanceToNext`.
+    @State private var skippedNodeIds: Set<String> = []
     @State private var toolResults: [ToolProbeResult] = []
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
     @AppStorage(MyDraftHandling.storageKey) private var myDraftHandlingRaw =
@@ -45,7 +50,8 @@ struct PopoverView: View {
                 PRDetailView(
                     pr: selected,
                     onBack: { selectedPR = nil },
-                    onPostedAction: { advanceOrClose(after: selected) }
+                    onPostedAction: { advanceOrClose(after: selected) },
+                    onSkip: { skip(after: selected) }
                 )
             } else {
                 listContent
@@ -90,8 +96,8 @@ struct PopoverView: View {
 
         Group {
             switch selectedTab {
-            case .myPRs:  MyPRsView(onSelect: { selectedPR = $0 })
-            case .inbox:  InboxView(onSelect: { selectedPR = $0 })
+            case .myPRs:  MyPRsView(onSelect: { select($0) })
+            case .inbox:  InboxView(onSelect: { select($0) })
             case .history: HistoryView()
             }
         }
@@ -191,18 +197,44 @@ struct PopoverView: View {
         }
     }
 
+    /// Open a PR the user explicitly picked from a list. Un-skips it —
+    /// choosing it is an explicit decision to review it now, so it should
+    /// no longer be excluded from later auto-advance.
+    private func select(_ pr: InboxPR) {
+        skippedNodeIds.remove(pr.nodeId)
+        selectedPR = pr
+    }
+
+    /// "Skip for now": remember the PR for this session and jump to the
+    /// next non-skipped review-requested PR. Always advances (unlike
+    /// `advanceOrClose`, this ignores `sequentialFocusMode` — advancing
+    /// is the button's whole purpose).
+    private func skip(after current: InboxPR) {
+        skippedNodeIds.insert(current.nodeId)
+        advanceToNext(after: current)
+    }
+
     /// Pick the next ready PR after the user actioned the current one.
-    /// "Ready" = role is reviewRequested or both, not the same PR, and
-    /// (AI triage is terminal OR the repo has AI off OR no review state
-    /// recorded). Falls back to closing the detail view when there's
-    /// nothing left or the toggle is off.
+    /// Honours `sequentialFocusMode`: off ⇒ return to the list (and end
+    /// the skip session).
     private func advanceOrClose(after current: InboxPR) {
         guard sequentialFocusMode else {
             selectedPR = nil
+            skippedNodeIds.removeAll()
             return
         }
-        let candidates = poller.prs.filter { pr in
+        advanceToNext(after: current)
+    }
+
+    /// Select the next ready, non-skipped PR. "Ready" = role is
+    /// reviewRequested or both, not the same PR, not skipped this
+    /// session, and (AI triage is terminal OR the repo has AI off OR no
+    /// review state recorded). When nothing remains, return to the list
+    /// and forget the session's skips.
+    private func advanceToNext(after current: InboxPR) {
+        let next = poller.prs.first { pr in
             guard pr.nodeId != current.nodeId else { return false }
+            guard !skippedNodeIds.contains(pr.nodeId) else { return false }
             guard pr.role == .reviewRequested || pr.role == .both else { return false }
             guard !pr.isDraft else { return false }
             // Skip already-handled (the user approved, or someone else did).
@@ -214,10 +246,11 @@ struct PopoverView: View {
             case .queued, .running: return false
             }
         }
-        if let next = candidates.first {
+        if let next {
             selectedPR = next
         } else {
             selectedPR = nil
+            skippedNodeIds.removeAll()
         }
     }
 
