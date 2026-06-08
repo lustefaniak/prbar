@@ -136,6 +136,10 @@ struct PRDetailView: View {
                                 CIStatusView(checks: pr.allCheckSummaries, pr: pr)
                                 Divider()
                             }
+                            if !activityEntries.isEmpty {
+                                humanReviewsSection
+                                Divider()
+                            }
                             aiSection
 
                             Section {
@@ -341,9 +345,31 @@ struct PRDetailView: View {
                         .padding(.horizontal, 4)
                         .background(.secondary.opacity(0.15), in: Capsule())
                 }
+                if let mine = pr.myLastReview {
+                    myReviewBadge(mine)
+                }
             }
             .font(.caption)
         }
+    }
+
+    /// "You already reviewed" pill, surfaced at the top so it's visible
+    /// before the user scrolls into the reviews list or reaches for the
+    /// Approve button. Tinted by the verdict of the viewer's latest review.
+    @ViewBuilder
+    private func myReviewBadge(_ review: PRReviewSummary) -> some View {
+        let style = reviewStateStyle(review.state)
+        HStack(spacing: 3) {
+            Image(systemName: style.icon)
+            Text("You \(style.label)")
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(style.color)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(style.color.opacity(0.15), in: Capsule())
+        .help(review.submittedAt.map { "You reviewed \($0.formatted(.relative(presentation: .named)))" }
+            ?? "You already reviewed this PR")
     }
 
     /// PR description rendered as GitHub-flavored Markdown via
@@ -412,6 +438,124 @@ struct PRDetailView: View {
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
+
+    // MARK: - human reviews & comments
+
+    /// One entry in the merged people-activity timeline: either a
+    /// submitted review (verdict + optional body) or a conversation
+    /// comment. Built from `pr.humanReviews` + `pr.issueComments`.
+    private struct ActivityEntry: Identifiable {
+        enum Kind {
+            case review(PRReviewSummary)
+            case comment(PRCommentSummary)
+        }
+        let id: String
+        let date: Date?
+        let kind: Kind
+    }
+
+    /// Reviews and comments merged into one chronological list,
+    /// oldest-first (matches GitHub's conversation order).
+    private var activityEntries: [ActivityEntry] {
+        var items: [ActivityEntry] = []
+        for r in pr.humanReviews {
+            items.append(ActivityEntry(id: r.id, date: r.submittedAt, kind: .review(r)))
+        }
+        for c in pr.issueComments {
+            items.append(ActivityEntry(id: c.id, date: c.createdAt, kind: .comment(c)))
+        }
+        return items.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
+    }
+
+    /// Visual treatment for a review state — shared by the timeline rows
+    /// and the header "You …" badge so the verdict reads the same in both.
+    private func reviewStateStyle(_ state: String) -> (icon: String, label: String, color: Color) {
+        switch state.uppercased() {
+        case "APPROVED":          return ("checkmark.seal.fill", "approved", .green)
+        case "CHANGES_REQUESTED": return ("xmark.octagon.fill", "requested changes", .red)
+        case "DISMISSED":         return ("slash.circle", "review dismissed", .secondary)
+        case "PENDING":           return ("pencil.circle", "pending review", .secondary)
+        default:                  return ("text.bubble", "commented", .secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var humanReviewsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Reviews & Comments")
+                    .font(.subheadline.bold())
+                Spacer()
+                if let mine = pr.myLastReview {
+                    myReviewBadge(mine)
+                }
+            }
+            ForEach(activityEntries) { entry in
+                activityRow(entry)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func activityRow(_ entry: ActivityEntry) -> some View {
+        switch entry.kind {
+        case .review(let r):
+            let style = reviewStateStyle(r.state)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: style.icon)
+                        .foregroundStyle(style.color)
+                        .font(.caption)
+                    Text(r.isFromViewer ? "You" : "@\(r.author)")
+                        .font(.caption.bold())
+                    Text(style.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let d = r.submittedAt {
+                        Text("· \(d.formatted(.relative(presentation: .named)))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                if !r.body.isEmpty {
+                    MarkdownText(raw: r.body)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(style.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        case .comment(let c):
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.bubble")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                    Text(c.isFromViewer ? "You" : "@\(c.author)")
+                        .font(.caption.bold())
+                    Text("commented")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let d = c.createdAt {
+                        Text("· \(d.formatted(.relative(presentation: .named)))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                MarkdownText(raw: c.body)
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 

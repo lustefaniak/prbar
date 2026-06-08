@@ -160,12 +160,76 @@ final class InboxResponseTests: XCTestCase {
         XCTAssertEqual(pr.allCheckSummaries[0].status, "SUCCESS")
     }
 
+    func testMapsHumanReviewsAndComments() throws {
+        let reviews = """
+        [
+          { "state": "COMMENTED", "author": { "login": "alice" }, "submittedAt": "2024-01-01T10:00:00Z", "body": "nit here" },
+          { "state": "APPROVED", "author": { "login": "lustefaniak" }, "submittedAt": "2024-01-02T10:00:00Z", "body": "" },
+          { "state": "COMMENTED", "author": { "login": "bob" }, "submittedAt": "2024-01-03T10:00:00Z", "body": "" }
+        ]
+        """
+        let comments = """
+        [{ "author": { "login": "carol" }, "createdAt": "2024-01-04T10:00:00Z", "body": "ship it" }]
+        """
+        let json = wrapNode(authorLogin: "octocat", reviewerLogin: "lustefaniak", reviewsJson: reviews, commentsJson: comments)
+        let response = try JSONDecoder().decode(InboxResponse.self, from: Data(json.utf8))
+        let pr = InboxPR(node: response.data.search.edges[0].node, viewerLogin: "lustefaniak")
+
+        // bob's empty COMMENTED review is dropped as noise; alice's
+        // commented-with-body and lustefaniak's approval survive.
+        XCTAssertEqual(pr.humanReviews.map(\.author), ["alice", "lustefaniak"])
+        XCTAssertEqual(pr.humanReviews[1].state, "APPROVED")
+        XCTAssertTrue(pr.humanReviews[1].isFromViewer)
+        XCTAssertFalse(pr.humanReviews[0].isFromViewer)
+
+        XCTAssertEqual(pr.myLastReview?.state, "APPROVED")
+
+        XCTAssertEqual(pr.issueComments.map(\.author), ["carol"])
+        XCTAssertNotNil(pr.issueComments[0].createdAt)
+    }
+
+    func testForwardCompatDecodeWithoutReviewArrays() throws {
+        // A payload encoded before humanReviews/issueComments existed.
+        let legacy = """
+        {
+          "nodeId": "PR_1", "owner": "o", "repo": "r", "number": 7,
+          "title": "t", "body": "", "url": "https://github.com/o/r/pull/7",
+          "author": "octocat", "headRef": "h", "baseRef": "main", "headSha": "abc",
+          "isDraft": false, "role": "reviewRequested",
+          "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "checkRollupState": "SUCCESS",
+          "totalAdditions": 1, "totalDeletions": 0, "changedFiles": 1,
+          "hasAutoMerge": false, "allCheckSummaries": [],
+          "allowedMergeMethods": ["squash"], "autoMergeAllowed": false, "deleteBranchOnMerge": false
+        }
+        """
+        let pr = try JSONDecoder().decode(InboxPR.self, from: Data(legacy.utf8))
+        XCTAssertEqual(pr.humanReviews, [])
+        XCTAssertEqual(pr.issueComments, [])
+        XCTAssertNil(pr.myLastReview)
+        XCTAssertEqual(pr.number, 7)
+    }
+
+    func testRoundTripsHumanReviewsThroughCodable() throws {
+        let reviews = """
+        [{ "state": "CHANGES_REQUESTED", "author": { "login": "alice" }, "submittedAt": "2024-01-01T10:00:00Z", "body": "fix" }]
+        """
+        let json = wrapNode(authorLogin: "octocat", reviewerLogin: "lustefaniak", reviewsJson: reviews)
+        let response = try JSONDecoder().decode(InboxResponse.self, from: Data(json.utf8))
+        let pr = InboxPR(node: response.data.search.edges[0].node, viewerLogin: "lustefaniak")
+
+        let encoded = try JSONEncoder().encode(pr)
+        let decoded = try JSONDecoder().decode(InboxPR.self, from: encoded)
+        XCTAssertEqual(decoded.humanReviews, pr.humanReviews)
+    }
+
     // MARK: - fixture helpers
 
     private func wrapNode(
         authorLogin: String,
         reviewerLogin: String?,
-        statusContextsJson: String? = nil
+        statusContextsJson: String? = nil,
+        reviewsJson: String = "[]",
+        commentsJson: String = "[]"
     ) -> String {
         let reviewersJson: String
         if let reviewerLogin {
@@ -180,7 +244,7 @@ final class InboxResponseTests: XCTestCase {
         {
           "data": {
             "viewer": { "login": "lustefaniak" },
-            "search": { "edges": [{ "node": \(prNodeFragment(authorLogin: authorLogin, reviewersJson: reviewersJson, statusContextsJson: contexts)) }] },
+            "search": { "edges": [{ "node": \(prNodeFragment(authorLogin: authorLogin, reviewersJson: reviewersJson, statusContextsJson: contexts, reviewsJson: reviewsJson, commentsJson: commentsJson)) }] },
             "rateLimit": { "remaining": 1, "cost": 1, "resetAt": "x" }
           }
         }
@@ -190,7 +254,9 @@ final class InboxResponseTests: XCTestCase {
     private func prNodeFragment(
         authorLogin: String,
         reviewersJson: String,
-        statusContextsJson: String = "[]"
+        statusContextsJson: String = "[]",
+        reviewsJson: String = "[]",
+        commentsJson: String = "[]"
     ) -> String {
         return """
         {
@@ -214,8 +280,8 @@ final class InboxResponseTests: XCTestCase {
           "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": null,
           "autoMergeRequest": null,
           "reviewRequests": { "nodes": \(reviewersJson) },
-          "reviews": { "nodes": [] },
-          "comments": { "nodes": [] },
+          "reviews": { "nodes": \(reviewsJson) },
+          "comments": { "nodes": \(commentsJson) },
           "commits": {
             "nodes": [{
               "commit": {

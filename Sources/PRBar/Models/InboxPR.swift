@@ -44,6 +44,31 @@ struct CheckSummary: Sendable, Hashable, Codable {
     }
 }
 
+/// A human review submitted on the PR (not the AI triage). Mirrors the
+/// `reviews` GraphQL connection. `isFromViewer` is resolved at map time
+/// (we have `viewerLogin` there) so the UI can flag "you already reviewed"
+/// without re-plumbing the viewer login down to the view.
+struct PRReviewSummary: Sendable, Hashable, Codable, Identifiable {
+    let author: String
+    let state: String          // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
+    let submittedAt: Date?
+    let body: String
+    let isFromViewer: Bool
+
+    var id: String { "review-\(author)-\(submittedAt?.timeIntervalSince1970 ?? 0)-\(state)" }
+}
+
+/// A top-level (issue) comment on the PR conversation — distinct from
+/// review-thread comments. Mirrors the `comments` GraphQL connection.
+struct PRCommentSummary: Sendable, Hashable, Codable, Identifiable {
+    let author: String
+    let createdAt: Date?
+    let body: String
+    let isFromViewer: Bool
+
+    var id: String { "comment-\(author)-\(createdAt?.timeIntervalSince1970 ?? 0)" }
+}
+
 struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     var id: String { nodeId }   // GraphQL global node ID
 
@@ -74,6 +99,15 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     let autoMergeEnabledBy: String?
 
     let allCheckSummaries: [CheckSummary]
+
+    /// Human reviews on this PR, oldest-first (GraphQL `reviews(last:)`
+    /// order). Empty when nobody has reviewed yet. Defaulted so test
+    /// constructors and old cached payloads don't have to supply it.
+    var humanReviews: [PRReviewSummary] = []
+
+    /// Top-level conversation comments, oldest-first. Empty when there's
+    /// no discussion. Defaulted for the same reasons as `humanReviews`.
+    var issueComments: [PRCommentSummary] = []
 
     /// Merge methods the repo allows (driven by repo settings + branch
     /// protection's requiresLinearHistory, both applied server-side by
@@ -107,6 +141,12 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
             && (role == .authored || role == .both)
     }
 
+    /// The viewer's most recent submitted review, if they've reviewed
+    /// this PR at all. Drives the "you already reviewed" indicator.
+    var myLastReview: PRReviewSummary? {
+        humanReviews.last { $0.isFromViewer }
+    }
+
     /// Default merge method for this PR — first allowed in the order
     /// most teams converge on. Used as the primary action of the row's
     /// split button when there's no per-repo "last used" override.
@@ -119,6 +159,53 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
 }
 
 extension InboxPR {
+    private enum CodingKeys: String, CodingKey {
+        case nodeId, owner, repo, number, title, body, url, author
+        case headRef, baseRef, headSha, isDraft, role
+        case mergeable, mergeStateStatus, reviewDecision, checkRollupState
+        case totalAdditions, totalDeletions, changedFiles
+        case hasAutoMerge, autoMergeEnabledBy, allCheckSummaries
+        case allowedMergeMethods, autoMergeAllowed, deleteBranchOnMerge
+        case humanReviews, issueComments
+    }
+
+    /// Explicit decode so payloads cached before `humanReviews` /
+    /// `issueComments` existed still load — Swift's synthesized
+    /// `Decodable` throws `keyNotFound` for a missing key even when the
+    /// property has a default value, so the new arrays use
+    /// `decodeIfPresent ?? []`. Encoding stays synthesized.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.nodeId = try c.decode(String.self, forKey: .nodeId)
+        self.owner = try c.decode(String.self, forKey: .owner)
+        self.repo = try c.decode(String.self, forKey: .repo)
+        self.number = try c.decode(Int.self, forKey: .number)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.body = try c.decode(String.self, forKey: .body)
+        self.url = try c.decode(URL.self, forKey: .url)
+        self.author = try c.decode(String.self, forKey: .author)
+        self.headRef = try c.decode(String.self, forKey: .headRef)
+        self.baseRef = try c.decode(String.self, forKey: .baseRef)
+        self.headSha = try c.decode(String.self, forKey: .headSha)
+        self.isDraft = try c.decode(Bool.self, forKey: .isDraft)
+        self.role = try c.decode(PRRole.self, forKey: .role)
+        self.mergeable = try c.decode(String.self, forKey: .mergeable)
+        self.mergeStateStatus = try c.decode(String.self, forKey: .mergeStateStatus)
+        self.reviewDecision = try c.decodeIfPresent(String.self, forKey: .reviewDecision)
+        self.checkRollupState = try c.decode(String.self, forKey: .checkRollupState)
+        self.totalAdditions = try c.decode(Int.self, forKey: .totalAdditions)
+        self.totalDeletions = try c.decode(Int.self, forKey: .totalDeletions)
+        self.changedFiles = try c.decode(Int.self, forKey: .changedFiles)
+        self.hasAutoMerge = try c.decode(Bool.self, forKey: .hasAutoMerge)
+        self.autoMergeEnabledBy = try c.decodeIfPresent(String.self, forKey: .autoMergeEnabledBy)
+        self.allCheckSummaries = try c.decode([CheckSummary].self, forKey: .allCheckSummaries)
+        self.allowedMergeMethods = try c.decode(Set<MergeMethod>.self, forKey: .allowedMergeMethods)
+        self.autoMergeAllowed = try c.decode(Bool.self, forKey: .autoMergeAllowed)
+        self.deleteBranchOnMerge = try c.decode(Bool.self, forKey: .deleteBranchOnMerge)
+        self.humanReviews = try c.decodeIfPresent([PRReviewSummary].self, forKey: .humanReviews) ?? []
+        self.issueComments = try c.decodeIfPresent([PRCommentSummary].self, forKey: .issueComments) ?? []
+    }
+
     init(node: InboxResponse.PullRequestNode, viewerLogin: String) {
         self.nodeId = node.id
 
@@ -174,5 +261,45 @@ extension InboxPR {
                 url: ctx.detailsUrl ?? ctx.targetUrl
             )
         }
+
+        self.humanReviews = node.reviews.nodes.compactMap { r in
+            guard let login = r.author?.login else { return nil }
+            // Drop comment-only reviews with no body (the empty wrapper
+            // GitHub creates when someone leaves only inline thread
+            // comments) — they'd render as noise. Verdicts (approve /
+            // changes / dismissed) always carry signal even with no body.
+            let st = r.state.uppercased()
+            let isVerdict = (st == "APPROVED" || st == "CHANGES_REQUESTED" || st == "DISMISSED")
+            guard isVerdict || !r.body.isEmpty else { return nil }
+            return PRReviewSummary(
+                author: login,
+                state: r.state,
+                submittedAt: InboxPR.parseISO(r.submittedAt),
+                body: r.body,
+                isFromViewer: login == viewerLogin
+            )
+        }
+        self.issueComments = node.comments.nodes.compactMap { c in
+            guard let login = c.author?.login, !c.body.isEmpty else { return nil }
+            return PRCommentSummary(
+                author: login,
+                createdAt: InboxPR.parseISO(c.createdAt),
+                body: c.body,
+                isFromViewer: login == viewerLogin
+            )
+        }
+    }
+
+    /// Parse a GitHub ISO-8601 timestamp (with or without fractional
+    /// seconds). Constructs the formatter locally — `ISO8601DateFormatter`
+    /// isn't `Sendable`, so a shared static would trip strict concurrency,
+    /// and mapping runs once per PR per poll (not hot).
+    static func parseISO(_ s: String?) -> Date? {
+        guard let s, !s.isEmpty else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
     }
 }

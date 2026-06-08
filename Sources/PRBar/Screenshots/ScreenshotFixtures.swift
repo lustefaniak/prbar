@@ -93,6 +93,30 @@ enum ScreenshotFixtures {
             CheckSummary(typename: "CheckRun", name: "unit-tests",   conclusion: "SUCCESS", status: "COMPLETED", url: nil),
             CheckSummary(typename: "CheckRun", name: "integration",  conclusion: "SUCCESS", status: "COMPLETED", url: nil),
         ],
+        humanReviews: [
+            PRReviewSummary(
+                author: "priya.nair",
+                state: "CHANGES_REQUESTED",
+                submittedAt: Date(timeIntervalSinceNow: -7200),
+                body: "The `CsvRenderer` drops the BOM that Excel needs to detect UTF-8 — please keep it, we hit this in prod last quarter.",
+                isFromViewer: false
+            ),
+            PRReviewSummary(
+                author: "lustefaniak",
+                state: "COMMENTED",
+                submittedAt: Date(timeIntervalSinceNow: -3600),
+                body: "Mechanical split looks clean. Holding approval until Priya's BOM concern is addressed.",
+                isFromViewer: true
+            ),
+        ],
+        issueComments: [
+            PRCommentSummary(
+                author: "marcus.lee",
+                createdAt: Date(timeIntervalSinceNow: -1800),
+                body: "Good catch on the BOM — pushed a fix, `CsvRenderer` now prefixes `\\uFEFF`.",
+                isFromViewer: false
+            ),
+        ],
         allowedMergeMethods: [.squash, .rebase],
         autoMergeAllowed: true,
         deleteBranchOnMerge: true
