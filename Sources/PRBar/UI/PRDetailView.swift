@@ -49,6 +49,10 @@ struct PRDetailView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var bodyExpanded: Bool = false
     @State private var descriptionExpanded: Bool = false
+    /// Reviews & Comments default to collapsed so they don't push the
+    /// action buttons down the page — the collapsed header still shows a
+    /// per-reviewer verdict chip summary. Reset on PR switch.
+    @State private var reviewsExpanded: Bool = false
     @State private var branchCopied: Bool = false
 
     /// Set when the user clicks an annotation row → drives scroll +
@@ -189,6 +193,7 @@ struct PRDetailView: View {
             bodyDraft = ""
             bodyDraftSeededForSha = nil
             includeAISummaryOverride = nil
+            reviewsExpanded = false
             seedBodyDraftFromAIIfNeeded()
         }
         .onChange(of: review?.summaryMarkdown ?? "") { _, _ in
@@ -481,19 +486,71 @@ struct PRDetailView: View {
         }
     }
 
+    /// Latest review per distinct author, oldest-first — drives the
+    /// collapsed chip summary (one chip per reviewer, showing their
+    /// current verdict) without repeating a reviewer who reviewed twice.
+    private var reviewerSummaries: [PRReviewSummary] {
+        var latestByAuthor: [String: PRReviewSummary] = [:]
+        for r in pr.humanReviews { latestByAuthor[r.author] = r }
+        return latestByAuthor.values.sorted {
+            ($0.submittedAt ?? .distantPast) < ($1.submittedAt ?? .distantPast)
+        }
+    }
+
+    @ViewBuilder
+    private func reviewerChip(_ r: PRReviewSummary) -> some View {
+        let style = reviewStateStyle(r.state)
+        HStack(spacing: 2) {
+            Image(systemName: style.icon)
+                .foregroundStyle(style.color)
+            Text(r.isFromViewer ? "you" : r.author)
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption2)
+        .help("\(r.isFromViewer ? "You" : "@\(r.author)") \(style.label)")
+    }
+
     @ViewBuilder
     private var humanReviewsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Reviews & Comments")
-                    .font(.subheadline.bold())
-                Spacer()
-                if let mine = pr.myLastReview {
-                    myReviewBadge(mine)
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { reviewsExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: reviewsExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text("Reviews & Comments")
+                            .font(.subheadline.bold())
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+
+                if !reviewsExpanded {
+                    // Compact glance: one verdict chip per reviewer plus a
+                    // comment count, so the user sees who reviewed and how
+                    // without expanding (and without pushing actions down).
+                    ForEach(reviewerSummaries) { reviewerChip($0) }
+                    if !pr.issueComments.isEmpty {
+                        HStack(spacing: 2) {
+                            Image(systemName: "text.bubble")
+                            Text("\(pr.issueComments.count)")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help("\(pr.issueComments.count) comment\(pr.issueComments.count == 1 ? "" : "s")")
+                    }
+                }
+
+                Spacer(minLength: 4)
             }
-            ForEach(activityEntries) { entry in
-                activityRow(entry)
+
+            if reviewsExpanded {
+                ForEach(activityEntries) { entry in
+                    activityRow(entry)
+                }
             }
         }
     }
@@ -888,7 +945,11 @@ struct PRDetailView: View {
                 .padding(.vertical, 8)
             Divider()
         }
-        .background(.background)
+        // `.bar` material blends with the popover's translucency when the
+        // header pins on scroll. Plain `.background` resolved to a solid
+        // window color, which read as a hard dark band over the popover's
+        // lighter vibrant material.
+        .background(.bar)
     }
 
     /// Action surface, sits directly under the AI verdict + summary +
