@@ -188,6 +188,20 @@ final class InboxResponseTests: XCTestCase {
         XCTAssertNotNil(pr.issueComments[0].createdAt)
     }
 
+    func testDropsMinimizedComments() throws {
+        let comments = """
+        [
+          { "author": { "login": "bot" }, "createdAt": "2024-01-01T10:00:00Z", "body": "outdated preview", "isMinimized": true, "minimizedReason": "OUTDATED" },
+          { "author": { "login": "bot" }, "createdAt": "2024-01-02T10:00:00Z", "body": "current preview", "isMinimized": false, "minimizedReason": null },
+          { "author": { "login": "alice" }, "createdAt": "2024-01-03T10:00:00Z", "body": "dup", "isMinimized": true, "minimizedReason": "DUPLICATE" }
+        ]
+        """
+        let json = wrapNode(authorLogin: "octocat", reviewerLogin: "lustefaniak", commentsJson: comments)
+        let response = try JSONDecoder().decode(InboxResponse.self, from: Data(json.utf8))
+        let pr = InboxPR(node: response.data.search.edges[0].node, viewerLogin: "lustefaniak")
+        XCTAssertEqual(pr.issueComments.map(\.body), ["current preview"])
+    }
+
     func testForwardCompatDecodeWithoutReviewArrays() throws {
         // A payload encoded before humanReviews/issueComments existed.
         let legacy = """

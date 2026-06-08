@@ -281,6 +281,9 @@ extension InboxPR {
         }
         self.issueComments = node.comments.nodes.compactMap { c in
             guard let login = c.author?.login, !c.body.isEmpty else { return nil }
+            // Skip comments GitHub has collapsed (marked duplicate /
+            // outdated / resolved / spam) — they're hidden in the web UI.
+            if c.isMinimized == true { return nil }
             return PRCommentSummary(
                 author: login,
                 createdAt: InboxPR.parseISO(c.createdAt),

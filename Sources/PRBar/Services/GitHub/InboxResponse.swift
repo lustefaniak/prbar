@@ -95,6 +95,11 @@ struct InboxResponse: Decodable, Sendable {
         let author: Author?
         let createdAt: String
         let body: String
+        /// True when a maintainer collapsed the comment (marked duplicate,
+        /// outdated, resolved, off-topic, spam, abuse). We drop these so
+        /// the timeline matches what GitHub shows by default.
+        let isMinimized: Bool?
+        let minimizedReason: String?
     }
 
     struct CommitNode: Decodable, Sendable {

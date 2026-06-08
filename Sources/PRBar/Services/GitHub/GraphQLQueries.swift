@@ -27,7 +27,7 @@ enum GraphQLQueries {
         nodes { state author { login } submittedAt body }
       }
       comments(last: 10) {
-        nodes { author { login } createdAt body }
+        nodes { author { login } createdAt body isMinimized minimizedReason }
       }
       commits(last: 1) {
         nodes {

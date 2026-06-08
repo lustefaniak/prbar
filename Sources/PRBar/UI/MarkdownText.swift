@@ -15,7 +15,7 @@ struct MarkdownText: View {
     let raw: String
 
     var body: some View {
-        Markdown(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        Markdown(MarkdownSanitizer.sanitize(raw).trimmingCharacters(in: .whitespacesAndNewlines))
             .markdownTheme(.prbar)
             .markdownImageProvider(.safeRemote)
             .markdownInlineImageProvider(.safeRemote)
