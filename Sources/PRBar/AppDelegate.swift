@@ -8,7 +8,34 @@ import Sparkle
 /// while AppKit allocates the larger frame (or vice versa).
 enum PRBarPopoverSize {
     static let width: CGFloat = 560
-    static let height: CGFloat = 640
+
+    /// Persisted user height. `0` (unset) means "use the default".
+    static let heightDefaultsKey = "prbarPopoverHeight"
+
+    static let minHeight: CGFloat = 360
+    /// Default to 3/4 of the active screen's usable height.
+    static let defaultHeightFraction: CGFloat = 0.75
+
+    /// Leave a little breathing room below the menu bar so the popover
+    /// doesn't run flush to the screen's bottom edge.
+    static func maxHeight() -> CGFloat {
+        let usable = NSScreen.main?.visibleFrame.height ?? 1000
+        return max(minHeight, usable - 40)
+    }
+
+    static func defaultHeight() -> CGFloat {
+        let usable = NSScreen.main?.visibleFrame.height ?? 1000
+        return min(max(usable * defaultHeightFraction, minHeight), maxHeight())
+    }
+
+    /// Stored height if the user has resized, otherwise the default.
+    /// Clamped to the current screen so a value saved on a larger display
+    /// can't open off-screen on a smaller one.
+    static func resolvedHeight() -> CGFloat {
+        let stored = CGFloat(UserDefaults.standard.double(forKey: heightDefaultsKey))
+        guard stored >= minHeight else { return defaultHeight() }
+        return min(stored, maxHeight())
+    }
 }
 
 /// Owns the menu-bar `NSStatusItem` and the SwiftUI popover. Replaces
@@ -212,6 +239,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Force a UI appearance when `--appearance light|dark` is passed
+        // (preview/screenshot aid). Set before any window shows so the
+        // whole app renders in the chosen mode.
+        if let forced = ScreenshotMode.forcedAppearance {
+            NSApp.appearance = NSAppearance(named: forced == "dark" ? .darkAqua : .aqua)
+        }
+
         // macOS 26's SwiftUI eagerly materializes the `Settings { … }`
         // scene's window at launch — it's already in `NSApp.windows`
         // with `isVisible == true` by the time we get here, even
@@ -349,6 +383,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(reviewLog)
         let host = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: host)
+        if let forced = ScreenshotMode.forcedAppearance {
+            window.appearance = NSAppearance(named: forced == "dark" ? .darkAqua : .aqua)
+        }
         window.title = "\(pr.nameWithOwner) #\(pr.numberString) — \(pr.title)"
         window.setContentSize(NSSize(width: 1100, height: 800))
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -365,6 +402,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func dismissPopover() {
         guard popover != nil, popover.isShown else { return }
         popover.performClose(nil)
+    }
+
+    /// Toggle the popover's open/close animation. The resize handle turns
+    /// it off for the duration of a drag — otherwise NSPopover animates to
+    /// every intermediate height and the popover visibly blinks/flickers.
+    func setPopoverAnimates(_ animates: Bool) {
+        popover?.animates = animates
     }
 
     /// Programmatically open Settings — used by the right-click menu
@@ -476,15 +520,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
+        // NSPopover hosts its own window, so NSApp.appearance doesn't
+        // cascade to it — set the forced preview appearance directly.
+        if let forced = ScreenshotMode.forcedAppearance {
+            popover.appearance = NSAppearance(named: forced == "dark" ? .darkAqua : .aqua)
+        }
         // Without an explicit contentSize, NSPopover sizes to whatever
         // SwiftUI reports as the intrinsic content size — which collapses
         // when the inner ScrollView's natural height is small or the
         // detail view's anchor pushes the layout. Pin to a reasonable
         // popover-shape (560 × 640) so the list scrolls inside its frame.
         popover.contentSize = NSSize(width: PRBarPopoverSize.width,
-                                     height: PRBarPopoverSize.height)
+                                     height: PRBarPopoverSize.resolvedHeight())
+        // PopoverView now owns its own .frame (height is user-resizable
+        // and persisted), so we don't pin it here. `.preferredContentSize`
+        // sizing makes NSPopover follow the SwiftUI frame as it changes,
+        // which is what drives live resize from the drag handle.
         let root = PopoverView()
-            .frame(width: PRBarPopoverSize.width, height: PRBarPopoverSize.height)
             .environment(poller)
             .environment(notifier)
             .environment(queue)
@@ -495,7 +547,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(readiness)
             .environment(actionLog)
             .environment(reviewLog)
-        popover.contentViewController = NSHostingController(rootView: root)
+        let hosting = NSHostingController(rootView: root)
+        hosting.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = hosting
     }
 
     private func installRightClickMenu() {

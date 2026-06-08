@@ -129,7 +129,7 @@ struct PRDetailView: View {
                         // top once they scroll into the diff so Approve
                         // stays one click away. Plain VStack doesn't
                         // honour `pinnedViews`.
-                        LazyVStack(alignment: .leading, spacing: 12, pinnedViews: [.sectionHeaders]) {
+                        LazyVStack(alignment: .leading, spacing: 12) {
                             // Anchor target for the scroll-to-top button.
                             Color.clear.frame(height: 0).id("top")
                             if !pr.body.isEmpty {
@@ -146,15 +146,8 @@ struct PRDetailView: View {
                             }
                             aiSection
 
-                            Section {
-                                diffSection
-                            } header: {
-                                if showsReviewActions {
-                                    stickyActionHeader
-                                } else {
-                                    Divider()
-                                }
-                            }
+                            Divider()
+                            diffSection
                         }
                     }
                     scrollToTopButton(proxy: proxy)
@@ -172,6 +165,15 @@ struct PRDetailView: View {
                         focusedDiffKey = nil
                     }
                 }
+            }
+
+            // Always-visible action footer: the card lives outside the
+            // ScrollView so it stays pinned to the bottom of the popover
+            // regardless of scroll position. Being a separate region (not
+            // an overlay on scrolled content) sidesteps the translucent
+            // bleed-through that plagued the old top-pinned header.
+            if showsReviewActions {
+                actionsCard
             }
         }
         .onAppear {
@@ -938,18 +940,20 @@ struct PRDetailView: View {
     /// `Divider` mirrors the inline divider the section had before
     /// pinning so it doesn't visually fuse with the AI section above.
     @ViewBuilder
-    private var stickyActionHeader: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Divider()
-            actionsSection
-                .padding(.vertical, 8)
-            Divider()
-        }
-        // `.bar` material blends with the popover's translucency when the
-        // header pins on scroll. Plain `.background` resolved to a solid
-        // window color, which read as a hard dark band over the popover's
-        // lighter vibrant material.
-        .background(.bar)
+    /// The review actions, framed as a subtle inset card so they stand
+    /// out from the surrounding sections without a full-width background
+    /// band. No longer a pinned/sticky header — the reviews section
+    /// collapses by default, so the actions already sit high in the view,
+    /// and inline placement sidesteps the "scrolled content bleeds through
+    /// a translucent pinned header" problem the band was there to solve.
+    private var actionsCard: some View {
+        actionsSection
+            .padding(12)
+            .background(.quinary, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(.quaternary, lineWidth: 1)
+            )
     }
 
     /// Action surface, sits directly under the AI verdict + summary +

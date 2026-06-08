@@ -13,6 +13,13 @@ struct PopoverView: View {
     /// once advancing finds nothing left to review — see `advanceToNext`.
     @State private var skippedNodeIds: Set<String> = []
     @State private var toolResults: [ToolProbeResult] = []
+    /// Persisted popover height (points). `0` = unset → use the default
+    /// (3/4 of screen). Updated live while dragging the resize handle.
+    @AppStorage(PRBarPopoverSize.heightDefaultsKey) private var storedHeight: Double = 0
+    /// Live height during a resize drag; nil when not dragging.
+    @State private var dragHeight: CGFloat? = nil
+    /// Captured height at the moment a resize drag begins.
+    @State private var resizeStart: CGFloat? = nil
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
     @AppStorage(MyDraftHandling.storageKey) private var myDraftHandlingRaw =
         MyDraftHandling.default.rawValue
@@ -44,6 +51,58 @@ struct PopoverView: View {
         poller.prs.filter { $0.role == .reviewRequested || $0.role == .both }.count
     }
 
+    /// Effective popover height: the live drag value while resizing,
+    /// otherwise the persisted height (clamped to the screen), otherwise
+    /// the 3/4-screen default.
+    private var popoverHeight: CGFloat {
+        if let dragHeight { return dragHeight }
+        let stored = CGFloat(storedHeight)
+        return stored >= PRBarPopoverSize.minHeight
+            ? min(stored, PRBarPopoverSize.maxHeight())
+            : PRBarPopoverSize.defaultHeight()
+    }
+
+    private func clampHeight(_ h: CGFloat) -> CGFloat {
+        min(max(h, PRBarPopoverSize.minHeight), PRBarPopoverSize.maxHeight())
+    }
+
+    /// Bottom-edge grab handle. Dragging adjusts the popover height live
+    /// (NSPopover follows the SwiftUI frame via `.preferredContentSize`)
+    /// and persists the result so it survives relaunch.
+    private var resizeHandle: some View {
+        RoundedRectangle(cornerRadius: 2.5)
+            .fill(.secondary.opacity(resizeStart != nil ? 0.7 : 0.35))
+            .frame(width: 44, height: 5)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 2)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                // Global coordinate space is essential: the handle lives at
+                // the bottom edge and moves down as the popover grows, so a
+                // local-space drag would chase its own moving anchor and the
+                // popover would flicker. Global space tracks the pointer
+                // independently of the resizing content.
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        if resizeStart == nil {
+                            resizeStart = popoverHeight
+                            (NSApp.delegate as? AppDelegate)?.setPopoverAnimates(false)
+                        }
+                        dragHeight = clampHeight((resizeStart ?? popoverHeight) + value.translation.height)
+                    }
+                    .onEnded { _ in
+                        if let h = dragHeight { storedHeight = Double(h) }
+                        dragHeight = nil
+                        resizeStart = nil
+                        (NSApp.delegate as? AppDelegate)?.setPopoverAnimates(true)
+                    }
+            )
+            .help("Drag to resize the popover height")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let selected = selectedPR {
@@ -56,9 +115,16 @@ struct PopoverView: View {
             } else {
                 listContent
             }
+            resizeHandle
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: PRBarPopoverSize.width, height: popoverHeight)
+        // Dampen NSPopover's default vibrancy. Fully opaque looked flat
+        // and wrong; full translucency let the dark desktop bleed through
+        // and made diff red/green hard to read. A high-opacity window-color
+        // tint keeps a hint of translucency while restoring legibility.
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
         .task {
             // Skip in screenshot mode: probing forks `gh --version`
             // / `claude --version` which adds latency and would render

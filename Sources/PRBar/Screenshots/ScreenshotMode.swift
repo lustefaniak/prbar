@@ -64,4 +64,20 @@ enum ScreenshotMode {
         let raw = args[idx + 1]
         return Stage(rawValue: raw)
     }
+
+    /// Optional forced UI appearance from `--appearance light|dark`. Lets
+    /// us preview/capture either mode regardless of the system setting
+    /// (the `-AppleInterfaceStyle` argument trick only forces dark, never
+    /// light). `"light"` or `"dark"`; nil ⇒ follow the system.
+    static let forcedAppearance: String? = parseAppearance()
+
+    private static func parseAppearance() -> String? {
+        let args = CommandLine.arguments
+        guard let idx = args.firstIndex(of: "--appearance"), idx + 1 < args.count else { return nil }
+        switch args[idx + 1].lowercased() {
+        case "light", "aqua": return "light"
+        case "dark", "darkaqua": return "dark"
+        default: return nil
+        }
+    }
 }
