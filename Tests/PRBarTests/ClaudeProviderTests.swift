@@ -78,6 +78,29 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertEqual(ClaudeProvider.resolveCwd(bundle: bundle, options: opts)?.path, "/wd")
     }
 
+    func testSandboxedModeEnablesSandboxAllowsBashAndScopesAddDirs() {
+        let bundle = makeBundle(toolMode: .sandboxed, workdir: URL(fileURLWithPath: "/wt/sub"))
+        var opts = makeOptions(toolMode: .sandboxed)
+        opts.repoBarePath = URL(fileURLWithPath: "/bare/repo.git")
+        let args = ClaudeProvider.buildArgs(bundle: bundle, options: opts)
+        let s = args.joined(separator: " ")
+        XCTAssertTrue(s.contains("--settings"))
+        XCTAssertTrue(s.contains("\"sandbox\""))
+        XCTAssertTrue(s.contains("\"enabled\":true"))
+        XCTAssertTrue(s.contains("--allowedTools Bash,Read,Glob,Grep"))
+        XCTAssertTrue(s.contains("--disallowedTools Edit,Write,Task,Agent,NotebookEdit,TodoWrite"))
+        XCTAssertTrue(s.contains("--add-dir /wt/sub"))
+        XCTAssertTrue(s.contains("--add-dir /bare/repo.git"))
+        // Plan mode still applies (verified safe alongside the sandbox).
+        XCTAssertTrue(args.contains("plan"))
+    }
+
+    func testSandboxedModeCwdIsWorkdir() {
+        let bundle = makeBundle(toolMode: .sandboxed, workdir: URL(fileURLWithPath: "/wt"))
+        let cwd = ClaudeProvider.resolveCwd(bundle: bundle, options: makeOptions(toolMode: .sandboxed))
+        XCTAssertEqual(cwd?.path, "/wt")
+    }
+
     // MARK: - helpers
 
     private func makeBundle(

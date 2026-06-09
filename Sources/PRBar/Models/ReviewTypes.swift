@@ -50,12 +50,22 @@ enum AnnotationSeverity: String, Codable, Sendable, Hashable, CaseIterable {
 }
 
 enum ToolMode: String, Codable, Sendable, Hashable, CaseIterable {
-    /// Default. Read/Glob/Grep + WebFetch/WebSearch + per-subfolder MCP
-    /// tools. `--permission-mode plan` blocks any state mutation.
+    /// Default (claude only). The AI reviews against a real, OS-sandboxed
+    /// read-only worktree provisioned at the PR's head: it explores the
+    /// code itself with `git diff`/grep/read instead of having the diff
+    /// inlined into the prompt. The macOS Seatbelt sandbox enforces
+    /// read-only + no-network, so broad `Bash` is safe (the boundary
+    /// contains it). Falls back to `.none` when no checkout is available
+    /// or for non-claude providers.
+    case sandboxed
+
+    /// Read/Glob/Grep + WebFetch/WebSearch + per-subfolder MCP tools, with
+    /// the diff still inlined. `--permission-mode plan` blocks mutation.
     case minimal
 
-    /// Opt-in. No tools at all. Useful for repos where filesystem access
-    /// is undesirable (e.g. paranoid mode, repos not yet cloned locally).
+    /// No tools at all; the diff is inlined. Used as the fallback when a
+    /// checkout can't be provisioned, and for repos where filesystem
+    /// access is undesirable.
     case none
 }
 

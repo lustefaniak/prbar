@@ -156,6 +156,54 @@ final class RepoCheckoutManagerTests: XCTestCase {
         await manager.release(h2)
     }
 
+    func testSandboxedProvisionFetchesBaseAndConeSparses() async throws {
+        // main stays at the initial commit (the base); a feature commit
+        // (the head) adds files under alpha/ and beta/.
+        try await runGit(in: fixtureRepoPath, ["checkout", "-q", "-b", "feature"])
+        for dir in ["alpha", "beta"] {
+            let d = fixtureRepoPath.appendingPathComponent(dir)
+            try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+            try "x\n".write(to: d.appendingPathComponent("f.txt"), atomically: true, encoding: .utf8)
+        }
+        try await runGit(in: fixtureRepoPath, ["add", "."])
+        try await runGit(in: fixtureRepoPath, ["commit", "-q", "-m", "feature"])
+        let headSha = try await capturedGit(in: fixtureRepoPath, ["rev-parse", "HEAD"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseShaExpected = try await capturedGit(in: fixtureRepoPath, ["rev-parse", "main"])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Rebuild the bare clone so it carries both branches.
+        try? FileManager.default.removeItem(at: fixtureRepoBare)
+        try await runGit(in: fixtureRoot, [
+            "clone", "--bare", "--no-local", "--depth=50",
+            fixtureRepoPath.path, fixtureRepoBare.path,
+        ])
+
+        let manager = RepoCheckoutManager(storageBase: managerStorage)
+        try await seedBareClone(manager: manager, owner: "fixture", repo: "test")
+
+        let handle = try await manager.provision(
+            owner: "fixture", repo: "test",
+            headSha: headSha, subpath: "",
+            baseRef: "main", sparseDirs: ["alpha"]   // deliberately only alpha
+        )
+
+        // Base ref resolved to a SHA.
+        XCTAssertEqual(handle.baseSha, baseShaExpected)
+        // Cone sparse: alpha materialized on disk, beta excluded.
+        let alpha = handle.worktreePath.appendingPathComponent("alpha/f.txt")
+        let beta = handle.worktreePath.appendingPathComponent("beta/f.txt")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: alpha.path), "alpha should be in the sparse cone")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: beta.path), "beta should be excluded by the cone")
+        // `git diff <base> HEAD` still sees the whole change (objects, not
+        // the worktree) — both files appear despite beta being sparse-out.
+        let diff = try await capturedGit(in: handle.worktreePath, ["diff", handle.baseSha, "HEAD", "--name-only"])
+        XCTAssertTrue(diff.contains("alpha/f.txt"))
+        XCTAssertTrue(diff.contains("beta/f.txt"))
+
+        await manager.release(handle)
+    }
+
     // MARK: - helpers
 
     private func runGit(in cwd: URL, _ args: [String]) async throws {

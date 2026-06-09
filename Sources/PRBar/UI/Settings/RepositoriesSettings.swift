@@ -351,7 +351,8 @@ struct RepoConfigEditor: View {
                     .help("Overrides the app-wide default for this repo. Per-PR \"Re-run with…\" can still override this for a single run.")
                     Picker("Tool mode", selection: toolModeBinding) {
                         Text("(use global default)").tag("default")
-                        Text("Minimal — read-only code exploration").tag("minimal")
+                        Text("Sandboxed — explore a real checkout via git (claude)").tag("sandboxed")
+                        Text("Minimal — read-only code exploration, inlined diff").tag("minimal")
                         Text("None — pure prompt, no exploration").tag("none")
                     }
                     VStack(alignment: .leading, spacing: 4) {
@@ -443,15 +444,17 @@ struct RepoConfigEditor: View {
             get: {
                 guard let mode = config.toolModeOverride else { return "default" }
                 switch mode {
-                case .minimal: return "minimal"
-                case .none:    return "none"
+                case .sandboxed: return "sandboxed"
+                case .minimal:   return "minimal"
+                case .none:      return "none"
                 }
             },
             set: { tag in
                 switch tag {
-                case "minimal": config.toolModeOverride = .minimal
-                case "none":    config.toolModeOverride = ToolMode.none
-                default:        config.toolModeOverride = nil
+                case "sandboxed": config.toolModeOverride = .sandboxed
+                case "minimal":   config.toolModeOverride = .minimal
+                case "none":      config.toolModeOverride = ToolMode.none
+                default:          config.toolModeOverride = nil
                 }
             }
         )

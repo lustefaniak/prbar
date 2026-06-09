@@ -121,6 +121,27 @@ final class ContextAssemblerTests: XCTestCase {
         XCTAssertFalse(afterDiff.contains("\n##"))
     }
 
+    func testSandboxedModeOmitsInlineDiffAndGivesGitGuidance() throws {
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(),
+            subdiff: subdiff(),
+            diffText: "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+SECRET_INLINE_MARKER\n",
+            toolMode: .sandboxed,
+            workdir: URL(fileURLWithPath: "/tmp"),
+            baseSha: "abc123base"
+        )
+        // The diff text must not be inlined into the prompt at all.
+        XCTAssertFalse(bundle.userPrompt.contains("SECRET_INLINE_MARKER"))
+        XCTAssertFalse(bundle.userPrompt.contains("## Diff"))
+        XCTAssertFalse(bundle.userPrompt.contains("```diff"))
+        // Instead the agent is told to explore via git against the base.
+        XCTAssertTrue(bundle.userPrompt.contains("git diff abc123base HEAD"))
+        XCTAssertTrue(bundle.systemPrompt.isEmpty == false)
+        XCTAssertEqual(bundle.baseSha, "abc123base")
+        // The changed-file list still renders (derived from hunks).
+        XCTAssertTrue(bundle.userPrompt.contains("Files changed"))
+    }
+
     func testLanguageOverrideAppliedToSystemPrompt() throws {
         let goSubdiff = Subdiff(
             subpath: "kernel-billing",

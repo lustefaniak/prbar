@@ -159,6 +159,36 @@ struct ClaudeProvider: ReviewProvider {
         }
 
         switch options.toolMode {
+        case .sandboxed:
+            // The AI explores a real worktree with git/grep/read instead of
+            // an inlined diff. The macOS Seatbelt sandbox enforces
+            // read-only (writes only inside the disposable worktree cwd)
+            // and no-network at the OS level, so broad `Bash` is safe — the
+            // boundary contains it. Verified headless under
+            // `--permission-mode plan`: sandboxed git/grep/curl probes ran
+            // without prompts; writes outside cwd and network were blocked.
+            // `autoAllowBashIfSandboxed` (default) avoids per-command
+            // prompts that would otherwise auto-deny in `-p` mode. The
+            // mutation/agent tools stay disallowed as defense in depth.
+            // network.allowedDomains:[] requests no egress (the blobs are
+            // prefetched, so the review needs none); note user-level
+            // settings may still merge in their own allowed domains.
+            args.append(contentsOf: [
+                "--settings",
+                #"{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":[]}}}"#,
+            ])
+            args.append(contentsOf: ["--allowedTools", "Bash,Read,Glob,Grep"])
+            args.append(contentsOf: [
+                "--disallowedTools",
+                "Edit,Write,Task,Agent,NotebookEdit,TodoWrite",
+            ])
+            args.append(contentsOf: ["--add-dir", bundle.workdir.path])
+            if let bare = options.repoBarePath {
+                args.append(contentsOf: ["--add-dir", bare.path])
+            }
+            for extra in options.additionalAddDirs {
+                args.append(contentsOf: ["--add-dir", extra.path])
+            }
         case .none:
             // Best-effort deny list. The hardest guarantee is that --permission-mode
             // plan blocks state-changing tools regardless. We additionally disallow
@@ -185,7 +215,7 @@ struct ClaudeProvider: ReviewProvider {
 
     static func resolveCwd(bundle: PromptBundle, options: ProviderOptions) -> URL? {
         switch options.toolMode {
-        case .minimal:
+        case .sandboxed, .minimal:
             return bundle.workdir
         case .none:
             // Fresh empty temp dir — even if a tool sneaks through there's

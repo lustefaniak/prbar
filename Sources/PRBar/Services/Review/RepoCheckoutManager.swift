@@ -91,10 +91,31 @@ actor RepoCheckoutManager {
     /// First call for a given (owner, repo) does a bare clone (slow,
     /// ~MB-scale). Subsequent calls reuse the bare clone and only fetch
     /// the new SHA.
-    func provision(owner: String, repo: String, headSha: String, subpath: String) async throws -> Handle {
+    func provision(
+        owner: String,
+        repo: String,
+        headSha: String,
+        subpath: String,
+        baseRef: String = "",
+        sparseDirs: [String] = []
+    ) async throws -> Handle {
         try await ensureBareClone(owner: owner, repo: repo)
         try await fetchSha(owner: owner, repo: repo, headSha: headSha)
-        let worktree = try await addWorktree(owner: owner, repo: repo, headSha: headSha)
+        // `.sandboxed` reviews diff against the base offline, so fetch the
+        // base branch tip and resolve it to a SHA. Best-effort: an empty
+        // result just means the prompt falls back to `git diff HEAD~1 HEAD`.
+        let baseSha = baseRef.isEmpty
+            ? ""
+            : await fetchBaseRef(owner: owner, repo: repo, baseRef: baseRef, headSha: headSha)
+        let worktree = try await addWorktree(
+            owner: owner, repo: repo, headSha: headSha, sparseDirs: sparseDirs
+        )
+        // Fault the changed-file blobs (both sides) into the bare object
+        // store while we still have network, so the sandboxed review can
+        // run `git diff <base> HEAD` / `git show <base>:<path>` offline.
+        if !baseSha.isEmpty {
+            await warmDiffBlobs(worktree: worktree, baseSha: baseSha)
+        }
         let workdir = subpath.isEmpty
             ? worktree
             : worktree.appendingPathComponent(subpath, isDirectory: true)
@@ -102,6 +123,7 @@ actor RepoCheckoutManager {
             owner: owner,
             repo: repo,
             headSha: headSha,
+            baseSha: baseSha,
             barePath: barePath(owner: owner, repo: repo),
             worktreePath: worktree,
             workdir: workdir
@@ -207,14 +229,26 @@ actor RepoCheckoutManager {
         }
     }
 
-    private func addWorktree(owner: String, repo: String, headSha: String) async throws -> URL {
+    private func addWorktree(
+        owner: String,
+        repo: String,
+        headSha: String,
+        sparseDirs: [String] = []
+    ) async throws -> URL {
         let bare = barePath(owner: owner, repo: repo)
         let suffix = "\(headSha.prefix(12))-\(UUID().uuidString.prefix(8))"
         let worktree = worktreesDir.appendingPathComponent(suffix, isDirectory: true)
-        let result = try await runGit(args: [
-            "--git-dir", bare.path,
-            "worktree", "add", "--detach", worktree.path, headSha,
-        ])
+        // A full checkout faults every blob at head — fine for small repos
+        // but ruinous on a monorepo. When we know the changed directories
+        // (`.sandboxed` mode), cone-sparse the checkout to just those so
+        // only the relevant slice is materialized. `git diff`/`git show`
+        // still see the whole tree (they read objects, not the worktree),
+        // so the agent's diff is complete regardless of the sparse cone.
+        let dirs = sparseDirs.filter { !$0.isEmpty }
+        var addArgs = ["--git-dir", bare.path, "worktree", "add"]
+        if !dirs.isEmpty { addArgs.append("--no-checkout") }
+        addArgs += ["--detach", worktree.path, headSha]
+        let result = try await runGit(args: addArgs)
         guard result.succeeded else {
             throw CheckoutError.execFailed(
                 command: "git worktree add",
@@ -222,7 +256,48 @@ actor RepoCheckoutManager {
                 exitCode: result.exitCode
             )
         }
+        if !dirs.isEmpty {
+            // Restrict the cone to the listed dirs (plus top-level files),
+            // then populate the working tree — `--no-checkout` left it
+            // empty, so an explicit checkout is required to write the cone.
+            _ = try? await runGit(args: ["-C", worktree.path, "sparse-checkout", "init", "--cone"])
+            let setResult = try await runGit(
+                args: ["-C", worktree.path, "sparse-checkout", "set"] + dirs
+            )
+            if !setResult.succeeded {
+                // Sparse setup failed — fall back to a full checkout so the
+                // worktree is at least usable.
+                _ = try? await runGit(args: ["-C", worktree.path, "sparse-checkout", "disable"])
+            }
+            _ = try? await runGit(args: ["-C", worktree.path, "checkout"])
+        }
         return worktree
+    }
+
+    /// Fetch the base branch tip into a per-headSha private ref and resolve
+    /// it to a commit SHA. Returns "" on any failure (caller proceeds
+    /// without a base — the prompt degrades to `git diff HEAD~1 HEAD`).
+    private func fetchBaseRef(
+        owner: String, repo: String, baseRef: String, headSha: String
+    ) async -> String {
+        let bare = barePath(owner: owner, repo: repo)
+        let localRef = "refs/prbar/base-\(headSha.prefix(12))"
+        let fetch = try? await runGit(args: [
+            "--git-dir", bare.path, "fetch", "origin",
+            "+\(baseRef):\(localRef)", "--depth=50", "--filter=blob:none",
+        ])
+        guard fetch?.succeeded == true else { return "" }
+        let rev = try? await runGit(args: ["--git-dir", bare.path, "rev-parse", localRef])
+        guard rev?.succeeded == true else { return "" }
+        return (rev?.stdoutString ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Run `git diff <base> HEAD` once with network available so every
+    /// changed-file blob (both sides) faults into the bare object store.
+    /// Best-effort — failures just mean the sandboxed diff may need a blob
+    /// it can't fetch, which the agent surfaces as a git error.
+    private func warmDiffBlobs(worktree: URL, baseSha: String) async {
+        _ = try? await runGit(args: ["-C", worktree.path, "diff", baseSha, "HEAD"])
     }
 
     private func runGit(args: [String]) async throws -> ProcessResult {
@@ -238,6 +313,9 @@ actor RepoCheckoutManager {
         let owner: String
         let repo: String
         let headSha: String
+        /// Resolved base commit SHA for `.sandboxed` diffs; "" when not
+        /// provisioned with a base ref.
+        var baseSha: String = ""
         let barePath: URL
         let worktreePath: URL
         let workdir: URL

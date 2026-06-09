@@ -28,6 +28,7 @@ enum ContextAssembler {
         ciFailures: [CIFailureLog] = [],
         toolMode: ToolMode,
         workdir: URL,
+        baseSha: String = "",
         customSystemPrompt: String? = nil,
         replaceBaseSystemPrompt: Bool = false,
         priorReviews: [PriorReview] = []
@@ -51,6 +52,7 @@ enum ContextAssembler {
             existingComments: existingComments,
             ciFailures: ciFailures,
             toolMode: toolMode,
+            baseSha: baseSha,
             priorReviews: priorReviews
         )
         return PromptBundle(
@@ -58,7 +60,8 @@ enum ContextAssembler {
             userPrompt: userPrompt,
             workdir: workdir,
             prNodeId: pr.nodeId,
-            subpath: subdiff.subpath
+            subpath: subdiff.subpath,
+            baseSha: baseSha
         )
     }
 
@@ -71,6 +74,7 @@ enum ContextAssembler {
         existingComments: [ExistingReviewComment],
         ciFailures: [CIFailureLog],
         toolMode: ToolMode,
+        baseSha: String = "",
         priorReviews: [PriorReview] = []
     ) -> String {
         var out = ""
@@ -102,8 +106,34 @@ enum ContextAssembler {
             out += ciFailuresSection(ciFailures)
             out += "\n"
         }
-        out += diffSection(diffText)
+        if toolMode == .sandboxed {
+            out += exploreSection(baseSha: baseSha, subpath: subdiff.subpath)
+        } else {
+            out += diffSection(diffText)
+        }
         return out
+    }
+
+    /// Replaces the inline diff in `.sandboxed` mode. The PR head is
+    /// checked out in the worktree (cwd) and the agent has git + read
+    /// tools, so it inspects the change itself rather than reading a
+    /// multi-thousand-line blob from the prompt.
+    private static func exploreSection(baseSha: String, subpath: String) -> String {
+        var s = "## Reviewing the change\n\n"
+        s += "The PR head is checked out in your working directory "
+        s += subpath.isEmpty ? "(repo root)" : "(`\(subpath)`)"
+        s += ". The diff is **not** inlined — inspect it yourself with git:\n\n"
+        if !baseSha.isEmpty {
+            s += "- Full change: `git diff \(baseSha) HEAD`"
+            s += subpath.isEmpty ? "\n" : " — scope to this folder with a trailing `-- .`\n"
+            s += "- One file: `git diff \(baseSha) HEAD -- <path>`; the base version of a file is `git show \(baseSha):<path>`\n"
+        } else {
+            s += "- Change: `git diff HEAD~1 HEAD` (base SHA was unavailable)\n"
+        }
+        s += "- Read or grep any file at head directly for surrounding context.\n"
+        s += "- There is no network access and nothing to fix — review only; everything you need is local.\n\n"
+        s += "The changed files are listed above; review only the PR's changes.\n"
+        return s
     }
 
     /// Render the chain of internal review drafts the user accumulated
@@ -151,6 +181,17 @@ enum ContextAssembler {
 
     private static func toolModeIntro(_ mode: ToolMode) -> String {
         switch mode {
+        case .sandboxed:
+            return """
+            You are reviewing a real checkout of this PR's head commit in \
+            your working directory, with read-only `Bash` (git, grep, \
+            cat, find) plus Read/Glob/Grep. Inspect the change with \
+            `git diff` (commands below) and read surrounding files for \
+            context as needed — the diff is not inlined. The environment \
+            is OS-sandboxed: read-only, no network. **Never attempt to fix \
+            the PR.** If the change is too opaque to judge after a few \
+            lookups, return verdict "abstain".
+            """
         case .minimal:
             return """
             You have read-only access to files under `./` (the subfolder \
@@ -190,7 +231,7 @@ enum ContextAssembler {
             s += "Repo root."
         } else {
             s += "`\(subdiff.subpath)`"
-            if toolMode == .minimal {
+            if toolMode == .minimal || toolMode == .sandboxed {
                 s += " (cwd is set here — `./CLAUDE.md`, `./.mcp.json`, and walk-up configs apply)"
             }
         }

@@ -167,8 +167,12 @@ final class ReviewQueueWorker {
     /// wins over this; per-run override (set on enqueue) wins over both.
     var defaultProviderId: ProviderID = .claude
 
-    /// What tool-access mode the provider runs in.
-    var toolMode: ToolMode = .none
+    /// What tool-access mode the provider runs in. Defaults to
+    /// `.sandboxed`: claude reviews against a real OS-sandboxed worktree
+    /// and explores the change with git rather than reading an inlined
+    /// diff. Falls back to `.none` (inline diff) when no checkout can be
+    /// provisioned or for non-claude providers.
+    var toolMode: ToolMode = .sandboxed
 
     /// Closure that fetches the unified diff for a PR. Injected so tests
     /// don't need a real `gh` install.
@@ -577,7 +581,16 @@ final class ReviewQueueWorker {
                 return
             }
             let diffText = try await diffFetcher(pr.owner, pr.repo, pr.number)
-            let effectiveToolMode = config.toolModeOverride ?? toolMode
+            // Provider resolution: per-run override > repo override > app default.
+            let chosenProviderId = item.providerOverride
+                ?? config.providerOverride
+                ?? defaultProviderId
+            var effectiveToolMode = config.toolModeOverride ?? toolMode
+            // `.sandboxed` relies on claude's OS sandbox + git exploration;
+            // other providers fall back to the inlined-diff path.
+            if effectiveToolMode == .sandboxed && chosenProviderId != .claude {
+                effectiveToolMode = .none
+            }
             let subdiffs = MonorepoSplitter.split(diffText: diffText, config: config)
             guard !subdiffs.isEmpty else {
                 PRBarLog.triage.notice("run abort reason=empty-diff pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
@@ -593,17 +606,33 @@ final class ReviewQueueWorker {
             let subpathSummary = subdiffs.map { $0.subpath.isEmpty ? "<root>" : $0.subpath }.joined(separator: ",")
             PRBarLog.triage.notice("run start pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) toolMode=\(effectiveToolMode.rawValue, privacy: .public) split=\(config.splitMode.rawValue, privacy: .public) subdiffs=\(subdiffs.count, privacy: .public) subpaths=[\(subpathSummary, privacy: .public)] priorChain=\(priorAtStart.count, privacy: .public) diffBytes=\(diffText.utf8.count, privacy: .public)")
 
-            // For .minimal mode, provision one worktree at the PR's headSha
-            // and reuse it across all subreviews of this PR (they all
-            // reference the same SHA, just different subpaths).
-            let sharedHandle: RepoCheckoutManager.Handle?
-            if effectiveToolMode == .minimal, let mgr = checkoutManager {
-                sharedHandle = try await mgr.provision(
-                    owner: pr.owner, repo: pr.repo,
-                    headSha: pr.headSha, subpath: ""
-                )
-            } else {
-                sharedHandle = nil
+            // Provision one worktree at the PR's head and reuse it across
+            // all subreviews (same SHA, different subpaths). `.sandboxed`
+            // additionally fetches the base and cone-sparses to the changed
+            // dirs so the agent can diff/explore offline without faulting
+            // an entire monorepo.
+            var sharedHandle: RepoCheckoutManager.Handle? = nil
+            if effectiveToolMode == .minimal || effectiveToolMode == .sandboxed,
+               let mgr = checkoutManager {
+                let sparseDirs = effectiveToolMode == .sandboxed
+                    ? Self.changedTopDirs(subdiffs)
+                    : []
+                do {
+                    sharedHandle = try await mgr.provision(
+                        owner: pr.owner, repo: pr.repo,
+                        headSha: pr.headSha, subpath: "",
+                        baseRef: effectiveToolMode == .sandboxed ? pr.baseRef : "",
+                        sparseDirs: sparseDirs
+                    )
+                } catch {
+                    // Checkout unavailable (no git/gh, network, etc.) — degrade
+                    // to the inlined-diff path so the review still runs.
+                    PRBarLog.triage.error("provision failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) — falling back to inline diff: \(String(describing: error), privacy: .public)")
+                    effectiveToolMode = .none
+                }
+            }
+            if effectiveToolMode == .sandboxed && sharedHandle == nil {
+                effectiveToolMode = .none
             }
             defer {
                 if let h = sharedHandle, let mgr = checkoutManager {
@@ -628,10 +657,6 @@ final class ReviewQueueWorker {
                 ciFailures = []
             }
 
-            // Provider resolution: per-run override > repo override > app default.
-            let chosenProviderId = item.providerOverride
-                ?? config.providerOverride
-                ?? defaultProviderId
             let chosenProvider: ReviewProvider
             if let lookup = providerLookup {
                 chosenProvider = lookup(chosenProviderId)
@@ -650,6 +675,7 @@ final class ReviewQueueWorker {
                     ciFailures: ciFailures,
                     toolMode: effectiveToolMode,
                     workdir: workdir,
+                    baseSha: sharedHandle?.baseSha ?? "",
                     customSystemPrompt: config.customSystemPrompt,
                     replaceBaseSystemPrompt: config.replaceBaseSystemPrompt,
                     priorReviews: priorChainForPrompt
@@ -658,6 +684,7 @@ final class ReviewQueueWorker {
                     model: nil,
                     toolMode: effectiveToolMode,
                     additionalAddDirs: [],
+                    repoBarePath: sharedHandle?.barePath,
                     maxToolCalls: config.maxToolCallsPerSubreview,
                     maxCostUsd: config.maxCostUsdPerSubreview,
                     timeout: .seconds(120),
@@ -756,6 +783,24 @@ final class ReviewQueueWorker {
     /// worktree, that's `<worktree>/<subpath>` (or worktree root for the
     /// trivial single-subdiff case). In `.none` mode, just an empty temp
     /// dir per subreview — there's nothing to read either way.
+    /// Parent directories of the PR's changed files, used to cone-sparse
+    /// the `.sandboxed` worktree so a monorepo checkout stays bounded to
+    /// the relevant slice. Root-level files (no parent) come for free via
+    /// cone mode, so they're omitted here. `git diff`/`git show` still see
+    /// the whole tree regardless of the sparse cone.
+    static func changedTopDirs(_ subdiffs: [Subdiff]) -> [String] {
+        var dirs = Set<String>()
+        for sd in subdiffs {
+            for path in sd.filePaths {
+                let comps = path.split(separator: "/")
+                if comps.count > 1 {
+                    dirs.insert(comps.dropLast().joined(separator: "/"))
+                }
+            }
+        }
+        return Array(dirs)
+    }
+
     private func resolveWorkdir(handle: RepoCheckoutManager.Handle?, subpath: String) -> URL {
         if let handle {
             return subpath.isEmpty

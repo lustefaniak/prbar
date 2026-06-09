@@ -19,6 +19,11 @@ struct PromptBundle: Sendable {
     /// Convenience metadata; not part of the prompt itself.
     let prNodeId: String
     let subpath: String          // empty string = "repo root"
+
+    /// `.sandboxed` mode only: the PR base commit SHA, so the prompt can
+    /// tell the agent the range to explore (`git diff <baseSha> HEAD`).
+    /// Empty when not applicable.
+    var baseSha: String = ""
 }
 
 struct ProviderOptions: Sendable {
@@ -31,6 +36,12 @@ struct ProviderOptions: Sendable {
     /// Extra `--add-dir` paths beyond the workdir (e.g. for cross-subfolder
     /// shared schemas). Empty = just the workdir.
     var additionalAddDirs: [URL] = []
+
+    /// `.sandboxed` mode: the shared bare clone backing the worktree. The
+    /// worktree's git objects live here, so it must be added to the
+    /// allowed dirs (the worktree's `.git` is just a pointer into it).
+    /// Nil otherwise.
+    var repoBarePath: URL? = nil
 
     /// Hard cap; provider kills the subprocess if exceeded mid-run.
     var maxToolCalls: Int = 10
