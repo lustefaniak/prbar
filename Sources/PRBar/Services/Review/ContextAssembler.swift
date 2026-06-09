@@ -184,13 +184,13 @@ enum ContextAssembler {
         case .sandboxed:
             return """
             You are reviewing a real checkout of this PR's head commit in \
-            your working directory, with read-only `Bash` (git, grep, \
-            cat, find) plus Read/Glob/Grep. Inspect the change with \
-            `git diff` (commands below) and read surrounding files for \
-            context as needed — the diff is not inlined. The environment \
-            is OS-sandboxed: read-only, no network. **Never attempt to fix \
-            the PR.** If the change is too opaque to judge after a few \
-            lookups, return verdict "abstain".
+            your working directory, with read-only shell access (git, \
+            grep, cat, find) and the ability to read any file. Inspect the \
+            change with `git diff` (commands below) and read surrounding \
+            files for context as needed — the diff is not inlined. The \
+            environment is OS-sandboxed: read-only, no network. **Never \
+            attempt to fix the PR.** If the change is too opaque to judge \
+            after a few lookups, return verdict "abstain".
             """
         case .minimal:
             return """

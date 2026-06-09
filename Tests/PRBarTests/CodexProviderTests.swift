@@ -26,6 +26,24 @@ final class CodexProviderTests: XCTestCase {
         XCTAssertFalse(args.contains("--model"), "no model override → no --model flag")
     }
 
+    func testSandboxedModeStaysReadOnlyAndScopedToWorktree() {
+        // In `.sandboxed`, the workdir is a real worktree and codex explores
+        // it with git inside its own read-only sandbox. No argv change vs
+        // other modes — the read-only + --cd boundary already does the job.
+        var opts = makeOptions(model: nil)
+        opts.toolMode = .sandboxed
+        let args = CodexProvider.buildArgs(
+            options: opts,
+            schemaPath: "/tmp/schema.json",
+            lastMessagePath: "/tmp/last.txt",
+            workdir: URL(fileURLWithPath: "/wt/sub")
+        )
+        XCTAssertTrue(args.contains("--sandbox"))
+        XCTAssertTrue(args.contains("read-only"))
+        XCTAssertTrue(args.contains("--cd"))
+        XCTAssertTrue(args.contains("/wt/sub"))
+    }
+
     func testBuildArgsAddsModelWhenSet() {
         let opts = makeOptions(model: "gpt-5")
         let args = CodexProvider.buildArgs(

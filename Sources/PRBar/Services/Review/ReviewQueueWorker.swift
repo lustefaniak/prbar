@@ -586,11 +586,11 @@ final class ReviewQueueWorker {
                 ?? config.providerOverride
                 ?? defaultProviderId
             var effectiveToolMode = config.toolModeOverride ?? toolMode
-            // `.sandboxed` relies on claude's OS sandbox + git exploration;
-            // other providers fall back to the inlined-diff path.
-            if effectiveToolMode == .sandboxed && chosenProviderId != .claude {
-                effectiveToolMode = .none
-            }
+            // `.sandboxed` works for both providers: claude via its
+            // `--settings` Seatbelt sandbox, codex via `exec --sandbox
+            // read-only`. Both explore the worktree with git instead of an
+            // inlined diff. Falls back to `.none` only when no checkout can
+            // be provisioned (handled below).
             let subdiffs = MonorepoSplitter.split(diffText: diffText, config: config)
             guard !subdiffs.isEmpty else {
                 PRBarLog.triage.notice("run abort reason=empty-diff pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")

@@ -12,8 +12,13 @@ import Foundation
 ///   SIGTERM-on-budget is a follow-up.
 /// - **Tool restrictions** are lighter — codex's CLI surface for
 ///   disallowing tools varies by version, so we lean on prompt
-///   discipline ("you are a judge, not a fixer") plus `.minimal` cwd
-///   scoping when a workdir exists.
+///   discipline ("you are a judge, not a fixer") plus the `--sandbox
+///   read-only` boundary. In `.sandboxed` mode the workdir is a real
+///   worktree (provisioned by `RepoCheckoutManager`) and the prompt omits
+///   the inlined diff, so codex explores the change with `git diff`/grep
+///   inside its read-only sandbox — the codex analogue of claude's
+///   Seatbelt path. No argv change is needed: `exec --sandbox read-only
+///   --cd <workdir>` already enforces read-only + no-network.
 ///
 /// The actual argv assembly is intentionally conservative — codex's
 /// flag surface has churned across releases. If your installed version
