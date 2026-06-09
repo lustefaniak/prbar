@@ -48,6 +48,29 @@ final class ReviewTraceParserTests: XCTestCase {
         XCTAssertEqual(verdict, "approve")
     }
 
+    func testParsesCodexEventStream() {
+        let stream = """
+        {"type":"thread.started"}
+        {"type":"item.completed","item":{"id":"1","type":"agent_message","text":"Reading the diff."}}
+        {"type":"item.completed","item":{"id":"2","type":"command_execution","command":"/bin/zsh -lc 'git diff abc HEAD'","aggregated_output":"diff --git a/x b/x","exit_code":0}}
+        {"type":"item.completed","item":{"id":"3","type":"command_execution","command":"/bin/zsh -lc 'grep -rn foo'","aggregated_output":"no match","exit_code":1}}
+        {"type":"turn.completed","usage":{"input_tokens":100}}
+        """
+        let trace = ReviewTraceParser.parse(stream)
+        // assistantText + (toolCall+toolResult)*2 = 5 events.
+        XCTAssertEqual(trace.events.count, 5)
+        guard case .assistantText(let t) = trace.events[0] else { return XCTFail("text") }
+        XCTAssertEqual(t, "Reading the diff.")
+        guard case .toolCall(let name, let summary, _) = trace.events[1] else { return XCTFail("call") }
+        XCTAssertEqual(name, "git diff")
+        XCTAssertTrue(summary.contains("git diff abc HEAD"))
+        guard case .toolResult(_, let preview, let ok) = trace.events[2] else { return XCTFail("result") }
+        XCTAssertTrue(ok)
+        XCTAssertTrue(preview.contains("diff --git"))
+        guard case .toolResult(_, _, let ok2) = trace.events[4] else { return XCTFail("result2") }
+        XCTAssertFalse(ok2, "exit_code 1 → not ok")
+    }
+
     func testTruncatesLongToolResult() {
         let huge = String(repeating: "x", count: ReviewTraceParser.toolResultPreviewLimit + 200)
         let escaped = huge   // x's are JSON-safe

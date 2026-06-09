@@ -42,6 +42,11 @@ enum ReviewTraceParser {
                     durationMs: obj["duration_ms"] as? Int,
                     verdict: extractVerdict(obj["structured_output"])
                 ))
+            // Codex `--json` event stream (types disjoint from claude's):
+            // each completed item is either the model's prose or one shell
+            // command, which carries both the invocation and its output.
+            case "item.completed":
+                appendCodexItem(obj: obj, events: &events)
             default:
                 break
             }
@@ -51,6 +56,34 @@ enum ReviewTraceParser {
     }
 
     // MARK: - private
+
+    /// Map one codex `item.completed` event to trace events. An
+    /// `agent_message` is the model's prose; a `command_execution` is a
+    /// tool call plus its result (codex bundles output + exit code into
+    /// the same completed item).
+    private static func appendCodexItem(obj: [String: Any], events: inout [ReviewTraceEvent]) {
+        guard let item = obj["item"] as? [String: Any],
+              let itemType = item["type"] as? String
+        else { return }
+        switch itemType {
+        case "agent_message":
+            let text = (item["text"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { events.append(.assistantText(text: text)) }
+        case "command_execution":
+            let command = (item["command"] as? String) ?? ""
+            let label = CodexProvider.commandLabel(command)
+            events.append(.toolCall(name: label, inputSummary: command, inputJson: ""))
+            let output = (item["aggregated_output"] as? String) ?? ""
+            let preview = output.count <= toolResultPreviewLimit
+                ? output
+                : String(output.prefix(toolResultPreviewLimit)) + "…"
+            let ok = (item["exit_code"] as? Int ?? 0) == 0
+            events.append(.toolResult(toolName: label, preview: preview, ok: ok))
+        default:
+            break
+        }
+    }
 
     private static func appendAssistantBlocks(
         obj: [String: Any],
