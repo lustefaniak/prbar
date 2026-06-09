@@ -19,7 +19,15 @@ struct MarkdownText: View {
             .markdownTheme(.prbar)
             .markdownImageProvider(.safeRemote)
             .markdownInlineImageProvider(.safeRemote)
-            .textSelection(.enabled)
+            // No `.textSelection(.enabled)`: on macOS it hosts every
+            // rendered span in an NSTextField-backed control, and a
+            // markdown doc produces dozens of them. During scrollbar
+            // tracking SwiftUI's display-list updater re-adds and
+            // re-bezel-configures each one per tick (verified via
+            // `sample`: -[NSScroller trackKnob:] → _AppKitAddSubview →
+            // NSTextFieldCell _bezelConfiguration + CALayer insert), which
+            // makes the popover scroll janky whenever markdown is on
+            // screen. Links still open via OpenURLAction below.
             .environment(\.openURL, OpenURLAction { url in
                 guard MarkdownText.isSafe(url) else { return .discarded }
                 NSWorkspace.shared.open(url)
