@@ -114,11 +114,18 @@ struct CodexProvider: ReviewProvider {
         if !lastMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             jsonSource = lastMessage
         } else {
-            jsonSource = raw
+            // `--json` makes stdout a JSONL event stream, so the first `{`
+            // is an event envelope, not the answer. Pull the last
+            // agent_message text instead before scanning for the object.
+            jsonSource = Self.lastAgentMessage(fromEventStream: raw) ?? raw
         }
         guard let jsonString = Self.extractFirstJSONObject(from: jsonSource) else {
             throw CodexError.noJSONInOutput(rawOutput: jsonSource)
         }
+
+        // Real tool activity from the event stream so the UI doesn't show a
+        // 125-second exploration as "0 tools / no activity".
+        let activity = Self.parseToolActivity(fromEventStream: raw)
 
         let decoded: ProviderStructuredOutput
         do {
@@ -138,11 +145,71 @@ struct CodexProvider: ReviewProvider {
             summaryMarkdown: decoded.summary,
             annotations: decoded.annotations,
             costUsd: nil,
-            toolCallCount: 0,
-            toolNamesUsed: [],
+            toolCallCount: activity.count,
+            toolNamesUsed: activity.names,
             rawJson: Data(raw.utf8),
             isSubscriptionAuth: false
         )
+    }
+
+    /// Parse codex's `--json` event stream (one JSON object per line) for
+    /// the shell commands it executed. Each `item.completed` of type
+    /// `command_execution` is one tool call; we reduce its command to a
+    /// short label (`git diff`, `grep`, …) for the UI. Tolerant of
+    /// non-JSON / partial lines.
+    static func parseToolActivity(fromEventStream stdout: String) -> (count: Int, names: [String]) {
+        var names: [String] = []
+        for line in stdout.split(separator: "\n") {
+            guard
+                let data = line.data(using: .utf8),
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                (obj["type"] as? String) == "item.completed",
+                let item = obj["item"] as? [String: Any],
+                (item["type"] as? String) == "command_execution",
+                let command = item["command"] as? String
+            else { continue }
+            names.append(commandLabel(command))
+        }
+        return (names.count, names)
+    }
+
+    /// Text of the last `agent_message` item — the fallback JSON source
+    /// when the `--output-last-message` file is empty (with `--json`,
+    /// stdout's first object is an event envelope, not the answer).
+    static func lastAgentMessage(fromEventStream stdout: String) -> String? {
+        var last: String? = nil
+        for line in stdout.split(separator: "\n") {
+            guard
+                let data = line.data(using: .utf8),
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                (obj["type"] as? String) == "item.completed",
+                let item = obj["item"] as? [String: Any],
+                (item["type"] as? String) == "agent_message",
+                let text = item["text"] as? String
+            else { continue }
+            last = text
+        }
+        return last
+    }
+
+    /// Reduce a codex shell command to a short tool label, stripping the
+    /// `sh/zsh -lc '<cmd>'` wrapper. `git` keeps its subcommand
+    /// (`git diff`); everything else is just the program name.
+    static func commandLabel(_ command: String) -> String {
+        var inner = command
+        for flag in ["-lc ", "-c "] {
+            if let r = inner.range(of: flag) {
+                inner = String(inner[r.upperBound...])
+                break
+            }
+        }
+        inner = inner.trimmingCharacters(in: CharacterSet(charactersIn: " '\"\n"))
+        let tokens = inner.split(whereSeparator: { $0 == " " || $0 == "\n" }).map(String.init)
+        guard let program = tokens.first, !program.isEmpty else { return "shell" }
+        if program == "git", tokens.count > 1 {
+            return "git \(tokens[1])"
+        }
+        return program
     }
 
     // MARK: - argv assembly (extracted for testing)
@@ -160,6 +227,12 @@ struct CodexProvider: ReviewProvider {
     ) -> [String] {
         var args: [String] = [
             "exec",
+            // `--json` makes stdout a JSONL event stream we parse for the
+            // shell commands codex ran (tool activity) — otherwise a
+            // sandboxed review that explored heavily reports zero activity.
+            // The schema-validated answer still arrives via the
+            // `--output-last-message` file, independent of stdout format.
+            "--json",
             "--skip-git-repo-check",
             "--output-schema", schemaPath,
             "--output-last-message", lastMessagePath,

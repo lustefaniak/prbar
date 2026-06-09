@@ -44,6 +44,44 @@ final class CodexProviderTests: XCTestCase {
         XCTAssertTrue(args.contains("/wt/sub"))
     }
 
+    func testBuildArgsRequestsJSONEventStream() {
+        let args = CodexProvider.buildArgs(
+            options: makeOptions(model: nil),
+            schemaPath: "/tmp/s.json", lastMessagePath: "/tmp/l.txt",
+            workdir: URL(fileURLWithPath: "/wt")
+        )
+        XCTAssertTrue(args.contains("--json"), "need JSONL stdout to read tool activity")
+    }
+
+    func testParseToolActivityCountsAndLabelsCommands() {
+        let stream = """
+        {"type":"thread.started"}
+        {"type":"item.completed","item":{"id":"1","type":"agent_message","text":"thinking"}}
+        {"type":"item.completed","item":{"id":"2","type":"command_execution","command":"/bin/zsh -lc 'git diff abc HEAD'","exit_code":0}}
+        {"type":"item.completed","item":{"id":"3","type":"command_execution","command":"/bin/zsh -lc 'grep -rn foo src'","exit_code":0}}
+        not json
+        {"type":"turn.completed","usage":{"input_tokens":100}}
+        """
+        let activity = CodexProvider.parseToolActivity(fromEventStream: stream)
+        XCTAssertEqual(activity.count, 2)
+        XCTAssertEqual(activity.names, ["git diff", "grep"])
+    }
+
+    func testCommandLabelStripsShellWrapper() {
+        XCTAssertEqual(CodexProvider.commandLabel("/bin/zsh -lc 'git show abc:f.go'"), "git show")
+        XCTAssertEqual(CodexProvider.commandLabel("/bin/sh -c 'cat README.md'"), "cat")
+        XCTAssertEqual(CodexProvider.commandLabel("rg pattern"), "rg")
+    }
+
+    func testLastAgentMessageReturnsFinalText() {
+        let stream = """
+        {"type":"item.completed","item":{"type":"agent_message","text":"first"}}
+        {"type":"item.completed","item":{"type":"command_execution","command":"x"}}
+        {"type":"item.completed","item":{"type":"agent_message","text":"{\\"verdict\\":\\"approve\\"}"}}
+        """
+        XCTAssertEqual(CodexProvider.lastAgentMessage(fromEventStream: stream), "{\"verdict\":\"approve\"}")
+    }
+
     func testBuildArgsAddsModelWhenSet() {
         let opts = makeOptions(model: "gpt-5")
         let args = CodexProvider.buildArgs(
