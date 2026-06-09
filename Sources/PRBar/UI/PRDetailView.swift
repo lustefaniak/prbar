@@ -60,6 +60,18 @@ struct PRDetailView: View {
     /// same annotation can be re-clicked to re-jump.
     @State private var focusedDiffKey: String? = nil
 
+    /// Per-PR opt-in to render a diff above `maxInlineDiffLines` inline.
+    /// Huge diffs are collapsed to a "view on GitHub" card by default
+    /// because DiffView builds every line eagerly inside the scroll
+    /// container, and a multi-thousand-line diff churns CALayers badly
+    /// during scroll (the popover goes sluggish and rows visibly
+    /// unload/reload). Reset on PR switch.
+    @State private var forceRenderLargeDiff = false
+
+    /// Above this many total diff lines the inline render is replaced by
+    /// a GitHub link unless the user clicks "Render anyway".
+    private static let maxInlineDiffLines = 1500
+
     private var review: AggregatedReview? {
         if case .completed(let agg) = queue.reviews[pr.nodeId]?.status {
             return agg
@@ -196,6 +208,7 @@ struct PRDetailView: View {
             bodyDraftSeededForSha = nil
             includeAISummaryOverride = nil
             reviewsExpanded = false
+            forceRenderLargeDiff = false
             seedBodyDraftFromAIIfNeeded()
         }
         .onChange(of: review?.summaryMarkdown ?? "") { _, _ in
@@ -875,14 +888,58 @@ struct PRDetailView: View {
                     .foregroundStyle(.red)
                     .lineLimit(3)
             case .loaded(let hunks):
-                DiffView(
-                    hunks: hunks,
-                    annotations: review?.annotations ?? [],
-                    subpaths: subpathsFromReview(),
-                    focusedKey: $focusedDiffKey
-                )
+                let lineCount = hunks.reduce(0) { $0 + $1.lines.count }
+                if lineCount > Self.maxInlineDiffLines && !forceRenderLargeDiff {
+                    largeDiffPlaceholder(
+                        lineCount: lineCount,
+                        fileCount: Set(hunks.map(\.filePath)).count
+                    )
+                } else {
+                    DiffView(
+                        hunks: hunks,
+                        annotations: review?.annotations ?? [],
+                        subpaths: subpathsFromReview(),
+                        focusedKey: $focusedDiffKey
+                    )
+                }
             }
         }
+    }
+
+    /// Shown in place of a multi-thousand-line inline diff. Rendering one
+    /// inline makes the popover scroll unusably slow (DiffView builds every
+    /// line eagerly and the CALayer tree churns during scroll), so we link
+    /// out to GitHub's files view by default and let the user opt in.
+    @ViewBuilder
+    private func largeDiffPlaceholder(lineCount: Int, fileCount: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .foregroundStyle(.secondary)
+                Text("Large diff — \(lineCount) lines across \(fileCount) file\(fileCount == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Rendering this inline makes the popover sluggish, so it's collapsed by default.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button {
+                    NSWorkspace.shared.open(pr.url.appendingPathComponent("files"))
+                } label: {
+                    Label("View diff on GitHub", systemImage: "arrow.up.forward.square")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                Button("Render anyway") { forceRenderLargeDiff = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// Floating button bottom-right of the detail scroller. Always
