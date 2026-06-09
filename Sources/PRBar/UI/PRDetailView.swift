@@ -691,41 +691,19 @@ struct PRDetailView: View {
                 ProgressView().controlSize(.small)
                 Text(label).font(.caption).foregroundStyle(.secondary)
             }
-            if let progress = queue.liveProgress[pr.nodeId] {
-                liveProgressView(progress)
-            }
+            // Reads `liveProgress` from inside its own `View` struct so
+            // SwiftUI's @Observable dependency tracking scopes the
+            // high-frequency progress updates to *that* subtree. Reading
+            // it here (in PRDetailView.body) would make every ~100ms-1s
+            // progress event invalidate the whole detail view and force a
+            // full re-layout of the expensive diff section. Same spirit as
+            // keeping the action bar out of the scrolling container.
+            LiveReviewProgressView(nodeId: pr.nodeId)
             if let prior = priorReview {
                 priorReviewBanner(prior)
                 completedReviewSection(prior.aggregated)
             }
         }
-    }
-
-    @ViewBuilder
-    private func liveProgressView(_ progress: ReviewProgress) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                if progress.toolCallCount > 0 {
-                    Label("\(progress.toolCallCount) tool\(progress.toolCallCount == 1 ? "" : "s")",
-                          systemImage: "wrench.and.screwdriver")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .help("Tools used so far: \(progress.toolNamesUsed.joined(separator: ", "))")
-                }
-                if let cost = progress.costUsdSoFar {
-                    Text(String(format: "$%.4f", cost))
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-                if let last = progress.toolNamesUsed.last {
-                    Text("· running `\(last)`")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(8)
-        .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
     }
 
     @ViewBuilder
@@ -1369,6 +1347,48 @@ struct PRDetailView: View {
         case .comment:        return ("Approve with notes", .blue)
         case .requestChanges: return ("Request changes", .red)
         case .abstain:        return ("Abstain", .gray)
+        }
+    }
+}
+
+/// Live AI-review progress chip (tool count / cost / running tool).
+///
+/// Deliberately a standalone `View` rather than a `@ViewBuilder` method on
+/// `PRDetailView`: helper methods are inlined into the parent's `body`
+/// observation scope, so reading the high-frequency `liveProgress`
+/// dictionary there would re-evaluate the entire detail view — and
+/// re-layout the expensive diff section — on every progress event (several
+/// per second on a large diff). Owning the `liveProgress` read here scopes
+/// the invalidation to this small subtree.
+private struct LiveReviewProgressView: View {
+    @Environment(ReviewQueueWorker.self) private var queue
+    let nodeId: String
+
+    var body: some View {
+        if let progress = queue.liveProgress[nodeId] {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    if progress.toolCallCount > 0 {
+                        Label("\(progress.toolCallCount) tool\(progress.toolCallCount == 1 ? "" : "s")",
+                              systemImage: "wrench.and.screwdriver")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("Tools used so far: \(progress.toolNamesUsed.joined(separator: ", "))")
+                    }
+                    if let cost = progress.costUsdSoFar {
+                        Text(String(format: "$%.4f", cost))
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let last = progress.toolNamesUsed.last {
+                        Text("· running `\(last)`")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(8)
+            .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 }

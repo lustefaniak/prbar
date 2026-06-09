@@ -483,6 +483,23 @@ final class ReviewQueueWorker {
                 PRBarLog.triage.debug("auto-enqueue skip reason=already-reviewed-by-others pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) decision=\(pr.reviewDecision ?? "nil", privacy: .public)")
                 continue
             }
+            // A review that already failed at this exact commit won't fix
+            // itself on the next poll — re-running deterministically
+            // re-fails (e.g. budgetExceeded on a too-large diff), burns
+            // cost every cycle, and flips the row back to "Reviewing…" so
+            // the failure never settles in the UI. Skip the auto-retry; a
+            // new commit re-arms it and manual Re-run (force) bypasses this.
+            // Daily-cap failures are exempt: they're transient (the cap
+            // resets at the local-day boundary and is re-checked in
+            // `enqueue`), so they stay eligible — the "Daily $" prefix
+            // matches the cap message built in `enqueue`.
+            if let existing = reviews[pr.nodeId],
+               case .failed(let msg) = existing.status,
+               existing.headSha == pr.headSha,
+               !msg.hasPrefix("Daily $") {
+                PRBarLog.triage.debug("auto-enqueue skip reason=failed-at-current-sha pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public)")
+                continue
+            }
             enqueue(pr)
         }
     }
