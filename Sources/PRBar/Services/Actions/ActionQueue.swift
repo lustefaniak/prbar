@@ -93,6 +93,22 @@ final class ActionQueue {
     /// row indicator.
     private(set) var entries: [String: ActionEntry] = [:]
 
+    /// Transient "this just succeeded" marker per PR, keyed by `nodeId`.
+    /// Set on a successful write and auto-cleared after a few seconds so
+    /// the UI can flash a confirmation (a merged PR drops out of the open
+    /// inbox, so without this a successful merge looks like a no-op). The
+    /// value is the kind that succeeded, for a kind-specific message.
+    private(set) var recentSuccess: [String: GHActionKind] = [:]
+
+    /// Per-PR token so a delayed clear only removes the success it scheduled
+    /// (a newer success replaces the token and keeps its own window alive).
+    @ObservationIgnored
+    private var successTokens: [String: UUID] = [:]
+
+    /// How long a success confirmation stays visible.
+    @ObservationIgnored
+    var successDisplayDuration: Duration = .seconds(5)
+
     /// Hard cap on concurrent runners. Per-PR serialization is enforced
     /// separately via `inFlightNodes`, so this only bounds how many
     /// *different* PRs run at once.
@@ -280,14 +296,33 @@ final class ActionQueue {
                 try await disableAutoMergeExecutor(pr)
                 recordSuccess(action)
             }
-            // Terminal success: drop the slot and let the caller refresh.
+            // Terminal success: drop the slot, flash a confirmation, and
+            // let the caller refresh.
             entries[nodeId] = nil
+            noteSuccess(action)
             onActionCompleted?(pr)
         } catch {
             let msg = error.localizedDescription
             entries[nodeId]?.state = .failed(msg)
             recordFailure(action, message: msg)
             PRBarLog.actions.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(msg, privacy: .public)")
+        }
+    }
+
+    /// Flash a success marker for this PR and schedule its removal. A newer
+    /// success replaces the token so the older clear becomes a no-op.
+    private func noteSuccess(_ action: GHAction) {
+        let nodeId = action.pr.nodeId
+        let token = UUID()
+        recentSuccess[nodeId] = action.kind
+        successTokens[nodeId] = token
+        let duration = successDisplayDuration
+        Task { @MainActor in
+            try? await Task.sleep(for: duration)
+            if successTokens[nodeId] == token {
+                recentSuccess[nodeId] = nil
+                successTokens[nodeId] = nil
+            }
         }
     }
 

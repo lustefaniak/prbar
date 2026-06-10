@@ -41,6 +41,9 @@ struct InboxResponse: Decodable, Sendable {
         let additions: Int
         let deletions: Int
         let changedFiles: Int
+        /// GitHub `PullRequestState`: OPEN / CLOSED / MERGED. Optional so
+        /// older test fixtures (and any response missing it) decode as open.
+        let state: String?
         let repository: Repository
         let author: Author?
         let headRefName: String

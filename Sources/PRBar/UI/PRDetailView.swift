@@ -1062,6 +1062,17 @@ struct PRDetailView: View {
             .skipMergeConfirmation ?? skipMergeConfirmationGlobal
     }
 
+    /// Confirmation text for a just-completed merge-family action; nil for
+    /// kinds the merge card doesn't surface (e.g. review posts).
+    private func mergeSuccessMessage(_ kind: GHActionKind) -> String? {
+        switch kind {
+        case .merge(let m): return "Merged (\(m.shortDisplayName))"
+        case .enableAutoMerge(let m): return "Auto-merge (\(m.shortDisplayName)) enabled"
+        case .disableAutoMerge: return "Auto-merge disabled"
+        case .review: return nil
+        }
+    }
+
     /// Either merge immediately (confirmation disabled) or stage the
     /// confirmation dialog. Single funnel so both the primary action and
     /// the dropdown alternatives honour the setting.
@@ -1096,22 +1107,27 @@ struct PRDetailView: View {
             mergeStatusLine
 
             HStack(spacing: 8) {
-                if pr.isReadyToMerge {
-                    mergeSplitButton(disabled: isBusy)
-                } else if pr.autoMergeAllowed && !pr.hasAutoMerge {
-                    enableAutoMergeButton(disabled: isBusy)
-                }
-
-                if pr.hasAutoMerge {
-                    Button(role: .destructive) {
-                        actionQueue.enqueue(pr, kind: .disableAutoMerge)
-                    } label: {
-                        Label("Disable auto-merge", systemImage: "clock.badge.xmark")
-                            .font(.callout)
+                // Merge / auto-merge actions only make sense while the PR is
+                // still open. A merged/closed PR shows just the status line +
+                // Open-on-GitHub.
+                if pr.state == .open {
+                    if pr.isReadyToMerge {
+                        mergeSplitButton(disabled: isBusy)
+                    } else if pr.autoMergeAllowed && !pr.hasAutoMerge {
+                        enableAutoMergeButton(disabled: isBusy)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isBusy)
+
+                    if pr.hasAutoMerge {
+                        Button(role: .destructive) {
+                            actionQueue.enqueue(pr, kind: .disableAutoMerge)
+                        } label: {
+                            Label("Disable auto-merge", systemImage: "clock.badge.xmark")
+                                .font(.callout)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isBusy)
+                    }
                 }
 
                 if isBusy {
@@ -1141,7 +1157,25 @@ struct PRDetailView: View {
 
     @ViewBuilder
     private var mergeStatusLine: some View {
-        if pr.hasAutoMerge {
+        if pr.state == .merged {
+            Label { Text("Merged") } icon: {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(.purple)
+            }
+            .font(.caption.weight(.medium))
+        } else if pr.state == .closed {
+            Label { Text("Closed without merging") } icon: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else if let success = actionQueue.recentSuccess[pr.nodeId], let msg = mergeSuccessMessage(success) {
+            // Transient flash between a successful write and the refresh
+            // that updates `pr.state` — so a merge never looks inert.
+            Label { Text(msg) } icon: {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            }
+            .font(.caption.weight(.medium))
+        } else if pr.hasAutoMerge {
             Label {
                 let method = pr.autoMergeMethod.map { " (\($0.shortDisplayName))" } ?? ""
                 let who = pr.autoMergeEnabledBy.map { " by @\($0)" } ?? ""

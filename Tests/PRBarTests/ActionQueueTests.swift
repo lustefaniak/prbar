@@ -97,6 +97,19 @@ final class ActionQueueTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty, "auto-merge executor must not run for a disallowed method")
     }
 
+    func testSuccessFlashIsSetThenClears() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "ready")
+        let q = ActionQueue()
+        q.successDisplayDuration = .milliseconds(60)
+        q.mergeExecutor = { _, _ in }
+
+        q.enqueue(pr, kind: .merge(method: .squash))
+        // Flash appears once the action settles.
+        try await waitUntil { q.recentSuccess["PR_a"] == .merge(method: .squash) }
+        // And auto-clears after the display window.
+        try await waitUntil { q.recentSuccess["PR_a"] == nil }
+    }
+
     // MARK: - dedup / serialization
 
     func testSecondEnqueueWhileBusyIsNoOp() async throws {

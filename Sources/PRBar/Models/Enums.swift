@@ -54,6 +54,23 @@ enum PRRole: String, Codable, Sendable, Hashable, CaseIterable {
     case other
 }
 
+/// GitHub's `PullRequestState`. Captured so a PR refreshed *after* it
+/// merges/closes (the single-PR query isn't `is:open`-filtered) renders as
+/// merged/closed rather than a confusing "not mergeable" open PR.
+enum PRState: String, Codable, Sendable, Hashable, CaseIterable {
+    case open
+    case closed
+    case merged
+
+    init(githubRawValue raw: String) {
+        switch raw.uppercased() {
+        case "MERGED": self = .merged
+        case "CLOSED": self = .closed
+        default:       self = .open
+        }
+    }
+}
+
 enum ReviewActionKind: String, Codable, Sendable, Hashable, CaseIterable {
     case approve
     case comment

@@ -143,6 +143,14 @@ struct PopoverView: View {
         .onDisappear { notifier.setPopoverVisible(false) }
         .onChange(of: poller.prs) { _, newPRs in
             queue.enqueueNewReviewRequests(from: newPRs)
+            // Keep the open detail view in sync with fresh poll / single-PR
+            // refresh data (review decision, merge state, and especially the
+            // open→merged transition). If the PR has dropped out of the inbox
+            // entirely (e.g. a later full poll after it merged), keep the
+            // last snapshot so the detail view still reads "Merged".
+            if let sel = selectedPR, let fresh = newPRs.first(where: { $0.nodeId == sel.nodeId }) {
+                selectedPR = fresh
+            }
         }
     }
 

@@ -86,6 +86,10 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     let isDraft: Bool
     let role: PRRole
 
+    /// Open / closed / merged. Defaulted to `.open` so test constructors and
+    /// pre-existing cached payloads (which predate the field) still load.
+    var state: PRState = .open
+
     let mergeable: String
     let mergeStateStatus: String
     let reviewDecision: String?
@@ -191,7 +195,7 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
 extension InboxPR {
     private enum CodingKeys: String, CodingKey {
         case nodeId, owner, repo, number, title, body, url, author
-        case headRef, baseRef, headSha, isDraft, role
+        case headRef, baseRef, headSha, isDraft, role, state
         case mergeable, mergeStateStatus, reviewDecision, checkRollupState
         case totalAdditions, totalDeletions, changedFiles
         case hasAutoMerge, autoMergeEnabledBy, autoMergeMethod, allCheckSummaries
@@ -219,6 +223,7 @@ extension InboxPR {
         self.headSha = try c.decode(String.self, forKey: .headSha)
         self.isDraft = try c.decode(Bool.self, forKey: .isDraft)
         self.role = try c.decode(PRRole.self, forKey: .role)
+        self.state = (try? c.decodeIfPresent(PRState.self, forKey: .state)) ?? .open
         self.mergeable = try c.decode(String.self, forKey: .mergeable)
         self.mergeStateStatus = try c.decode(String.self, forKey: .mergeStateStatus)
         self.reviewDecision = try c.decodeIfPresent(String.self, forKey: .reviewDecision)
@@ -253,6 +258,7 @@ extension InboxPR {
         self.baseRef = node.baseRefName
         self.headSha = node.commits.nodes.first?.commit.oid ?? ""
         self.isDraft = node.isDraft
+        self.state = PRState(githubRawValue: node.state ?? "OPEN")
         self.mergeable = node.mergeable
         self.mergeStateStatus = node.mergeStateStatus
         self.reviewDecision = node.reviewDecision
