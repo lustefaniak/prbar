@@ -329,6 +329,15 @@ struct PRDetailView: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
 
+            Button {
+                poller.refreshPR(pr, force: true)
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .disabled(poller.refreshingPRs.contains(pr.nodeId))
+            .help("Refresh this PR now — re-pulls review decision, merge state, CI status, and auto-merge state")
+
             if !inWindow {
                 Button {
                     openWindow(id: PRDetailWindowID.id, value: pr.nodeId)
