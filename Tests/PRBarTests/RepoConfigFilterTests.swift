@@ -85,6 +85,7 @@ final class RepoConfigFilterTests: XCTestCase {
         cfg.aiReviewEnabled = false
         cfg.providerOverride = .codex
         cfg.notifyPolicy = .eachReady
+        cfg.skipMergeConfirmation = true
 
         let data = try JSONEncoder().encode(cfg)
         let decoded = try JSONDecoder().decode(RepoConfig.self, from: data)
@@ -114,6 +115,9 @@ final class RepoConfigFilterTests: XCTestCase {
         // predate the field adopt the current default.
         XCTAssertTrue(cfg.skipAIIfReviewedByOthers)
         XCTAssertTrue(cfg.aiReviewEnabled)
+        // Per-repo merge-confirmation override absent in old payloads →
+        // nil = follow the global setting.
+        XCTAssertNil(cfg.skipMergeConfirmation)
     }
 
     // MARK: - helpers

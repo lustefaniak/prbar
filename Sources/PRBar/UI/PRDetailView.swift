@@ -27,6 +27,11 @@ struct PRDetailView: View {
     @Environment(ReviewQueueWorker.self) private var queue
     @Environment(ActionQueue.self) private var actionQueue
     @Environment(DiffStore.self) private var diffStore
+    @Environment(RepoConfigStore.self) private var repoConfigs
+
+    /// Global "skip merge confirmation" default; a per-repo
+    /// `RepoConfig.skipMergeConfirmation` overrides it.
+    @AppStorage("skipMergeConfirmation") private var skipMergeConfirmationGlobal = false
 
     @State private var bodyDraft: String = ""
     /// Tracks the SHA whose AI summary was used to seed `bodyDraft` so we
@@ -1050,6 +1055,26 @@ struct PRDetailView: View {
         UserDefaults.standard.set(m.rawValue, forKey: mergeDefaultsKey)
     }
 
+    /// Effective "skip merge confirmation" for this PR's repo: per-repo
+    /// override wins, else the global setting.
+    private var skipMergeConfirmation: Bool {
+        repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
+            .skipMergeConfirmation ?? skipMergeConfirmationGlobal
+    }
+
+    /// Either merge immediately (confirmation disabled) or stage the
+    /// confirmation dialog. Single funnel so both the primary action and
+    /// the dropdown alternatives honour the setting.
+    private func requestMerge(_ method: MergeMethod) {
+        if skipMergeConfirmation {
+            rememberMergeMethod(method)
+            actionQueue.enqueue(pr, kind: .merge(method: method))
+        } else {
+            pendingMergeMethod = method
+            showMergeConfirm = true
+        }
+    }
+
     /// Merge surface for PRs the viewer authored — the analogue of
     /// `actionsCard` for the review path. Shows merge-readiness status plus
     /// the right action: immediate merge when ready, enable-auto-merge when
@@ -1150,8 +1175,7 @@ struct PRDetailView: View {
         Menu {
             ForEach(alternatives, id: \.rawValue) { method in
                 Button {
-                    pendingMergeMethod = method
-                    showMergeConfirm = true
+                    requestMerge(method)
                 } label: {
                     Label(method.displayName, systemImage: "arrow.triangle.merge")
                 }
@@ -1161,8 +1185,7 @@ struct PRDetailView: View {
                 .labelStyle(.titleAndIcon)
                 .font(.callout.weight(.semibold))
         } primaryAction: {
-            pendingMergeMethod = primary
-            showMergeConfirm = true
+            requestMerge(primary)
         }
         .menuStyle(.button)
         .buttonStyle(.borderedProminent)

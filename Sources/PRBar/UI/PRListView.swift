@@ -15,6 +15,15 @@ struct PRListView: View {
 
     @Environment(DiffStore.self) private var diffStore
     @Environment(ActionQueue.self) private var actionQueue
+    @Environment(RepoConfigStore.self) private var repoConfigs
+    @AppStorage("skipMergeConfirmation") private var skipMergeConfirmationGlobal = false
+
+    /// Effective "skip merge confirmation" for a PR: per-repo override
+    /// wins over the global setting.
+    private func skipMergeConfirmation(for pr: InboxPR) -> Bool {
+        repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
+            .skipMergeConfirmation ?? skipMergeConfirmationGlobal
+    }
 
     /// Cap how many rows we eagerly warm the diff cache for. The list
     /// itself scrolls and shows every PR; this is just a courtesy
@@ -46,7 +55,8 @@ struct PRListView: View {
                                 onRefresh: { onRefreshPR(pr) },
                                 onMerge: { method in onMergePR(pr, method) },
                                 onRetryAction: { actionQueue.retry(pr.nodeId) },
-                                onDismissAction: { actionQueue.dismissFailure(pr.nodeId) }
+                                onDismissAction: { actionQueue.dismissFailure(pr.nodeId) },
+                                skipMergeConfirmation: skipMergeConfirmation(for: pr)
                             )
                             .contentShape(Rectangle())
                             .onTapGesture { onSelect(pr) }

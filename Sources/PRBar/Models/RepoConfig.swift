@@ -171,6 +171,11 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// whole inbox to minimise context switches.
     var notifyPolicy: NotifyPolicy = .batchSettled
 
+    /// Per-repo override for the "confirm before merge" dialog. Nil →
+    /// follow the global `skipMergeConfirmation` setting; `true` → always
+    /// merge without confirming on this repo; `false` → always confirm.
+    var skipMergeConfirmation: Bool? = nil
+
     /// When true, retriages drop the prior verdict from the prompt and
     /// review the full PR fresh. The default `false` carries the prior
     /// summary forward so the AI can frame its verdict as "did the new
@@ -243,6 +248,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case aiReviewEnabled, providerOverride, notifyPolicy
         case forceFullReview
+        case skipMergeConfirmation
     }
 
     init(from decoder: Decoder) throws {
@@ -274,6 +280,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.providerOverride        = try? c.decodeIfPresent(ProviderID.self, forKey: .providerOverride)
         self.notifyPolicy            = (try? c.decode(NotifyPolicy.self, forKey: .notifyPolicy)) ?? d.notifyPolicy
         self.forceFullReview         = (try? c.decode(Bool.self, forKey: .forceFullReview)) ?? d.forceFullReview
+        self.skipMergeConfirmation   = try? c.decodeIfPresent(Bool.self, forKey: .skipMergeConfirmation)
     }
 
     /// Memberwise init survives the explicit `init(from:)`. Listed so
@@ -302,7 +309,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         aiReviewEnabled: Bool = true,
         providerOverride: ProviderID? = nil,
         notifyPolicy: NotifyPolicy = .batchSettled,
-        forceFullReview: Bool = false
+        forceFullReview: Bool = false,
+        skipMergeConfirmation: Bool? = nil
     ) {
         self.id = id
         self.repoGlobs = repoGlobs
@@ -326,6 +334,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.providerOverride = providerOverride
         self.notifyPolicy = notifyPolicy
         self.forceFullReview = forceFullReview
+        self.skipMergeConfirmation = skipMergeConfirmation
     }
 }
 

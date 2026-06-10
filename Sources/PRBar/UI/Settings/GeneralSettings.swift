@@ -13,6 +13,7 @@ struct GeneralSettings: View {
     @AppStorage("defaultProviderId")        private var defaultProviderRaw   = ProviderID.claude.rawValue
     @AppStorage("dailyCostCapEnabled")      private var costCapEnabled       = true
     @AppStorage("dailyCostCapUsd")          private var costCapUsd: Double   = 5.0
+    @AppStorage("skipMergeConfirmation")    private var skipMergeConfirmation = false
 
     /// Probed at view-load. Drives "(not installed)" annotations in the
     /// provider picker so users don't pick a backend they don't have.
@@ -98,6 +99,16 @@ struct GeneralSettings: View {
                 Text("Budgets")
             } footer: {
                 Text("Stops new reviews from queuing once today's spend hits the cap. The window resets at local midnight (your calendar's start of day). Spend is tallied from the Review History ledger — codex runs and claude runs killed before their final cost-report event count as $0 against the cap. Per-subreview cost cap (live SIGTERM mid-stream) is set per-repo in Settings → Repositories.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Merge without confirmation", isOn: $skipMergeConfirmation)
+            } header: {
+                Text("Merging")
+            } footer: {
+                Text("When on, the Squash / Merge / Rebase button merges immediately instead of asking to confirm first. A per-repo override (Settings → Repositories) wins over this default.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

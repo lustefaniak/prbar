@@ -292,6 +292,15 @@ struct RepoConfigEditor: View {
                         .help("Row stays visible; AI just doesn't auto-run when reviewDecision is APPROVED or CHANGES_REQUESTED. Manual Re-run still works.")
                 }
 
+                section("Merging") {
+                    Picker("Confirm before merge", selection: mergeConfirmBinding) {
+                        Text("Follow global setting").tag(MergeConfirmChoice.followGlobal)
+                        Text("Merge without confirmation").tag(MergeConfirmChoice.skip)
+                        Text("Always confirm").tag(MergeConfirmChoice.confirm)
+                    }
+                    .help("Overrides the global \"Merge without confirmation\" setting for repos matching these globs.")
+                }
+
                 section("Splitter") {
                     Picker("Mode", selection: $config.splitMode) {
                         Text("Per-subfolder").tag(SplitMode.perSubfolder)
@@ -435,6 +444,29 @@ struct RepoConfigEditor: View {
             get: { config.providerOverride?.rawValue ?? "default" },
             set: { tag in
                 config.providerOverride = ProviderID(rawValue: tag)
+            }
+        )
+    }
+
+    /// Tri-state choice for the merge-confirmation override (nil = follow
+    /// global, true = skip, false = always confirm).
+    enum MergeConfirmChoice: Hashable { case followGlobal, skip, confirm }
+
+    private var mergeConfirmBinding: Binding<MergeConfirmChoice> {
+        Binding(
+            get: {
+                switch config.skipMergeConfirmation {
+                case .none:  return .followGlobal
+                case .some(true):  return .skip
+                case .some(false): return .confirm
+                }
+            },
+            set: { choice in
+                switch choice {
+                case .followGlobal: config.skipMergeConfirmation = nil
+                case .skip:         config.skipMergeConfirmation = true
+                case .confirm:      config.skipMergeConfirmation = false
+                }
             }
         )
     }

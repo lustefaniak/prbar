@@ -11,6 +11,9 @@ struct PRRowView: View {
     let onMerge: (MergeMethod) -> Void
     var onRetryAction: () -> Void = {}
     var onDismissAction: () -> Void = {}
+    /// When true, merge fires immediately without the confirmation dialog.
+    /// Resolved by the parent (per-repo override over the global setting).
+    var skipMergeConfirmation: Bool = false
 
     @State private var isHovering = false
     @State private var showMergeConfirm = false
@@ -34,6 +37,19 @@ struct PRRowView: View {
 
     private func rememberMethod(_ m: MergeMethod) {
         UserDefaults.standard.set(m.rawValue, forKey: defaultsKey)
+    }
+
+    /// Either merge immediately (confirmation disabled) or stage the
+    /// confirmation dialog. Single funnel for the primary action and the
+    /// dropdown alternatives.
+    private func requestMerge(_ method: MergeMethod) {
+        if skipMergeConfirmation {
+            rememberMethod(method)
+            onMerge(method)
+        } else {
+            pendingMergeMethod = method
+            showMergeConfirm = true
+        }
     }
 
     var body: some View {
@@ -187,8 +203,7 @@ struct PRRowView: View {
         Menu {
             ForEach(alternatives, id: \.rawValue) { method in
                 Button {
-                    pendingMergeMethod = method
-                    showMergeConfirm = true
+                    requestMerge(method)
                 } label: {
                     Label(method.displayName, systemImage: "arrow.triangle.merge")
                 }
@@ -198,8 +213,7 @@ struct PRRowView: View {
                 .labelStyle(.titleAndIcon)
                 .font(.callout.weight(.semibold))
         } primaryAction: {
-            pendingMergeMethod = primary
-            showMergeConfirm = true
+            requestMerge(primary)
         }
         // .borderedProminent + green tint reads as "primary action" not
         // "subtle hint". Tinted green to mirror GitHub's own merge button
