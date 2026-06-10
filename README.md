@@ -68,7 +68,7 @@ For long diffs and detailed review reading. Same content as the popover, full si
 
 Polls GitHub every 60 s via `gh`. Each new review request fans out into per-subfolder subreviews (so each picks up its own `CLAUDE.md` / `.mcp.json` / `.claude/settings.json` from the right cwd), aggregates the verdicts, and feeds the readiness coordinator. The coordinator decides when to fire a single grouped notification.
 
-Full design: [docs/PLAN.md](docs/PLAN.md).
+Architecture and contributor notes: [CLAUDE.md](CLAUDE.md).
 
 ## Requirements
 

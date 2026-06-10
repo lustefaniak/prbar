@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-PRBar — macOS menu-bar Swift app that monitors GitHub PRs (via `gh`) and runs AI-assisted reviews on incoming review requests (via `claude` / `codex` CLI). The MVP and Phase 0–6 work landed long ago; the project is in normal-development mode. Design history, architectural rationale, what's shipped beyond the original spec, and the live "still to do" list live in [docs/PLAN.md](docs/PLAN.md). Read PLAN.md before any non-trivial change — it documents both intent and the divergences we've already paid for in lessons.
+PRBar — macOS menu-bar Swift app that monitors GitHub PRs (via `gh`) and runs AI-assisted reviews on incoming review requests (via `claude` / `codex` CLI). The MVP and Phase 0–6 work landed long ago; the project is in normal-development mode. The architecture and the operational contracts live in this file (see §Architecture and the gotchas/Don'ts below); the open backlog is **GitHub Issues**. Original design history / phase plan is in git history if you ever need it.
 
 ## Workflow
 
-`main` is branch-protected. Non-trivial work happens on a `lukasz-<feature>` branch, opens a PR (squash-merged, linear history — merge commits are disabled at the repo level), and must pass the `build-test` CI job before merge. Required approvals = 0 (solo author, GitHub blocks self-approval). Admin override (`enforce_admins: false`) is the deliberate escape hatch for doc-only edits (`CLAUDE.md`, `PLAN.md`, `README.md`), screenshot regeneration via `bin/screenshots`, and emergency fixes — those can push directly to `main`. Force-with-lease still applies if rewriting history on a feature branch.
+`main` is branch-protected. Non-trivial work happens on a `lukasz-<feature>` branch, opens a PR (squash-merged, linear history — merge commits are disabled at the repo level), and must pass the `build-test` CI job before merge. Required approvals = 0 (solo author, GitHub blocks self-approval). Admin override (`enforce_admins: false`) is the deliberate escape hatch for doc-only edits (`CLAUDE.md`, `README.md`), screenshot regeneration via `bin/screenshots`, and emergency fixes — those can push directly to `main`. Force-with-lease still applies if rewriting history on a feature branch.
 
 ## Build / test / run
 
@@ -181,9 +181,10 @@ When you add a field to `InboxPR` / `RepoConfig`, declare it as `var x: T = <def
 ## Don't
 
 - Don't commit `PRBar.xcodeproj/` — it's generated.
+- Don't edit `AGENTS.md` — it's a symlink to `CLAUDE.md` (single source of truth for both Claude and codex/AGENTS.md-convention tools). Edit `CLAUDE.md`.
 - Don't add Swift files via Xcode "Add Files…" — drop them in `Sources/PRBar/<subdir>/` and run `bin/regen`.
 - Don't push non-trivial changes straight to `main` — see §Workflow at the top of this file for the PR-and-CI gate and the doc-only / emergency override.
-- Don't call `claude` with `--permission-mode default` or `bypassPermissions` from app code. See PLAN.md §"AI Review Pipeline" for the locked invocation shape.
+- Don't call `claude` with `--permission-mode default` or `bypassPermissions` from app code. The locked invocation shape is `ClaudeProvider.buildArgs` (+ its argv test) and §Architecture above — not a separate spec doc.
 - Don't add `Edit` / `Write` / `Task` / `Agent` to claude's `--allowedTools` list — the AI is a judge, not a fixer. `Bash` (+ `Read`/`Glob`/`Grep`) **is** allowed, but **only** in `.sandboxed` mode where the OS Seatbelt sandbox (`--settings` `sandbox.enabled`) enforces read-only + no-network so the judge can run `git diff`/grep but can't mutate or exfiltrate. Never allow `Bash` without that sandbox (`.minimal`/`.none` keep it disallowed). The sandbox-enforced read-only boundary is what makes broad `Bash` safe — verified headless under `--permission-mode plan`. Codex gets the equivalent for free via `exec --sandbox read-only`; don't relax it to `workspace-write`/`danger-full-access` (a judge never writes).
 - Don't drop `--quiet` from `bin/build` (test output is silenced there on purpose) or *add* it to `bin/test` (we want test pass/fail visible).
 - Don't merge work without `bin/test` green locally. Integration tests catch real schema drift; ignoring them defeats the purpose.

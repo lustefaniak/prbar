@@ -9,7 +9,6 @@ on:
     # reports — no merge-block surprise.
     paths-ignore:
       - CLAUDE.md
-      - PLAN.md
       - README.md
       - docs/**
   pull_request:

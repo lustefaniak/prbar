@@ -221,8 +221,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
     }
 
     /// No bundled configs — repo-specific layouts belong with their
-    /// repos (see PLAN.md: per-repo `.prbar.yml` is the planned source
-    /// of truth) or in the user's `RepoConfigStore` overrides.
+    /// repos (per-repo `.prbar.yml` is the planned source of truth) or
+    /// in the user's `RepoConfigStore` overrides.
     static let builtins: [RepoConfig] = []
 
     func matches(nameWithOwner: String) -> Bool {

@@ -82,7 +82,7 @@ struct DiffAnnotation: Codable, Sendable, Hashable {
 
     /// Hard cap for `displayTitle` length, regardless of what the AI
     /// emits. The schema can't enforce `maxLength` (claude's
-    /// `--json-schema` rejects it — see PLAN.md gotchas) so we trim
+    /// `--json-schema` rejects it — see CLAUDE.md gotchas) so we trim
     /// client-side as a safety net. The full title stays in `title` on
     /// the underlying model; only the rendered string is truncated.
     static let titleHardCap = 80
