@@ -608,21 +608,17 @@ final class ReviewQueueWorker {
 
             // Provision one worktree at the PR's head and reuse it across
             // all subreviews (same SHA, different subpaths). `.sandboxed`
-            // additionally fetches the base and cone-sparses to the changed
-            // dirs so the agent can diff/explore offline without faulting
-            // an entire monorepo.
+            // additionally fetches the base so the agent can diff offline.
+            // The worktree is a full checkout (no sparse cone) so the agent
+            // can read any referenced file with plain Read/Grep.
             var sharedHandle: RepoCheckoutManager.Handle? = nil
             if effectiveToolMode == .minimal || effectiveToolMode == .sandboxed,
                let mgr = checkoutManager {
-                let sparseDirs = effectiveToolMode == .sandboxed
-                    ? Self.changedTopDirs(subdiffs)
-                    : []
                 do {
                     sharedHandle = try await mgr.provision(
                         owner: pr.owner, repo: pr.repo,
                         headSha: pr.headSha, subpath: "",
-                        baseRef: effectiveToolMode == .sandboxed ? pr.baseRef : "",
-                        sparseDirs: sparseDirs
+                        baseRef: effectiveToolMode == .sandboxed ? pr.baseRef : ""
                     )
                 } catch {
                     // Checkout unavailable (no git/gh, network, etc.) — degrade
@@ -783,23 +779,6 @@ final class ReviewQueueWorker {
     /// worktree, that's `<worktree>/<subpath>` (or worktree root for the
     /// trivial single-subdiff case). In `.none` mode, just an empty temp
     /// dir per subreview — there's nothing to read either way.
-    /// Parent directories of the PR's changed files, used to cone-sparse
-    /// the `.sandboxed` worktree so a monorepo checkout stays bounded to
-    /// the relevant slice. Root-level files (no parent) come for free via
-    /// cone mode, so they're omitted here. `git diff`/`git show` still see
-    /// the whole tree regardless of the sparse cone.
-    static func changedTopDirs(_ subdiffs: [Subdiff]) -> [String] {
-        var dirs = Set<String>()
-        for sd in subdiffs {
-            for path in sd.filePaths {
-                let comps = path.split(separator: "/")
-                if comps.count > 1 {
-                    dirs.insert(comps.dropLast().joined(separator: "/"))
-                }
-            }
-        }
-        return Array(dirs)
-    }
 
     private func resolveWorkdir(handle: RepoCheckoutManager.Handle?, subpath: String) -> URL {
         if let handle {

@@ -96,8 +96,7 @@ actor RepoCheckoutManager {
         repo: String,
         headSha: String,
         subpath: String,
-        baseRef: String = "",
-        sparseDirs: [String] = []
+        baseRef: String = ""
     ) async throws -> Handle {
         try await ensureBareClone(owner: owner, repo: repo)
         try await fetchSha(owner: owner, repo: repo, headSha: headSha)
@@ -108,7 +107,7 @@ actor RepoCheckoutManager {
             ? ""
             : await fetchBaseRef(owner: owner, repo: repo, baseRef: baseRef, headSha: headSha)
         let worktree = try await addWorktree(
-            owner: owner, repo: repo, headSha: headSha, sparseDirs: sparseDirs
+            owner: owner, repo: repo, headSha: headSha
         )
         // Fault the changed-file blobs (both sides) into the bare object
         // store while we still have network, so the sandboxed review can
@@ -232,44 +231,29 @@ actor RepoCheckoutManager {
     private func addWorktree(
         owner: String,
         repo: String,
-        headSha: String,
-        sparseDirs: [String] = []
+        headSha: String
     ) async throws -> URL {
         let bare = barePath(owner: owner, repo: repo)
         let suffix = "\(headSha.prefix(12))-\(UUID().uuidString.prefix(8))"
         let worktree = worktreesDir.appendingPathComponent(suffix, isDirectory: true)
-        // A full checkout faults every blob at head — fine for small repos
-        // but ruinous on a monorepo. When we know the changed directories
-        // (`.sandboxed` mode), cone-sparse the checkout to just those so
-        // only the relevant slice is materialized. `git diff`/`git show`
-        // still see the whole tree (they read objects, not the worktree),
-        // so the agent's diff is complete regardless of the sparse cone.
-        let dirs = sparseDirs.filter { !$0.isEmpty }
-        var addArgs = ["--git-dir", bare.path, "worktree", "add"]
-        if !dirs.isEmpty { addArgs.append("--no-checkout") }
-        addArgs += ["--detach", worktree.path, headSha]
-        let result = try await runGit(args: addArgs)
+        // Full checkout at head. The bare clone is blobless
+        // (`--filter=blob:none`), so this faults every blob at head in one
+        // batched promisor fetch on the first review of a repo; later SHAs
+        // reuse the cached objects. We deliberately don't cone-sparse: a
+        // complete working tree lets the AI judge read referenced-but-
+        // unchanged files (sibling defs, imported types) with plain
+        // Read/Grep, instead of finding them absent and escaping the
+        // worktree to `find /` the whole disk for them — which both blinds
+        // the review and trips TCC prompts on protected dirs (Music, etc.).
+        let result = try await runGit(args: [
+            "--git-dir", bare.path, "worktree", "add", "--detach", worktree.path, headSha,
+        ])
         guard result.succeeded else {
             throw CheckoutError.execFailed(
                 command: "git worktree add",
                 stderr: result.stderrString ?? "",
                 exitCode: result.exitCode
             )
-        }
-        if !dirs.isEmpty {
-            // Restrict the cone to the listed dirs (plus top-level files),
-            // then populate the working tree — `--no-checkout` left it
-            // empty, so an explicit checkout is required to write the cone.
-            _ = try? await runGit(args: ["-C", worktree.path, "sparse-checkout", "init", "--cone"])
-            let setResult = try await runGit(
-                args: ["-C", worktree.path, "sparse-checkout", "set"] + dirs
-            )
-            if !setResult.succeeded {
-                // Sparse setup failed — fall back to a full checkout so the
-                // worktree is at least usable.
-                _ = try? await runGit(args: ["-C", worktree.path, "sparse-checkout", "disable"])
-            }
-            _ = try? await runGit(args: ["-C", worktree.path, "checkout"])
         }
         return worktree
     }

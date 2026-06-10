@@ -136,6 +136,11 @@ final class ContextAssemblerTests: XCTestCase {
         XCTAssertFalse(bundle.userPrompt.contains("```diff"))
         // Instead the agent is told to explore via git against the base.
         XCTAssertTrue(bundle.userPrompt.contains("git diff abc123base HEAD"))
+        // It must be steered to stay inside the full checkout rather than
+        // escalate to a whole-filesystem `find /` for an absent file — the
+        // regression that tripped TCC media-library prompts under PRBar.
+        XCTAssertTrue(bundle.userPrompt.contains("find /"))
+        XCTAssertTrue(bundle.userPrompt.lowercased().contains("stay within"))
         XCTAssertTrue(bundle.systemPrompt.isEmpty == false)
         XCTAssertEqual(bundle.baseSha, "abc123base")
         // The changed-file list still renders (derived from hunks).

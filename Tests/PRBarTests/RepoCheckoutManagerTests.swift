@@ -156,7 +156,7 @@ final class RepoCheckoutManagerTests: XCTestCase {
         await manager.release(h2)
     }
 
-    func testSandboxedProvisionFetchesBaseAndConeSparses() async throws {
+    func testSandboxedProvisionFetchesBaseAndChecksOutFullTree() async throws {
         // main stays at the initial commit (the base); a feature commit
         // (the head) adds files under alpha/ and beta/.
         try await runGit(in: fixtureRepoPath, ["checkout", "-q", "-b", "feature"])
@@ -185,18 +185,19 @@ final class RepoCheckoutManagerTests: XCTestCase {
         let handle = try await manager.provision(
             owner: "fixture", repo: "test",
             headSha: headSha, subpath: "",
-            baseRef: "main", sparseDirs: ["alpha"]   // deliberately only alpha
+            baseRef: "main"
         )
 
         // Base ref resolved to a SHA.
         XCTAssertEqual(handle.baseSha, baseShaExpected)
-        // Cone sparse: alpha materialized on disk, beta excluded.
+        // Full checkout: every dir is materialized on disk, so the agent can
+        // read any referenced file with plain Read/Grep — no sparse cone, no
+        // reason to escape the worktree hunting for an absent file.
         let alpha = handle.worktreePath.appendingPathComponent("alpha/f.txt")
         let beta = handle.worktreePath.appendingPathComponent("beta/f.txt")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: alpha.path), "alpha should be in the sparse cone")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: beta.path), "beta should be excluded by the cone")
-        // `git diff <base> HEAD` still sees the whole change (objects, not
-        // the worktree) — both files appear despite beta being sparse-out.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: alpha.path), "alpha should be checked out")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: beta.path), "beta should be checked out")
+        // `git diff <base> HEAD` sees the whole change.
         let diff = try await capturedGit(in: handle.worktreePath, ["diff", handle.baseSha, "HEAD", "--name-only"])
         XCTAssertTrue(diff.contains("alpha/f.txt"))
         XCTAssertTrue(diff.contains("beta/f.txt"))

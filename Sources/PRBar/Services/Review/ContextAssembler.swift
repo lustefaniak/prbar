@@ -146,9 +146,13 @@ enum ContextAssembler {
         let subpath = subdiff.subpath
         let scope = subpath.isEmpty ? "" : " -- ."
         var s = "## Reviewing the change\n\n"
-        s += "The PR head is checked out in your working directory "
-        s += subpath.isEmpty ? "(repo root)" : "(`\(subpath)`)"
-        s += ". The diff is **not** inlined — inspect it yourself with git:\n\n"
+        s += "The full repo at the PR head is checked out. Your working directory is "
+        s += subpath.isEmpty ? "the repo root" : "the `\(subpath)` subfolder"
+        if !subpath.isEmpty {
+            s += "; the rest of the repo is on disk above it — read files elsewhere "
+            s += "in the tree with `git show HEAD:<repo-relative-path>` or by reading up from the root"
+        }
+        s += ". Inspect the change with git:\n\n"
 
         guard !baseSha.isEmpty else {
             s += "- Change: `git diff HEAD~1 HEAD` (base SHA was unavailable)\n"
@@ -223,14 +227,18 @@ enum ContextAssembler {
         switch mode {
         case .sandboxed:
             return """
-            You are reviewing a real checkout of this PR's head commit in \
-            your working directory, with read-only shell access (git, \
-            grep, cat, find) and the ability to read any file. Inspect the \
-            change with `git diff` (commands below) and read surrounding \
-            files for context as needed — the diff is not inlined. The \
-            environment is OS-sandboxed: read-only, no network. **Never \
-            attempt to fix the PR.** If the change is too opaque to judge \
-            after a few lookups, return verdict "abstain".
+            You are reviewing a full checkout of this PR's head commit, with \
+            read-only shell access (git, grep, cat). The entire repo at this \
+            commit is present on disk — read any referenced file (sibling \
+            definitions, imported types, configs) directly with \
+            Read/Grep/cat. Inspect the change with `git diff` (commands \
+            below). **Everything you need is inside \
+            the repo checkout — stay within it. Never use absolute paths to \
+            reach outside the checkout, and never run `find /` or otherwise \
+            search the wider filesystem.** The environment is OS-sandboxed: \
+            read-only, no network. **Never attempt to fix the PR.** If the \
+            change is too opaque to judge after a few lookups, return \
+            verdict "abstain".
             """
         case .minimal:
             return """

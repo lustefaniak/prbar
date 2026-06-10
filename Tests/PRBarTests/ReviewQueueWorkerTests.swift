@@ -3,17 +3,6 @@ import XCTest
 
 @MainActor
 final class ReviewQueueWorkerTests: XCTestCase {
-    func testChangedTopDirsCollectsParentDirsAndSkipsRootFiles() {
-        let sd = Subdiff(subpath: "", hunks: [
-            Hunk(filePath: "a/b/x.go", oldStart: 1, oldCount: 0, newStart: 1, newCount: 1, lines: [.added("x")]),
-            Hunk(filePath: "a/c/y.go", oldStart: 1, oldCount: 0, newStart: 1, newCount: 1, lines: [.added("y")]),
-            Hunk(filePath: "root.txt", oldStart: 1, oldCount: 0, newStart: 1, newCount: 1, lines: [.added("z")]),
-        ])
-        // Parent dirs are cone-sparse targets; a root-level file (no parent)
-        // is covered by cone mode's top-level files and intentionally omitted.
-        XCTAssertEqual(Set(ReviewQueueWorker.changedTopDirs([sd])), ["a/b", "a/c"])
-    }
-
     func testEnqueueRunsReviewAndStoresResult() async throws {
         let pr = makePR(nodeId: "PR_1", number: 1)
         let stubProvider = StubProvider(verdict: .approve, summary: "ok", cost: 0.05)
