@@ -7,6 +7,11 @@ import OSLog
 enum GHActionKind: Sendable, Equatable {
     case review(kind: ReviewActionKind, body: String, comments: [GHClient.InlineComment])
     case merge(method: MergeMethod)
+    /// Queue a merge to run server-side once the PR becomes mergeable
+    /// (`gh pr merge --auto`). The method picks the eventual strategy.
+    case enableAutoMerge(method: MergeMethod)
+    /// Cancel a pending auto-merge request (`gh pr merge --disable-auto`).
+    case disableAutoMerge
 }
 
 /// Where an action originated. Drives which `ActionLogKind` is recorded
@@ -112,6 +117,15 @@ final class ActionQueue {
     @ObservationIgnored
     var mergeExecutor: @Sendable (_ pr: InboxPR, _ method: MergeMethod) async throws -> Void = { _, _ in }
 
+    /// Enables auto-merge on a PR (`gh pr merge --auto`). Injected so tests
+    /// don't shell out.
+    @ObservationIgnored
+    var autoMergeExecutor: @Sendable (_ pr: InboxPR, _ method: MergeMethod) async throws -> Void = { _, _ in }
+
+    /// Disables a pending auto-merge request. Injected so tests don't shell out.
+    @ObservationIgnored
+    var disableAutoMergeExecutor: @Sendable (_ pr: InboxPR) async throws -> Void = { _ in }
+
     /// Action history sink — one entry per attempt (success and failure).
     @ObservationIgnored
     weak var actionLog: ActionLogStore?
@@ -150,6 +164,19 @@ final class ActionQueue {
                 method: method, deleteBranch: false
             )
         }
+        q.autoMergeExecutor = { pr, method in
+            let c = try client ?? GHClient()
+            try await c.mergePR(
+                owner: pr.owner, repo: pr.repo, number: pr.number,
+                method: method, deleteBranch: false, auto: true
+            )
+        }
+        q.disableAutoMergeExecutor = { pr in
+            let c = try client ?? GHClient()
+            try await c.disableAutoMerge(
+                owner: pr.owner, repo: pr.repo, number: pr.number
+            )
+        }
         return q
     }
 
@@ -179,7 +206,12 @@ final class ActionQueue {
             PRBarLog.actions.debug("enqueue skip reason=in-flight pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
             return
         }
-        if case .merge(let method) = kind, !pr.allowedMergeMethods.contains(method) {
+        let mergeMethod: MergeMethod?
+        switch kind {
+        case .merge(let m), .enableAutoMerge(let m): mergeMethod = m
+        default: mergeMethod = nil
+        }
+        if let method = mergeMethod, !pr.allowedMergeMethods.contains(method) {
             let msg = "\(method.displayName) is disabled on \(pr.nameWithOwner)."
             let action = GHAction(pr: pr, kind: kind, source: source, costUsd: costUsd)
             entries[nodeId] = ActionEntry(action: action, state: .failed(msg))
@@ -241,6 +273,12 @@ final class ActionQueue {
             case .merge(let method):
                 try await mergeExecutor(pr, method)
                 recordSuccess(action)
+            case .enableAutoMerge(let method):
+                try await autoMergeExecutor(pr, method)
+                recordSuccess(action)
+            case .disableAutoMerge:
+                try await disableAutoMergeExecutor(pr)
+                recordSuccess(action)
             }
             // Terminal success: drop the slot and let the caller refresh.
             entries[nodeId] = nil
@@ -282,6 +320,10 @@ final class ActionQueue {
             return (logKind, body.isEmpty ? nil : body)
         case .merge(let method):
             return (.merge, method.rawValue)
+        case .enableAutoMerge(let method):
+            return (.autoMergeEnable, method.rawValue)
+        case .disableAutoMerge:
+            return (.autoMergeDisable, nil)
         }
     }
 
@@ -289,6 +331,8 @@ final class ActionQueue {
         switch kind {
         case .review(let k, _, _): return "review(\(k.rawValue))"
         case .merge(let m): return "merge(\(m.rawValue))"
+        case .enableAutoMerge(let m): return "enableAutoMerge(\(m.rawValue))"
+        case .disableAutoMerge: return "disableAutoMerge"
         }
     }
 }

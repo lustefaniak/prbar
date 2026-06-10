@@ -55,6 +55,12 @@ struct PRDetailView: View {
     @State private var reviewsExpanded: Bool = false
     @State private var branchCopied: Bool = false
 
+    /// Merge confirmation dialog state (own PRs). Mirrors `PRRowView`'s
+    /// pattern: stash the chosen method, then confirm before enqueuing the
+    /// immediate merge.
+    @State private var showMergeConfirm = false
+    @State private var pendingMergeMethod: MergeMethod = .squash
+
     /// Set when the user clicks an annotation row → drives scroll +
     /// expand-bubble in the diff. Cleared after a short delay so the
     /// same annotation can be re-clicked to re-jump.
@@ -113,6 +119,13 @@ struct PRDetailView: View {
     /// genuine cross-team setup.
     private var showsReviewActions: Bool {
         pr.role == .reviewRequested || pr.role == .both
+    }
+
+    /// Merge / auto-merge controls only make sense on PRs the viewer
+    /// authored (GitHub lets you merge your own PR; `.both` keeps both
+    /// the review card and the merge card — a genuine cross-team setup).
+    private var showsMergeActions: Bool {
+        pr.role == .authored || pr.role == .both
     }
 
     /// Effective per-PR include-AI-summary state: explicit override
@@ -187,6 +200,22 @@ struct PRDetailView: View {
             if showsReviewActions {
                 actionsCard
             }
+            if showsMergeActions {
+                mergeCard
+            }
+        }
+        .confirmationDialog(
+            "\(pendingMergeMethod.displayName) #\(pr.numberString)?",
+            isPresented: $showMergeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(pendingMergeMethod.displayName, role: .destructive) {
+                rememberMergeMethod(pendingMergeMethod)
+                actionQueue.enqueue(pr, kind: .merge(method: pendingMergeMethod))
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\(pr.title)\n\(pr.nameWithOwner) → \(pr.baseRef)")
         }
         .onAppear {
             diffStore.ensureLoaded(for: pr)
@@ -989,6 +1018,182 @@ struct PRDetailView: View {
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(.quaternary, lineWidth: 1)
             )
+    }
+
+    // MARK: - merge actions (own PRs)
+
+    /// Persist the last merge method chosen per-repo so the split button's
+    /// primary action defaults to "what you did last time" here. Shares the
+    /// `lastMergeMethod.<owner>/<repo>` key with `PRRowView` so the detail
+    /// view and the inbox row stay in sync.
+    private var mergeDefaultsKey: String { "lastMergeMethod.\(pr.nameWithOwner)" }
+
+    private var defaultMergeMethod: MergeMethod {
+        if let raw = UserDefaults.standard.string(forKey: mergeDefaultsKey),
+           let stored = MergeMethod(rawValue: raw),
+           pr.allowedMergeMethods.contains(stored) {
+            return stored
+        }
+        return pr.preferredMergeMethod ?? .squash
+    }
+
+    private func rememberMergeMethod(_ m: MergeMethod) {
+        UserDefaults.standard.set(m.rawValue, forKey: mergeDefaultsKey)
+    }
+
+    /// Merge surface for PRs the viewer authored — the analogue of
+    /// `actionsCard` for the review path. Shows merge-readiness status plus
+    /// the right action: immediate merge when ready, enable-auto-merge when
+    /// blocked but the repo allows it, disable-auto-merge when one is queued.
+    private var mergeCard: some View {
+        mergeSection
+            .padding(12)
+            .background(.quinary, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(.quaternary, lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private var mergeSection: some View {
+        let isBusy = actionQueue.isBusy(pr.nodeId)
+        VStack(alignment: .leading, spacing: 8) {
+            mergeStatusLine
+
+            HStack(spacing: 8) {
+                if pr.isReadyToMerge {
+                    mergeSplitButton(disabled: isBusy)
+                } else if pr.autoMergeAllowed && !pr.hasAutoMerge {
+                    enableAutoMergeButton(disabled: isBusy)
+                }
+
+                if pr.hasAutoMerge {
+                    Button(role: .destructive) {
+                        actionQueue.enqueue(pr, kind: .disableAutoMerge)
+                    } label: {
+                        Label("Disable auto-merge", systemImage: "clock.badge.xmark")
+                            .font(.callout)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isBusy)
+                }
+
+                if isBusy {
+                    ProgressView().controlSize(.small)
+                }
+
+                Spacer()
+
+                Button {
+                    NSWorkspace.shared.open(pr.url)
+                } label: {
+                    Label("Open", systemImage: "safari")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Open this PR on GitHub")
+            }
+
+            // For `.both` PRs the review `actionsCard` already renders the
+            // shared failure banner (it reads the same per-PR action state),
+            // so only show ours when this is the sole action surface.
+            if !showsReviewActions, case .failed(let msg) = actionQueue.state(for: pr.nodeId) {
+                actionFailedBanner(message: msg)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var mergeStatusLine: some View {
+        if pr.hasAutoMerge {
+            Label {
+                let who = pr.autoMergeEnabledBy.map { " by @\($0)" } ?? ""
+                Text("Auto-merge enabled\(who) — merges automatically once checks pass")
+            } icon: {
+                Image(systemName: "clock.arrow.2.circlepath").foregroundStyle(.blue)
+            }
+            .font(.caption)
+        } else if let reason = pr.mergeBlockReason {
+            Label { Text(reason) } icon: {
+                Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else {
+            Label { Text("Ready to merge") } icon: {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+            }
+            .font(.caption)
+        }
+    }
+
+    /// Green split button — primary fires the default method (confirmed via
+    /// dialog), the chevron menu offers the other repo-allowed methods.
+    @ViewBuilder
+    private func mergeSplitButton(disabled: Bool) -> some View {
+        let primary = defaultMergeMethod
+        let alternatives = MergeMethod.allCases.filter {
+            pr.allowedMergeMethods.contains($0) && $0 != primary
+        }
+        Menu {
+            ForEach(alternatives, id: \.rawValue) { method in
+                Button {
+                    pendingMergeMethod = method
+                    showMergeConfirm = true
+                } label: {
+                    Label(method.displayName, systemImage: "arrow.triangle.merge")
+                }
+            }
+        } label: {
+            Label(primary.shortDisplayName, systemImage: "arrow.triangle.merge")
+                .labelStyle(.titleAndIcon)
+                .font(.callout.weight(.semibold))
+        } primaryAction: {
+            pendingMergeMethod = primary
+            showMergeConfirm = true
+        }
+        .menuStyle(.button)
+        .buttonStyle(.borderedProminent)
+        .tint(.green)
+        .controlSize(.small)
+        .fixedSize()
+        .disabled(disabled)
+        .help("\(primary.displayName) #\(pr.numberString) — click chevron for alternatives")
+    }
+
+    /// Enable-auto-merge split button. No confirmation — it's reversible and
+    /// nothing merges until checks pass. Primary uses the default method; the
+    /// chevron offers the other allowed methods.
+    @ViewBuilder
+    private func enableAutoMergeButton(disabled: Bool) -> some View {
+        let primary = defaultMergeMethod
+        let alternatives = MergeMethod.allCases.filter {
+            pr.allowedMergeMethods.contains($0) && $0 != primary
+        }
+        Menu {
+            ForEach(alternatives, id: \.rawValue) { method in
+                Button {
+                    rememberMergeMethod(method)
+                    actionQueue.enqueue(pr, kind: .enableAutoMerge(method: method))
+                } label: {
+                    Label("Auto-merge (\(method.shortDisplayName))", systemImage: "clock.arrow.2.circlepath")
+                }
+            }
+        } label: {
+            Label("Enable auto-merge", systemImage: "clock.arrow.2.circlepath")
+                .font(.callout)
+        } primaryAction: {
+            rememberMergeMethod(primary)
+            actionQueue.enqueue(pr, kind: .enableAutoMerge(method: primary))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .fixedSize()
+        .disabled(disabled)
+        .help("Queue a \(primary.displayName.lowercased()) to run once required checks and reviews pass")
     }
 
     /// Action surface, sits directly under the AI verdict + summary +

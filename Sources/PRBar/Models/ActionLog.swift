@@ -94,6 +94,8 @@ enum ActionLogKind: String, Sendable, CaseIterable {
     case comment
     case requestChanges = "request_changes"
     case autoApprove = "auto_approve"
+    case autoMergeEnable = "auto_merge_enable"
+    case autoMergeDisable = "auto_merge_disable"
     case other
 
     var displayName: String {
@@ -103,6 +105,8 @@ enum ActionLogKind: String, Sendable, CaseIterable {
         case .comment: "Commented"
         case .requestChanges: "Requested changes"
         case .autoApprove: "Auto-approved"
+        case .autoMergeEnable: "Auto-merge enabled"
+        case .autoMergeDisable: "Auto-merge disabled"
         case .other: "Other"
         }
     }
@@ -113,6 +117,8 @@ enum ActionLogKind: String, Sendable, CaseIterable {
         case .approve, .autoApprove: "checkmark.seal.fill"
         case .comment: "text.bubble"
         case .requestChanges: "exclamationmark.bubble"
+        case .autoMergeEnable: "clock.arrow.2.circlepath"
+        case .autoMergeDisable: "clock.badge.xmark"
         case .other: "circle"
         }
     }

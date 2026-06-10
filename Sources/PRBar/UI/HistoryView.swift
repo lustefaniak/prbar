@@ -163,6 +163,8 @@ private struct HistoryRow: View {
         case .approve, .autoApprove: .green
         case .comment:        .blue
         case .requestChanges: .orange
+        case .autoMergeEnable: .blue
+        case .autoMergeDisable: .secondary
         case .other:          .secondary
         }
     }

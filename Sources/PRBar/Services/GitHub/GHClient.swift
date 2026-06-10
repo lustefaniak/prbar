@@ -251,13 +251,21 @@ actor GHClient {
         repo: String,
         number: Int,
         method: MergeMethod,
-        deleteBranch: Bool = false
+        deleteBranch: Bool = false,
+        auto: Bool = false
     ) async throws {
         var args: [String] = [
             "pr", "merge", "\(number)",
             "--repo", "\(owner)/\(repo)",
             method.ghFlag,
         ]
+        // `--auto` tells GitHub to merge automatically once required checks
+        // and reviews pass, instead of failing immediately when the PR isn't
+        // yet mergeable. The method flag still applies — it picks the
+        // strategy the queued merge will use.
+        if auto {
+            args.append("--auto")
+        }
         if deleteBranch {
             args.append("--delete-branch")
         }
@@ -265,6 +273,29 @@ actor GHClient {
         let result = try await ProcessRunner.run(
             executable: executablePath,
             args: args
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+    }
+
+    /// Cancel a pending auto-merge request. No method flag — `--disable-auto`
+    /// only clears the queued merge; it doesn't merge anything.
+    func disableAutoMerge(
+        owner: String,
+        repo: String,
+        number: Int
+    ) async throws {
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: [
+                "pr", "merge", "\(number)",
+                "--repo", "\(owner)/\(repo)",
+                "--disable-auto",
+            ]
         )
         guard result.succeeded else {
             throw GHError.execFailed(

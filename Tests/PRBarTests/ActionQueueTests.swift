@@ -43,6 +43,60 @@ final class ActionQueueTests: XCTestCase {
         XCTAssertEqual(calls, ["o/r#7 [squash]"])
     }
 
+    func testEnableAutoMergeRunsAutoMergeExecutor() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "queued")
+        let autoRec = AsyncRecorder()
+        let mergeRec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.mergeExecutor = { _, method in await mergeRec.record(method.rawValue) }
+        q.autoMergeExecutor = { pr, method in
+            await autoRec.record("\(pr.owner)/\(pr.repo)#\(pr.number) [\(method.rawValue)]")
+        }
+
+        q.enqueue(pr, kind: .enableAutoMerge(method: .squash))
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let auto = await autoRec.calls
+        let merge = await mergeRec.calls
+        XCTAssertEqual(auto, ["o/r#7 [squash]"])
+        XCTAssertTrue(merge.isEmpty, "enable-auto-merge must not run the immediate-merge executor")
+    }
+
+    func testDisableAutoMergeRunsDisableExecutor() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "cancel queued")
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.disableAutoMergeExecutor = { pr in await rec.record(pr.nodeId) }
+
+        q.enqueue(pr, kind: .disableAutoMerge)
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["PR_a"])
+    }
+
+    func testEnableAutoMergeWithDisallowedMethodFailsImmediately() async throws {
+        let pr = makePR(
+            nodeId: "PR_a", number: 7, title: "linear-only",
+            allowedMergeMethods: [.squash, .rebase]
+        )
+        let rec = AsyncRecorder()
+        let q = ActionQueue()
+        q.autoMergeExecutor = { _, method in await rec.record(method.rawValue) }
+
+        q.enqueue(pr, kind: .enableAutoMerge(method: .merge))   // disallowed
+
+        guard case .failed(let msg) = q.state(for: "PR_a") else {
+            return XCTFail("expected immediate failed state")
+        }
+        XCTAssertTrue(msg.contains("disabled"))
+        try await Task.sleep(for: .milliseconds(50))
+        let calls = await rec.calls
+        XCTAssertTrue(calls.isEmpty, "auto-merge executor must not run for a disallowed method")
+    }
+
     // MARK: - dedup / serialization
 
     func testSecondEnqueueWhileBusyIsNoOp() async throws {

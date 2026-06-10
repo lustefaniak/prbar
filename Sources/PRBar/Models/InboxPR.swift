@@ -141,6 +141,31 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
             && (role == .authored || role == .both)
     }
 
+    /// Human-readable reason this PR can't be merged right now, or nil when
+    /// it's click-to-merge ready. Drives the merge action card's status line
+    /// and explains why the immediate-merge button is disabled. Ordered most-
+    /// blocking first so the single surfaced reason is the actionable one.
+    var mergeBlockReason: String? {
+        if isReadyToMerge { return nil }
+        if isDraft { return "Draft — mark ready for review to merge" }
+        if allowedMergeMethods.isEmpty { return "No merge method enabled for this repo" }
+        switch reviewDecision {
+        case "CHANGES_REQUESTED": return "Changes requested"
+        case "REVIEW_REQUIRED": return "Review required"
+        default: break
+        }
+        if mergeable == "CONFLICTING" || mergeStateStatus == "DIRTY" || mergeStateStatus == "CONFLICTING" {
+            return "Merge conflicts — rebase needed"
+        }
+        switch checkRollupState {
+        case "FAILURE", "ERROR": return "Checks failing"
+        case "PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS": return "Checks pending"
+        default: break
+        }
+        if mergeStateStatus == "BLOCKED" { return "Blocked by branch protection" }
+        return "Not mergeable yet (\(mergeStateStatus))"
+    }
+
     /// The viewer's most recent submitted review, if they've reviewed
     /// this PR at all. Drives the "you already reviewed" indicator.
     var myLastReview: PRReviewSummary? {
