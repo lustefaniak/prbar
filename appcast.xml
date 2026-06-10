@@ -2,6 +2,15 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
     <channel>
         <item>
+            <title>Version 0.6.2</title>
+            <link>https://github.com/lustefaniak/prbar/releases/tag/v0.6.2</link>
+            <sparkle:version>161</sparkle:version>
+            <sparkle:shortVersionString>0.6.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <pubDate>Wed, 10 Jun 2026 10:51:44 +0000</pubDate>
+            <enclosure url="https://github.com/lustefaniak/prbar/releases/download/v0.6.2/PRBar-v0.6.2.dmg" sparkle:edSignature="6NCkJMI6jZZuk+QTdlsl8y1sFM1rDBcNpEv2qmj86VrKs3a97359HVsIQZ6AVfPsF0jcc7S0h/k1ZPR6D5BrCw==" length="4000247" type="application/octet-stream" />
+        </item>
+        <item>
             <title>Version 0.6.1</title>
             <link>https://github.com/lustefaniak/prbar/releases/tag/v0.6.1</link>
             <sparkle:version>158</sparkle:version>
