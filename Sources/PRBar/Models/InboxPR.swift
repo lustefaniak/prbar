@@ -98,6 +98,11 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     let hasAutoMerge: Bool
     let autoMergeEnabledBy: String?
 
+    /// The merge strategy a pending auto-merge will use, when one is enabled
+    /// (`autoMergeRequest.mergeMethod`). Defaulted so test constructors and
+    /// pre-existing cached payloads don't have to supply it.
+    var autoMergeMethod: MergeMethod? = nil
+
     let allCheckSummaries: [CheckSummary]
 
     /// Human reviews on this PR, oldest-first (GraphQL `reviews(last:)`
@@ -189,7 +194,7 @@ extension InboxPR {
         case headRef, baseRef, headSha, isDraft, role
         case mergeable, mergeStateStatus, reviewDecision, checkRollupState
         case totalAdditions, totalDeletions, changedFiles
-        case hasAutoMerge, autoMergeEnabledBy, allCheckSummaries
+        case hasAutoMerge, autoMergeEnabledBy, autoMergeMethod, allCheckSummaries
         case allowedMergeMethods, autoMergeAllowed, deleteBranchOnMerge
         case humanReviews, issueComments
     }
@@ -223,6 +228,7 @@ extension InboxPR {
         self.changedFiles = try c.decode(Int.self, forKey: .changedFiles)
         self.hasAutoMerge = try c.decode(Bool.self, forKey: .hasAutoMerge)
         self.autoMergeEnabledBy = try c.decodeIfPresent(String.self, forKey: .autoMergeEnabledBy)
+        self.autoMergeMethod = try c.decodeIfPresent(MergeMethod.self, forKey: .autoMergeMethod)
         self.allCheckSummaries = try c.decode([CheckSummary].self, forKey: .allCheckSummaries)
         self.allowedMergeMethods = try c.decode(Set<MergeMethod>.self, forKey: .allowedMergeMethods)
         self.autoMergeAllowed = try c.decode(Bool.self, forKey: .autoMergeAllowed)
@@ -255,6 +261,8 @@ extension InboxPR {
         self.changedFiles = node.changedFiles
         self.hasAutoMerge = node.autoMergeRequest != nil
         self.autoMergeEnabledBy = node.autoMergeRequest?.enabledBy?.login
+        self.autoMergeMethod = node.autoMergeRequest?.mergeMethod
+            .flatMap { MergeMethod(rawValue: $0.lowercased()) }
 
         var methods: Set<MergeMethod> = []
         if node.repository.squashMergeAllowed { methods.insert(.squash) }

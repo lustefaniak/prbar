@@ -1118,8 +1118,9 @@ struct PRDetailView: View {
     private var mergeStatusLine: some View {
         if pr.hasAutoMerge {
             Label {
+                let method = pr.autoMergeMethod.map { " (\($0.shortDisplayName))" } ?? ""
                 let who = pr.autoMergeEnabledBy.map { " by @\($0)" } ?? ""
-                Text("Auto-merge enabled\(who) — merges automatically once checks pass")
+                Text("Auto-merge\(method) enabled\(who) — merges automatically once checks pass")
             } icon: {
                 Image(systemName: "clock.arrow.2.circlepath").foregroundStyle(.blue)
             }
@@ -1187,11 +1188,11 @@ struct PRDetailView: View {
                     rememberMergeMethod(method)
                     actionQueue.enqueue(pr, kind: .enableAutoMerge(method: method))
                 } label: {
-                    Label("Auto-merge (\(method.shortDisplayName))", systemImage: "clock.arrow.2.circlepath")
+                    Label("Auto-merge · \(method.shortDisplayName)", systemImage: "clock.arrow.2.circlepath")
                 }
             }
         } label: {
-            Label("Enable auto-merge", systemImage: "clock.arrow.2.circlepath")
+            Label("Auto-merge · \(primary.shortDisplayName)", systemImage: "clock.arrow.2.circlepath")
                 .font(.callout)
         } primaryAction: {
             rememberMergeMethod(primary)

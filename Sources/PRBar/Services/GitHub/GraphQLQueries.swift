@@ -19,7 +19,7 @@ enum GraphQLQueries {
       author { login }
       headRefName baseRefName
       mergeable mergeStateStatus reviewDecision
-      autoMergeRequest { enabledBy { login } }
+      autoMergeRequest { enabledBy { login } mergeMethod }
       reviewRequests(first: 10) {
         nodes { requestedReviewer { ... on User { login } } }
       }

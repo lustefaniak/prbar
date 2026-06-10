@@ -70,6 +70,8 @@ struct InboxResponse: Decodable, Sendable {
 
     struct AutoMergeRequest: Decodable, Sendable {
         let enabledBy: Author?
+        /// GitHub's `PullRequestMergeMethod` enum: MERGE / SQUASH / REBASE.
+        let mergeMethod: String?
     }
 
     struct NodeList<T: Decodable & Sendable>: Decodable, Sendable {
