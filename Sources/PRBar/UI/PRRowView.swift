@@ -340,6 +340,11 @@ struct PRRowView: View {
                 .foregroundStyle(.red)
                 .font(.caption2)
                 .help("AI review failed — open the PR for details")
+        case .skipped(let reason):
+            Image(systemName: "minus.diamond")
+                .foregroundStyle(.secondary)
+                .font(.caption2)
+                .help("AI review skipped — \(reason.short). Open the PR and Re-run to triage anyway.")
         }
     }
 }

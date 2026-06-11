@@ -733,6 +733,16 @@ struct PRDetailView: View {
 
             case .completed(let agg):
                 completedReviewSection(agg)
+
+            case .skipped(let reason):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("AI review skipped — \(reason.detail)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Press Re-run to triage this PR anyway.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }

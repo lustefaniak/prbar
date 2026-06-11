@@ -53,6 +53,13 @@ final class AIReviewBadgeTests: XCTestCase {
         XCTAssertNil(AIReviewBadge(status: nil, reviewedSha: nil, headSha: "abc", role: .other))
     }
 
+    func testSkippedMapsToSkippedCarryingReason() {
+        for reason in ReviewState.SkipReason.allCases {
+            let badge = AIReviewBadge(status: .skipped(reason), reviewedSha: nil, headSha: "abc", role: .reviewRequested)
+            XCTAssertEqual(badge, .skipped(reason))
+        }
+    }
+
     func testInFlightShowsRegardlessOfRole() {
         // A queued/running/done review is surfaced even on authored rows
         // (e.g. a manual re-run), since the entry itself proves intent.

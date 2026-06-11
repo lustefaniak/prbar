@@ -325,7 +325,9 @@ struct PopoverView: View {
             // Treat "no review state yet" as ready too — repos with AI off
             // never enqueue, so they'd otherwise be skipped here.
             switch queue.reviews[pr.nodeId]?.status {
-            case .none, .completed, .failed: return true
+            // .skipped = AI won't triage it (e.g. repo AI off), so the human
+            // still needs to look — treat it as ready like terminal states.
+            case .none, .completed, .failed, .skipped: return true
             case .queued, .running: return false
             }
         }

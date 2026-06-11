@@ -6,23 +6,59 @@ import OSLog
 /// per-row "review status" UI in the inbox and the AI section in the
 /// detail pane.
 struct ReviewState: Sendable, Hashable, Codable {
+    /// Why auto-triage deliberately did not review a PR. Recorded as a
+    /// terminal status so the UI can explain *why* a review-requested PR
+    /// wasn't triaged instead of leaving it on a perpetual "not started".
+    enum SkipReason: String, Sendable, Hashable, Codable, CaseIterable {
+        /// `aiReviewEnabled == false` for the repo.
+        case aiReviewDisabled
+        /// PR is a draft and `reviewDrafts == false` for the repo.
+        case draftNotReviewed
+        /// Another human already reviewed and `skipAIIfReviewedByOthers` is on.
+        case reviewedByOthers
+
+        /// Full-sentence explanation for the detail pane.
+        var detail: String {
+            switch self {
+            case .aiReviewDisabled:
+                return "AI review is turned off for this repository."
+            case .draftNotReviewed:
+                return "This PR is a draft, and draft review is off for this repository."
+            case .reviewedByOthers:
+                return "Another reviewer already weighed in, and \"skip when reviewed by others\" is on for this repository."
+            }
+        }
+
+        /// Terse phrase for the row badge tooltip.
+        var short: String {
+            switch self {
+            case .aiReviewDisabled: return "AI review off for this repo"
+            case .draftNotReviewed: return "draft review off for this repo"
+            case .reviewedByOthers: return "already reviewed by others"
+            }
+        }
+    }
+
     enum Status: Sendable, Hashable, Codable {
         case queued
         case running
         case completed(AggregatedReview)
         case failed(String)
+        /// Auto-triage chose not to run for a repo-config reason. Terminal;
+        /// a manual Re-run (`force`) bypasses it, and a new head SHA re-arms.
+        case skipped(SkipReason)
 
         var isTerminal: Bool {
             switch self {
             case .queued, .running: return false
-            case .completed, .failed: return true
+            case .completed, .failed, .skipped: return true
             }
         }
 
         var isInFlight: Bool {
             switch self {
             case .queued, .running: return true
-            case .completed, .failed: return false
+            case .completed, .failed, .skipped: return false
             }
         }
     }
@@ -471,12 +507,14 @@ final class ReviewQueueWorker {
             // marks these as "ready" immediately on the human side.
             if !cfg.aiReviewEnabled {
                 PRBarLog.triage.debug("auto-enqueue skip reason=ai-disabled pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+                recordSkip(pr, reason: .aiReviewDisabled)
                 continue
             }
             // Skip drafts unless the repo config opts in — drafts churn a
             // lot and reviewing them burns cost on intermediate state.
             if pr.isDraft && !cfg.reviewDrafts {
                 PRBarLog.triage.debug("auto-enqueue skip reason=draft pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+                recordSkip(pr, reason: .draftNotReviewed)
                 continue
             }
             // Skip the AI run when another human already reviewed — it's
@@ -485,6 +523,7 @@ final class ReviewQueueWorker {
             // manual Re-run still works regardless.
             if cfg.skipAIIfReviewedByOthers && pr.isReviewedByOthers {
                 PRBarLog.triage.debug("auto-enqueue skip reason=already-reviewed-by-others pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) decision=\(pr.reviewDecision ?? "nil", privacy: .public)")
+                recordSkip(pr, reason: .reviewedByOthers)
                 continue
             }
             // A review that already failed at this exact commit is not
@@ -502,6 +541,36 @@ final class ReviewQueueWorker {
             }
             enqueue(pr)
         }
+    }
+
+    /// Record a deliberate auto-triage skip so the row/detail UI can show
+    /// *why* a review-requested PR wasn't reviewed, instead of a perpetual
+    /// "not started". Keyed at the PR's current head — a new commit re-arms
+    /// (the stale-SHA entry is replaced on the next poll). Never masks a
+    /// real review already recorded for this head (in-flight, completed, or
+    /// failed — e.g. a manual Re-run), and is a no-op when the same skip is
+    /// already recorded so repeat polls don't churn `reviews` / persistence.
+    private func recordSkip(_ pr: InboxPR, reason: ReviewState.SkipReason) {
+        if let existing = reviews[pr.nodeId], existing.headSha == pr.headSha {
+            switch existing.status {
+            case .queued, .running, .completed, .failed:
+                return
+            case .skipped(let current) where current == reason:
+                return
+            case .skipped:
+                break
+            }
+        }
+        let cfg = configResolver(pr.owner, pr.repo)
+        reviews[pr.nodeId] = ReviewState(
+            prNodeId: pr.nodeId,
+            providerId: cfg.providerOverride ?? defaultProviderId,
+            headSha: pr.headSha,
+            triggeredAt: Date(),
+            status: .skipped(reason),
+            costUsd: 0
+        )
+        persist()
     }
 
     /// Spend used by the daily cap. Queries the `ReviewLog` ledger for

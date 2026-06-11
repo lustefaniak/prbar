@@ -5,7 +5,7 @@ import Foundation
 /// staleness and the PR's role) so the badge logic is unit-testable
 /// without a live `ReviewQueueWorker`. The view layer turns each case
 /// into an icon + colour + tooltip.
-enum AIReviewBadge: Sendable, Equatable, CaseIterable {
+enum AIReviewBadge: Sendable, Equatable {
     /// No AI review yet, but one is expected for this row (the viewer was
     /// asked to review). Authored-only rows get no badge at all.
     case notYet
@@ -17,6 +17,9 @@ enum AIReviewBadge: Sendable, Equatable, CaseIterable {
     /// the verdict is for a stale snapshot and a re-run is appropriate.
     case doneStale
     case failed
+    /// Auto-triage deliberately skipped this PR for a repo-config reason;
+    /// the reason drives the tooltip so the user knows why it wasn't reviewed.
+    case skipped(ReviewState.SkipReason)
 
     /// Derive the badge from the live review entry. `nil` means "render no
     /// badge for this row".
@@ -33,6 +36,8 @@ enum AIReviewBadge: Sendable, Equatable, CaseIterable {
             self = .failed
         case .completed:
             self = reviewedSha == headSha ? .done : .doneStale
+        case .skipped(let reason):
+            self = .skipped(reason)
         case .none:
             // Without a review entry, only hint "not started" where a
             // review is actually expected. Authored-only rows never
