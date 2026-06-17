@@ -60,6 +60,20 @@ final class ProviderRelevanceTests: XCTestCase {
         XCTAssertEqual(relevant, [.claude, .codex])
     }
 
+    func testRepoOverrideMatchingDefaultDoesNotWiden() {
+        // With only two providers, {.claude, .codex} coincides with
+        // allCases, so testRepoOverrideReintroducesAProvider alone can't
+        // distinguish the union path from a wrong fall-back-to-everything.
+        // An override that names the same provider as the default must
+        // stay at exactly that one provider, never widen to both.
+        let relevant = ProviderRelevance.relevantProviders(
+            suppressionEnabled: true,
+            defaultProviderRaw: ProviderID.codex.rawValue,
+            repoOverrides: [.codex]
+        )
+        XCTAssertEqual(relevant, [.codex])
+    }
+
     func testUnrecognisedDefaultFallsBackToWarningAboutEverything() {
         let relevant = ProviderRelevance.relevantProviders(
             suppressionEnabled: true,
@@ -67,5 +81,37 @@ final class ProviderRelevanceTests: XCTestCase {
             repoOverrides: []
         )
         XCTAssertEqual(relevant, Set(ProviderID.allCases))
+    }
+
+    // MARK: - isSuppressed (probe-result → warning bridge)
+
+    func testMissingNonProviderToolIsNeverSuppressed() {
+        // gh / git aren't AI providers; a missing one is always a real
+        // warning, never silenced as "not used".
+        XCTAssertFalse(ProviderRelevance.isSuppressed(
+            toolName: "gh", available: false, relevantProviders: [.claude]))
+        XCTAssertFalse(ProviderRelevance.isSuppressed(
+            toolName: "git", available: false, relevantProviders: []))
+    }
+
+    func testInstalledProviderIsNeverSuppressed() {
+        XCTAssertFalse(ProviderRelevance.isSuppressed(
+            toolName: ProviderID.codex.rawValue,
+            available: true,
+            relevantProviders: [.claude]))
+    }
+
+    func testMissingIrrelevantProviderIsSuppressed() {
+        XCTAssertTrue(ProviderRelevance.isSuppressed(
+            toolName: ProviderID.codex.rawValue,
+            available: false,
+            relevantProviders: [.claude]))
+    }
+
+    func testMissingRelevantProviderIsNotSuppressed() {
+        XCTAssertFalse(ProviderRelevance.isSuppressed(
+            toolName: ProviderID.claude.rawValue,
+            available: false,
+            relevantProviders: [.claude]))
     }
 }

@@ -36,4 +36,20 @@ enum ProviderRelevance {
         }
         return relevant
     }
+
+    /// Whether a probed tool's missing-CLI warning should be hidden.
+    /// True only for an AI provider that is **absent** and **not** in the
+    /// relevant set. Non-provider tools (`gh`, `git`) never map to a
+    /// `ProviderID`, and present tools fail the `available` guard, so
+    /// neither is ever suppressed — their warnings always stand.
+    static func isSuppressed(
+        toolName: String,
+        available: Bool,
+        relevantProviders: Set<ProviderID>
+    ) -> Bool {
+        guard !available, let provider = ProviderID(rawValue: toolName) else {
+            return false
+        }
+        return !relevantProviders.contains(provider)
+    }
 }
