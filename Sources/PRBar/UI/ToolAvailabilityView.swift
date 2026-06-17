@@ -69,7 +69,7 @@ struct ToolAvailabilityView: View {
         ProviderRelevance.relevantProviders(
             suppressionEnabled: suppressUnusedProviderWarnings,
             defaultProviderRaw: defaultProviderRaw,
-            repoOverrides: repoConfigs.userConfigs.compactMap(\.providerOverride)
+            repoOverrides: repoConfigs.providerOverrides
         )
     }
 

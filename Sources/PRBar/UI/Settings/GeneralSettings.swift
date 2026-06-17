@@ -77,10 +77,11 @@ struct GeneralSettings: View {
                 .pickerStyle(.segmented)
 
                 Toggle("Only warn about providers I use", isOn: $suppressUnusedProviderWarnings)
+                    .help("PRBar stops flagging a backend you've configured away from as \"not installed\" — both here and in Diagnostics. A provider a repo override still points at keeps its warning; \"Auto\" keeps both, since it runs whichever is present.")
             } header: {
                 Text("AI provider")
             } footer: {
-                Text("App-wide default. \"Auto\" picks claude when it's installed, otherwise codex. A repo's `providerOverride` (Settings → Repositories) wins over this; PRDetailView's \"Re-run with…\" menu can override either for a single run. If a chosen provider isn't installed the review fails with a clear message — see Diagnostics for current status.\n\nWhen \"Only warn about providers I use\" is on, PRBar stops flagging a backend you've configured away from as \"not installed\" — both here and in Diagnostics. A provider a repo override still points at keeps its warning; \"Auto\" keeps both, since it runs whichever is present.")
+                Text("App-wide default. \"Auto\" picks claude when it's installed, otherwise codex. A repo's `providerOverride` (Settings → Repositories) wins over this; PRDetailView's \"Re-run with…\" menu can override either for a single run. If a chosen provider isn't installed the review fails with a clear message — see Diagnostics for current status.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -182,7 +183,7 @@ struct GeneralSettings: View {
         ProviderRelevance.relevantProviders(
             suppressionEnabled: suppressUnusedProviderWarnings,
             defaultProviderRaw: defaultProviderRaw,
-            repoOverrides: repoConfigs.userConfigs.compactMap(\.providerOverride)
+            repoOverrides: repoConfigs.providerOverrides
         )
     }
 

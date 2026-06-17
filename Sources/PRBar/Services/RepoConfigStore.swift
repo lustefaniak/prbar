@@ -17,6 +17,14 @@ import SwiftData
 final class RepoConfigStore {
     private(set) var userConfigs: [RepoConfig]
 
+    /// Every provider a per-repo override currently points at. Single
+    /// source for the `ProviderRelevance` call sites (General Settings
+    /// picker labels, Diagnostics tool list) so the `compactMap` predicate
+    /// can't drift between them.
+    var providerOverrides: [ProviderID] {
+        userConfigs.compactMap(\.providerOverride)
+    }
+
     @ObservationIgnored
     private let container: ModelContainer
 
