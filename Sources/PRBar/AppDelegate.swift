@@ -238,6 +238,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// A reopen (Dock/Finder open of the already-running app, or a
+    /// re-launch that single-instance enforcement folds into the live
+    /// process) should surface the popover — PRBar's real UI — not let
+    /// AppKit re-order-front a stale hidden window. macOS eagerly
+    /// materializes the SwiftUI `Settings { }` scene window at launch,
+    /// which we hide in `applicationDidFinishLaunching`; the default
+    /// reopen handler happily resurfaces it (or, on macOS 14, a restored
+    /// empty detail `WindowGroup` window). That resurfaced blank window
+    /// with no obvious dismissal is exactly the stuck state users report.
+    /// When nothing is legitimately visible, show the popover and suppress
+    /// the default. When the user does have real windows open, defer to
+    /// AppKit.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if flag { return true }
+        surfaceForRecovery()
+        return false
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Force a UI appearance when `--appearance light|dark` is passed
         // (preview/screenshot aid). Set before any window shows so the
@@ -263,6 +281,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installPopover()
         installRightClickMenu()
         startBadgeObservation()
+        // A second launch (single-instance handoff) posts this so we can
+        // surface a window — the recovery path when our menu-bar icon got
+        // hidden by menu-bar overflow and the app is otherwise unreachable.
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleSurfaceRequest),
+            name: PRBarActivation.surface,
+            object: nil
+        )
         // Settings UI flips UserDefaults; re-render immediately when the
         // user changes a toggle even though `poller.prs` hasn't moved.
         NotificationCenter.default.addObserver(
@@ -460,7 +487,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        guard let button = statusItem.button else { return }
+        guard let button = statusItem.button else {
+            // No button means AppKit gave us a status item it can't render
+            // — the icon will never appear and the app is unreachable. Rare,
+            // but worth a breadcrumb when diagnosing a "no icon" report.
+            PRBarLog.lifecycle.error("statusitem install failed: button=nil")
+            return
+        }
+        PRBarLog.lifecycle.notice("statusitem installed visible=\(button.window != nil, privacy: .public)")
         let image = NSImage(named: "MenuBarIcon")
         image?.isTemplate = true
         button.image = image
@@ -611,6 +645,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 preferredEdge: .minY
             )
         }
+    }
+
+    /// Handle a second launch's "surface a window" request (see
+    /// `PRBarApp.enforceSingleInstance`). The user re-launched PRBar — most
+    /// likely because the menu-bar icon went missing — so bring a usable
+    /// surface to front. `DistributedNotificationCenter` delivers on the
+    /// main thread; hop to the main actor explicitly to satisfy strict
+    /// concurrency.
+    @objc nonisolated private func handleSurfaceRequest(_ note: Notification) {
+        Task { @MainActor in self.surfaceForRecovery() }
+    }
+
+    private func surfaceForRecovery() {
+        PRBarLog.lifecycle.notice("surface request received")
+        NSApp.activate(ignoringOtherApps: true)
+        showPopover()
+        // If the popover couldn't anchor (status item missing or hidden so
+        // far off-screen the show no-ops), fall back to Settings — always a
+        // real titled window, and it carries the Reset escape hatch.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(200))
+            if !(popover?.isShown ?? false) {
+                PRBarLog.lifecycle.notice("popover unavailable; opening settings as fallback")
+                openSettings(nil)
+            }
+        }
+    }
+
+    /// Show the popover without toggling — used by the recovery path so a
+    /// re-launch never accidentally closes an already-open popover.
+    private func showPopover() {
+        guard let button = statusItem?.button, !popover.isShown else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
     private func showRightClickMenu() {
