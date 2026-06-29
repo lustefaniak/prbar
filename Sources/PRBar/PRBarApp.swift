@@ -139,6 +139,9 @@ private struct SelfClosingWindow: View {
     var body: some View {
         Color.clear
             .frame(width: 1, height: 1)
-            .onAppear { dismiss() }
+            .onAppear {
+                PRBarLog.lifecycle.notice("closing restored/empty windowgroup window (no value)")
+                dismiss()
+            }
     }
 }
