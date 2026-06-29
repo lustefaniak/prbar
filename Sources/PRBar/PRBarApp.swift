@@ -1,6 +1,16 @@
 import SwiftUI
 import AppKit
 
+/// Cross-process signal names. PRBar enforces a single instance, so a
+/// second launch hands off to the running one via these.
+enum PRBarActivation {
+    /// Posted by a second launch (which then exits) to ask the live
+    /// instance to bring a usable window to front — the recovery path
+    /// when the menu-bar icon is hidden and the app is otherwise
+    /// unreachable. Observed in `AppDelegate`.
+    static let surface = Notification.Name("dev.lustefaniak.prbar.surface")
+}
+
 @main
 struct PRBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -26,6 +36,18 @@ struct PRBarApp: App {
             .filter { $0.processIdentifier != myPID }
         if !others.isEmpty {
             others.first?.activate(options: [])
+            // The running instance can be unreachable when its menu-bar
+            // icon got hidden by menu-bar overflow (notch / crowded bar) —
+            // PRBar has no Dock icon, so re-launching from /Applications is
+            // the user's only recovery gesture. Ask the live instance to
+            // surface a usable window before we bow out, instead of leaving
+            // the user with a process they can't see or interact with.
+            DistributedNotificationCenter.default().postNotificationName(
+                PRBarActivation.surface,
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
             exit(0)
         }
     }
@@ -69,8 +91,7 @@ struct PRBarApp: App {
                     .environment(delegate.actionLog)
                     .environment(delegate.reviewLog)
             } else {
-                Text("No PR selected")
-                    .frame(minWidth: 400, minHeight: 200)
+                SelfClosingWindow()
             }
         }
         .defaultSize(width: 1100, height: 800)
@@ -97,10 +118,27 @@ struct PRBarApp: App {
                     .environment(delegate.readiness)
                     .modelContainer(delegate.reviewLog.container)
             } else {
-                Text("No review selected")
-                    .frame(minWidth: 400, minHeight: 200)
+                SelfClosingWindow()
             }
         }
         .defaultSize(width: 1100, height: 800)
+    }
+}
+
+/// Placeholder for a `WindowGroup` window that SwiftUI restored with a
+/// `nil` value. Scene restoration re-opens `WindowGroup(for:)` windows on
+/// relaunch when the system "Close windows when quitting an application"
+/// setting is off (`NSQuitAlwaysKeepsWindows`), but the persisted value
+/// can come back empty — which previously left a dead "No PR selected"
+/// window the user couldn't escape (PRBar is a menu-bar agent with no
+/// Dock icon, so there's no other handle on the window). Close it on
+/// appear instead of stranding it. Legitimate opens always pass a
+/// non-nil value via `openWindow(id:value:)`, so they never reach here.
+private struct SelfClosingWindow: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .onAppear { dismiss() }
     }
 }
