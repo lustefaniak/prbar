@@ -238,6 +238,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// A reopen (Dock/Finder open of the already-running app, or a
+    /// re-launch that single-instance enforcement folds into the live
+    /// process) should surface the popover — PRBar's real UI — not let
+    /// AppKit re-order-front a stale hidden window. macOS eagerly
+    /// materializes the SwiftUI `Settings { }` scene window at launch,
+    /// which we hide in `applicationDidFinishLaunching`; the default
+    /// reopen handler happily resurfaces it (or, on macOS 14, a restored
+    /// empty detail `WindowGroup` window). That resurfaced blank window
+    /// with no obvious dismissal is exactly the stuck state users report.
+    /// When nothing is legitimately visible, show the popover and suppress
+    /// the default. When the user does have real windows open, defer to
+    /// AppKit.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if flag { return true }
+        surfaceForRecovery()
+        return false
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Force a UI appearance when `--appearance light|dark` is passed
         // (preview/screenshot aid). Set before any window shows so the
