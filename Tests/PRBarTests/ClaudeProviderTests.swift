@@ -100,12 +100,28 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertTrue(s.contains("--settings"))
         XCTAssertTrue(s.contains("\"sandbox\""))
         XCTAssertTrue(s.contains("\"enabled\":true"))
-        XCTAssertTrue(s.contains("--allowedTools Bash,Read,Glob,Grep"))
+        XCTAssertTrue(s.contains("--allowedTools Bash,Read,Glob,Grep,StructuredOutput"))
         XCTAssertTrue(s.contains("--disallowedTools Edit,Write,Task,Agent,NotebookEdit,TodoWrite"))
         XCTAssertTrue(s.contains("--add-dir /wt/sub"))
         XCTAssertTrue(s.contains("--add-dir /bare/repo.git"))
         // Plan mode still applies (verified safe alongside the sandbox).
         XCTAssertTrue(args.contains("plan"))
+    }
+
+    func testBuildArgsPassesSessionNameWhenLabelSet() {
+        var bundle = makeBundle(toolMode: .none)
+        bundle.sessionLabel = "prbar: acme/widgets#42 (root)"
+        let args = ClaudeProvider.buildArgs(bundle: bundle, options: makeOptions(toolMode: .none))
+        guard let idx = args.firstIndex(of: "--name") else {
+            return XCTFail("expected --name flag")
+        }
+        XCTAssertEqual(args[idx + 1], "prbar: acme/widgets#42 (root)")
+    }
+
+    func testBuildArgsOmitsSessionNameWhenLabelEmpty() {
+        let bundle = makeBundle(toolMode: .none)
+        let args = ClaudeProvider.buildArgs(bundle: bundle, options: makeOptions(toolMode: .none))
+        XCTAssertFalse(args.contains("--name"))
     }
 
     func testSandboxedModeCwdIsWorkdir() {

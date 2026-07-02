@@ -40,7 +40,7 @@ struct CodexProvider: ReviewProvider {
             case .notInstalled:
                 return "codex CLI not found. Install OpenAI Codex (`npm i -g @openai/codex`), then `codex login`."
             case .execFailed(let stderr, let code):
-                return "codex exited \(code): \(stderr.prefix(400))"
+                return "codex exited \(code): \(CodexProvider.diagnosticSlice(fromStderr: stderr))"
             case .noJSONInOutput(let raw):
                 return "codex returned no JSON object on stdout. First 400 chars: \(raw.prefix(400))"
             case .decodeFailed(let msg, _):
@@ -210,6 +210,25 @@ struct CodexProvider: ReviewProvider {
             return "git \(tokens[1])"
         }
         return program
+    }
+
+    /// codex's stderr always leads with a verbose session banner (version,
+    /// workdir, model, provider, sandbox, session id, the echoed prompt,
+    /// deprecation warnings) that alone commonly runs past 400 characters
+    /// — a plain `.prefix(n)` truncation never reaches the actual error
+    /// and just shows boilerplate (this is why a bad `--model` value, e.g.
+    /// one unsupported for a ChatGPT-authed account, used to surface as
+    /// unreadable banner noise instead of the real
+    /// `"model is not supported"` message). The API's JSON error body is
+    /// always printed last, on its own `ERROR: {...}` line, so prefer that
+    /// when present; otherwise fall back to the tail of the stream, which
+    /// is far more likely to hold the actual failure than the head.
+    static func diagnosticSlice(fromStderr stderr: String, limit: Int = 500) -> String {
+        if let line = stderr.split(separator: "\n", omittingEmptySubsequences: true)
+            .last(where: { $0.contains(#""type":"error""#) }) {
+            return String(line.suffix(limit))
+        }
+        return String(stderr.suffix(limit))
     }
 
     // MARK: - argv assembly (extracted for testing)

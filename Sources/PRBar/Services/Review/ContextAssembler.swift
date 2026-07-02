@@ -55,12 +55,14 @@ enum ContextAssembler {
             baseSha: baseSha,
             priorReviews: priorReviews
         )
+        let subpathTag = subdiff.subpath.isEmpty ? "root" : subdiff.subpath
         return PromptBundle(
             systemPrompt: systemPrompt,
             userPrompt: userPrompt,
             workdir: workdir,
             prNodeId: pr.nodeId,
             subpath: subdiff.subpath,
+            sessionLabel: "prbar: \(pr.nameWithOwner)#\(pr.number) (\(subpathTag))",
             baseSha: baseSha
         )
     }

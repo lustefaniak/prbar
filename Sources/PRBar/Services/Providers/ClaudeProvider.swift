@@ -69,7 +69,8 @@ struct ClaudeProvider: ReviewProvider {
             executable: claudePath,
             args: args,
             cwd: cwd,
-            stdin: stdin
+            stdin: stdin,
+            timeout: options.timeout
         ) { line in
             let progress = live.consume(line: line)
             onProgress?(progress)
@@ -150,6 +151,10 @@ struct ClaudeProvider: ReviewProvider {
             "--append-system-prompt", bundle.systemPrompt,
         ]
 
+        if !bundle.sessionLabel.isEmpty {
+            args.append(contentsOf: ["--name", bundle.sessionLabel])
+        }
+
         if let schemaString = String(data: options.schema, encoding: .utf8) {
             args.append(contentsOf: ["--json-schema", schemaString])
         }
@@ -181,7 +186,14 @@ struct ClaudeProvider: ReviewProvider {
                 "--settings",
                 #"{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":[]}}}"#,
             ])
-            args.append(contentsOf: ["--allowedTools", "Bash,Read,Glob,Grep"])
+            // StructuredOutput must be allowlisted too: recent claude CLI
+            // versions require an explicit tool call to emit
+            // --json-schema output (a synthetic "[structured-output-enforce]"
+            // message repeats otherwise) instead of validating the final
+            // text — without it here the review can never complete when the
+            // model hesitates on an edge case, since --allowedTools is a
+            // strict allowlist.
+            args.append(contentsOf: ["--allowedTools", "Bash,Read,Glob,Grep,StructuredOutput"])
             args.append(contentsOf: [
                 "--disallowedTools",
                 "Edit,Write,Task,Agent,NotebookEdit,TodoWrite",

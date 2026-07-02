@@ -144,6 +144,29 @@ final class CodexProviderTests: XCTestCase {
         )
     }
 
+    func testDiagnosticSlicePrefersJSONErrorLineOverBanner() {
+        let banner = String(repeating: "x", count: 450)
+        let stderr = """
+        OpenAI Codex v0.142.5
+        --------
+        workdir: /tmp/wd
+        model: gpt-5.3-codex
+        provider: openai
+        \(banner)
+        deprecated: some feature warning
+        ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account."}}
+        """
+        let slice = CodexProvider.diagnosticSlice(fromStderr: stderr)
+        XCTAssertTrue(slice.contains("not supported when using Codex with a ChatGPT account"))
+    }
+
+    func testDiagnosticSliceFallsBackToTailWhenNoJSONErrorLine() {
+        let stderr = "line one\nline two\nthe actual failure reason is here"
+        let slice = CodexProvider.diagnosticSlice(fromStderr: stderr, limit: 20)
+        XCTAssertEqual(slice, String(stderr.suffix(20)))
+        XCTAssertTrue(slice.hasSuffix("reason is here"))
+    }
+
     func testExtractFirstJSONObjectHandlesPlainJSON() {
         let json = #"{"verdict":"approve","confidence":0.9,"summary":"ok","annotations":[]}"#
         let extracted = CodexProvider.extractFirstJSONObject(from: json)

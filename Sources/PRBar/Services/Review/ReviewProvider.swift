@@ -20,6 +20,11 @@ struct PromptBundle: Sendable {
     let prNodeId: String
     let subpath: String          // empty string = "repo root"
 
+    /// Human-readable session label (e.g. "prbar: getsynq/cloud#23364
+    /// (root)") so provider sessions are identifiable in `claude --resume`
+    /// / session pickers instead of showing up unlabeled.
+    var sessionLabel: String = ""
+
     /// `.sandboxed` mode only: the PR base commit SHA, so the prompt can
     /// tell the agent the range to explore (`git diff <baseSha> HEAD`).
     /// Empty when not applicable.
