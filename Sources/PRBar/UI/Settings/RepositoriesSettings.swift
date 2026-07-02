@@ -358,6 +358,28 @@ struct RepoConfigEditor: View {
                         }
                     }
                     .help("Overrides the app-wide default for this repo. Per-PR \"Re-run with…\" can still override this for a single run.")
+
+                    TextField("Claude model (blank = app default)", text: claudeModelOverrideBinding)
+                    Picker("Claude effort", selection: claudeEffortOverrideBinding) {
+                        Text("(use app default)").tag("default")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                        Text("XHigh").tag("xhigh")
+                        Text("Max").tag("max")
+                    }
+                    TextField("Codex model (blank = app default)", text: codexModelOverrideBinding)
+                    Picker("Codex effort", selection: codexEffortOverrideBinding) {
+                        Text("(use app default)").tag("default")
+                        Text("None").tag("none")
+                        Text("Minimal").tag("minimal")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                        Text("XHigh").tag("xhigh")
+                    }
+                    .help("Model/effort overrides for this repo. Whichever fields are blank / \"use app default\" fall back to Settings → General.")
+
                     Picker("Tool mode", selection: toolModeBinding) {
                         Text("(use global default)").tag("default")
                         Text("Sandboxed — explore a real checkout via git (claude)").tag("sandboxed")
@@ -496,6 +518,34 @@ struct RepoConfigEditor: View {
         Binding(
             get: { config.customSystemPrompt ?? "" },
             set: { config.customSystemPrompt = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private var claudeModelOverrideBinding: Binding<String> {
+        Binding(
+            get: { config.claudeModelOverride ?? "" },
+            set: { config.claudeModelOverride = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private var codexModelOverrideBinding: Binding<String> {
+        Binding(
+            get: { config.codexModelOverride ?? "" },
+            set: { config.codexModelOverride = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private var claudeEffortOverrideBinding: Binding<String> {
+        Binding(
+            get: { config.claudeEffortOverride ?? "default" },
+            set: { tag in config.claudeEffortOverride = tag == "default" ? nil : tag }
+        )
+    }
+
+    private var codexEffortOverrideBinding: Binding<String> {
+        Binding(
+            get: { config.codexEffortOverride ?? "default" },
+            set: { tag in config.codexEffortOverride = tag == "default" ? nil : tag }
         )
     }
 

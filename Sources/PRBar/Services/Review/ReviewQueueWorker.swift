@@ -203,6 +203,56 @@ final class ReviewQueueWorker {
     /// wins over this; per-run override (set on enqueue) wins over both.
     var defaultProviderId: ProviderID = .claude
 
+    /// App-level default `--model` for the claude provider. Defaults to
+    /// the "sonnet" alias so a user's own `claude` CLI default (e.g. a
+    /// non-default model picked in an interactive session) never leaks
+    /// into unattended PRBar reviews and silently burns their quota.
+    /// Empty string = no override (claude's own default applies).
+    /// `RepoConfig.claudeModelOverride` wins over this.
+    var defaultClaudeModel: String = "sonnet"
+
+    /// App-level default `--effort` for the claude provider. Empty =
+    /// no flag passed (claude's own default effort applies — there is
+    /// no native "auto" value, this is the closest equivalent).
+    /// `RepoConfig.claudeEffortOverride` wins over this.
+    var defaultClaudeEffort: String = ""
+
+    /// App-level default `--model` for the codex provider. Empty = no
+    /// override (codex's own configured default applies). Unlike
+    /// claude, codex has no stable short aliases, so there's no safe
+    /// non-empty default to hardcode here.
+    /// `RepoConfig.codexModelOverride` wins over this.
+    var defaultCodexModel: String = ""
+
+    /// App-level default `model_reasoning_effort` for the codex
+    /// provider. Empty = no override (codex's own configured default
+    /// applies). `RepoConfig.codexEffortOverride` wins over this.
+    var defaultCodexEffort: String = ""
+
+    /// Resolve the `--model` to pass for a run: repo override wins over
+    /// the app-level default; empty strings (unset fields) mean "no
+    /// override" and resolve to nil (no `--model` flag).
+    func resolveModel(providerId: ProviderID, config: RepoConfig) -> String? {
+        switch providerId {
+        case .claude: return Self.nonEmpty(config.claudeModelOverride) ?? Self.nonEmpty(defaultClaudeModel)
+        case .codex:  return Self.nonEmpty(config.codexModelOverride) ?? Self.nonEmpty(defaultCodexModel)
+        }
+    }
+
+    /// Resolve the reasoning-effort override to pass for a run. Same
+    /// repo-override-wins-over-app-default precedence as `resolveModel`.
+    func resolveEffort(providerId: ProviderID, config: RepoConfig) -> String? {
+        switch providerId {
+        case .claude: return Self.nonEmpty(config.claudeEffortOverride) ?? Self.nonEmpty(defaultClaudeEffort)
+        case .codex:  return Self.nonEmpty(config.codexEffortOverride) ?? Self.nonEmpty(defaultCodexEffort)
+        }
+    }
+
+    private static func nonEmpty(_ s: String?) -> String? {
+        guard let s, !s.isEmpty else { return nil }
+        return s
+    }
+
     /// What tool-access mode the provider runs in. Defaults to
     /// `.sandboxed`: claude reviews against a real OS-sandboxed worktree
     /// and explores the change with git rather than reading an inlined
@@ -644,6 +694,8 @@ final class ReviewQueueWorker {
             let chosenProviderId = item.providerOverride
                 ?? config.providerOverride
                 ?? defaultProviderId
+            let resolvedModel = resolveModel(providerId: chosenProviderId, config: config)
+            let resolvedEffort = resolveEffort(providerId: chosenProviderId, config: config)
             var effectiveToolMode = config.toolModeOverride ?? toolMode
             // `.sandboxed` works for both providers: claude via its
             // `--settings` Seatbelt sandbox, codex via `exec --sandbox
@@ -736,7 +788,8 @@ final class ReviewQueueWorker {
                     priorReviews: priorChainForPrompt
                 )
                 let options = ProviderOptions(
-                    model: nil,
+                    model: resolvedModel,
+                    effort: resolvedEffort,
                     toolMode: effectiveToolMode,
                     additionalAddDirs: [],
                     repoBarePath: sharedHandle?.barePath,

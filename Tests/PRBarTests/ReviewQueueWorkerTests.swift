@@ -165,6 +165,31 @@ final class ReviewQueueWorkerTests: XCTestCase {
         XCTAssertEqual(worker.reviews["P3"]?.providerId, .claude)
     }
 
+    func testResolveModelAndEffortPrecedence() {
+        let worker = makeWorker(provider: StubProvider(verdict: .approve, summary: "s", cost: 0), diffText: "")
+        worker.defaultClaudeModel = "sonnet"
+        worker.defaultClaudeEffort = ""
+        worker.defaultCodexModel = ""
+        worker.defaultCodexEffort = "medium"
+
+        // App default only.
+        XCTAssertEqual(worker.resolveModel(providerId: .claude, config: .default), "sonnet")
+        XCTAssertNil(worker.resolveEffort(providerId: .claude, config: .default))
+        XCTAssertNil(worker.resolveModel(providerId: .codex, config: .default))
+        XCTAssertEqual(worker.resolveEffort(providerId: .codex, config: .default), "medium")
+
+        // Repo override wins over app default.
+        var cfg = RepoConfig.default
+        cfg.claudeModelOverride = "opus"
+        cfg.claudeEffortOverride = "high"
+        cfg.codexModelOverride = "gpt-5.5"
+        cfg.codexEffortOverride = "low"
+        XCTAssertEqual(worker.resolveModel(providerId: .claude, config: cfg), "opus")
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: cfg), "high")
+        XCTAssertEqual(worker.resolveModel(providerId: .codex, config: cfg), "gpt-5.5")
+        XCTAssertEqual(worker.resolveEffort(providerId: .codex, config: cfg), "low")
+    }
+
     func testForceReRunReevaluatesCompletedPR() async throws {
         let pr = makePR(nodeId: "PR_1", number: 1)
         let stubProvider = StubProvider(verdict: .approve, summary: "first", cost: 0.05)

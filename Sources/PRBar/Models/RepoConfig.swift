@@ -166,6 +166,31 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// can also override this for a single run.
     var providerOverride: ProviderID? = nil
 
+    /// Per-repo model override for the `claude` CLI's `--model` flag
+    /// (e.g. "sonnet", "opus", "haiku", "fable", or a full model id).
+    /// Nil → fall back to the app-level default (`ReviewQueueWorker
+    /// .defaultClaudeModel`). Only applies when this repo actually runs
+    /// on the claude provider.
+    var claudeModelOverride: String? = nil
+
+    /// Per-repo reasoning-effort override for claude's `--effort` flag
+    /// (low/medium/high/xhigh/max). Nil → app-level default
+    /// (`defaultClaudeEffort`); empty app default → no flag passed
+    /// (claude's own default effort applies).
+    var claudeEffortOverride: String? = nil
+
+    /// Per-repo model override for the `codex` CLI's `--model` flag.
+    /// Codex has no stable short aliases the way claude does ("sonnet"
+    /// etc.) — pass a literal model id (e.g. "gpt-5.5"). Nil → app-level
+    /// default (`defaultCodexModel`).
+    var codexModelOverride: String? = nil
+
+    /// Per-repo reasoning-effort override for codex's
+    /// `model_reasoning_effort` config key
+    /// (none/minimal/low/medium/high/xhigh). Nil → app-level default
+    /// (`defaultCodexEffort`).
+    var codexEffortOverride: String? = nil
+
     /// When (and how) to interrupt the user with "ready for review"
     /// notifications. See `NotifyPolicy`. Default batches across the
     /// whole inbox to minimise context switches.
@@ -249,6 +274,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case aiReviewEnabled, providerOverride, notifyPolicy
         case forceFullReview
         case skipMergeConfirmation
+        case claudeModelOverride, claudeEffortOverride
+        case codexModelOverride, codexEffortOverride
     }
 
     init(from decoder: Decoder) throws {
@@ -281,6 +308,10 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.notifyPolicy            = (try? c.decode(NotifyPolicy.self, forKey: .notifyPolicy)) ?? d.notifyPolicy
         self.forceFullReview         = (try? c.decode(Bool.self, forKey: .forceFullReview)) ?? d.forceFullReview
         self.skipMergeConfirmation   = try? c.decodeIfPresent(Bool.self, forKey: .skipMergeConfirmation)
+        self.claudeModelOverride     = try? c.decodeIfPresent(String.self, forKey: .claudeModelOverride)
+        self.claudeEffortOverride    = try? c.decodeIfPresent(String.self, forKey: .claudeEffortOverride)
+        self.codexModelOverride      = try? c.decodeIfPresent(String.self, forKey: .codexModelOverride)
+        self.codexEffortOverride     = try? c.decodeIfPresent(String.self, forKey: .codexEffortOverride)
     }
 
     /// Memberwise init survives the explicit `init(from:)`. Listed so
@@ -310,7 +341,11 @@ struct RepoConfig: Sendable, Hashable, Codable {
         providerOverride: ProviderID? = nil,
         notifyPolicy: NotifyPolicy = .batchSettled,
         forceFullReview: Bool = false,
-        skipMergeConfirmation: Bool? = nil
+        skipMergeConfirmation: Bool? = nil,
+        claudeModelOverride: String? = nil,
+        claudeEffortOverride: String? = nil,
+        codexModelOverride: String? = nil,
+        codexEffortOverride: String? = nil
     ) {
         self.id = id
         self.repoGlobs = repoGlobs
@@ -335,6 +370,10 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.notifyPolicy = notifyPolicy
         self.forceFullReview = forceFullReview
         self.skipMergeConfirmation = skipMergeConfirmation
+        self.claudeModelOverride = claudeModelOverride
+        self.claudeEffortOverride = claudeEffortOverride
+        self.codexModelOverride = codexModelOverride
+        self.codexEffortOverride = codexEffortOverride
     }
 }
 

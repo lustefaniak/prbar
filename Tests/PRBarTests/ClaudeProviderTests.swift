@@ -63,6 +63,19 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertEqual(pairs?.1, "haiku")
     }
 
+    func testEffortFlagAppendedWhenSet() {
+        var opts = makeOptions()
+        opts.effort = "high"
+        let args = ClaudeProvider.buildArgs(bundle: makeBundle(), options: opts)
+        let pairs = zip(args, args.dropFirst()).first { $0.0 == "--effort" }
+        XCTAssertEqual(pairs?.1, "high")
+    }
+
+    func testEffortFlagOmittedWhenNil() {
+        let args = ClaudeProvider.buildArgs(bundle: makeBundle(), options: makeOptions())
+        XCTAssertFalse(args.contains("--effort"))
+    }
+
     func testNoneModeCwdIsTempDirectory() {
         let bundle = makeBundle(toolMode: .none, workdir: URL(fileURLWithPath: "/never/used"))
         let opts = makeOptions(toolMode: .none)

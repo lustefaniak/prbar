@@ -159,6 +159,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if let raw = storedRaw, let id = ProviderID(rawValue: raw) {
             q.defaultProviderId = id
         }
+        // Persisted default model/effort per provider. Absent key ⇒ keep
+        // the compiled-in default (q.defaultClaudeModel = "sonnet" etc.);
+        // present-but-empty is a deliberate user opt-out of any override.
+        if let v = UserDefaults.standard.string(forKey: "defaultClaudeModel") { q.defaultClaudeModel = v }
+        if let v = UserDefaults.standard.string(forKey: "defaultClaudeEffort") { q.defaultClaudeEffort = v }
+        if let v = UserDefaults.standard.string(forKey: "defaultCodexModel") { q.defaultCodexModel = v }
+        if let v = UserDefaults.standard.string(forKey: "defaultCodexEffort") { q.defaultCodexEffort = v }
         // Daily cost cap — both presence (toggle) and value persist
         // separately so the cap survives flipping the toggle off/on.
         let defaults = UserDefaults.standard
