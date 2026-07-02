@@ -244,6 +244,9 @@ struct CodexProvider: ReviewProvider {
         if let model = options.model {
             args.append(contentsOf: ["--model", model])
         }
+        if let effort = options.effort {
+            args.append(contentsOf: ["-c", "model_reasoning_effort=\(effort)"])
+        }
         // Read prompt from stdin (the `-` placeholder docs say so).
         args.append("-")
         return args

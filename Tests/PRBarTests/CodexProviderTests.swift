@@ -96,6 +96,31 @@ final class CodexProviderTests: XCTestCase {
         XCTAssertEqual(args[modelIdx + 1], "gpt-5")
     }
 
+    func testBuildArgsAddsReasoningEffortConfigWhenSet() {
+        var opts = makeOptions(model: nil)
+        opts.effort = "high"
+        let args = CodexProvider.buildArgs(
+            options: opts,
+            schemaPath: "/tmp/schema.json",
+            lastMessagePath: "/tmp/last.txt",
+            workdir: URL(fileURLWithPath: "/tmp/wd")
+        )
+        guard let cIdx = args.firstIndex(of: "-c") else {
+            return XCTFail("-c flag not present")
+        }
+        XCTAssertEqual(args[cIdx + 1], "model_reasoning_effort=high")
+    }
+
+    func testBuildArgsOmitsReasoningEffortConfigWhenNil() {
+        let args = CodexProvider.buildArgs(
+            options: makeOptions(model: nil),
+            schemaPath: "/tmp/schema.json",
+            lastMessagePath: "/tmp/last.txt",
+            workdir: URL(fileURLWithPath: "/tmp/wd")
+        )
+        XCTAssertFalse(args.contains("-c"))
+    }
+
     func testBuildPromptJoinsSystemAndUser() {
         let bundle = PromptBundle(
             systemPrompt: "You are a senior reviewer.",

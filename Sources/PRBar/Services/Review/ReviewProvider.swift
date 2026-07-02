@@ -27,9 +27,20 @@ struct PromptBundle: Sendable {
 }
 
 struct ProviderOptions: Sendable {
-    /// Optional model override; nil = let the CLI pick its default
-    /// (typically "sonnet" for `claude`).
+    /// Optional model override; nil = let the CLI pick its own default
+    /// (whatever's configured outside PRBar — e.g. a user's `claude`
+    /// default model, which need not be "sonnet"). Callers resolve this
+    /// from `ReviewQueueWorker.defaultClaudeModel` /
+    /// `defaultCodexModel` + `RepoConfig` overrides before building
+    /// options — see `ReviewQueueWorker.resolveModel(providerId:config:)`.
     var model: String?
+
+    /// Optional reasoning-effort override; nil = let the CLI pick its
+    /// own default. Claude's `--effort` accepts low/medium/high/xhigh/max;
+    /// codex's `model_reasoning_effort` accepts
+    /// none/minimal/low/medium/high/xhigh. Neither CLI has a native
+    /// "auto" value — nil (no flag) is the closest equivalent.
+    var effort: String?
 
     var toolMode: ToolMode = .minimal
 

@@ -158,6 +158,10 @@ struct ClaudeProvider: ReviewProvider {
             args.append(contentsOf: ["--model", model])
         }
 
+        if let effort = options.effort {
+            args.append(contentsOf: ["--effort", effort])
+        }
+
         switch options.toolMode {
         case .sandboxed:
             // The AI explores a real worktree with git/grep/read instead of
