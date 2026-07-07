@@ -65,8 +65,12 @@ struct ProviderOptions: Sendable {
 
     /// Hard ceiling for the whole `claude -p` call. SIGTERM-then-SIGKILL on
     /// timeout. Default is generous because tool-mode reviews can take a
-    /// while; pure-prompt mode finishes much faster.
-    var timeout: Duration = .seconds(120)
+    /// while — `.sandboxed` explores a worktree over multiple turns and
+    /// legitimately runs minutes on a large PR; pure-prompt mode finishes
+    /// much faster. The live worker resolves this per-repo from
+    /// `RepoConfig.reviewTimeoutSeconds`; this default only applies to
+    /// direct constructions (tests, non-worker callers).
+    var timeout: Duration = .seconds(600)
 
     /// JSON Schema bytes for `--json-schema`. Always required so the
     /// provider doesn't have to load it itself.
