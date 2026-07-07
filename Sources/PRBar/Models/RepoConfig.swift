@@ -125,6 +125,13 @@ struct RepoConfig: Sendable, Hashable, Codable {
     var maxToolCallsPerSubreview: Int
     var maxCostUsdPerSubreview: Double
 
+    /// Hard wall-clock ceiling per subreview, in seconds. The provider
+    /// SIGTERMs (then SIGKILLs) the `claude`/`codex` child past this.
+    /// Generous by default: `.sandboxed` reviews explore a worktree over
+    /// multiple turns and legitimately run minutes on a large PR — a tight
+    /// ceiling kills the run mid-flight (surfaces as `exited 143`).
+    var reviewTimeoutSeconds: Int
+
     // --- Auto-approve ---
 
     var autoApprove: AutoApproveConfig = .off
@@ -227,6 +234,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         replaceBaseSystemPrompt: false,
         maxToolCallsPerSubreview: 10,
         maxCostUsdPerSubreview: 1.0,
+        reviewTimeoutSeconds: 600,
         autoApprove: .off,
         reviewDrafts: false,
         aiReviewEnabled: true,
@@ -268,7 +276,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case splitMode, rootPatterns, unmatchedStrategy, minFilesPerSubreview
         case maxParallelSubreviews, collapseAboveSubreviewCount
         case toolModeOverride, customSystemPrompt, replaceBaseSystemPrompt
-        case maxToolCallsPerSubreview, maxCostUsdPerSubreview
+        case maxToolCallsPerSubreview, maxCostUsdPerSubreview, reviewTimeoutSeconds
         case autoApprove
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case aiReviewEnabled, providerOverride, notifyPolicy
@@ -299,6 +307,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.replaceBaseSystemPrompt = (try? c.decode(Bool.self, forKey: .replaceBaseSystemPrompt)) ?? d.replaceBaseSystemPrompt
         self.maxToolCallsPerSubreview = (try? c.decode(Int.self, forKey: .maxToolCallsPerSubreview)) ?? d.maxToolCallsPerSubreview
         self.maxCostUsdPerSubreview  = (try? c.decode(Double.self, forKey: .maxCostUsdPerSubreview)) ?? d.maxCostUsdPerSubreview
+        self.reviewTimeoutSeconds    = (try? c.decode(Int.self, forKey: .reviewTimeoutSeconds)) ?? d.reviewTimeoutSeconds
         self.autoApprove             = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
         self.reviewDrafts            = (try? c.decode(Bool.self, forKey: .reviewDrafts)) ?? d.reviewDrafts
         self.excludeTitlePatterns    = (try? c.decode([String].self, forKey: .excludeTitlePatterns)) ?? d.excludeTitlePatterns
@@ -333,6 +342,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         replaceBaseSystemPrompt: Bool = false,
         maxToolCallsPerSubreview: Int = 10,
         maxCostUsdPerSubreview: Double = 1.0,
+        reviewTimeoutSeconds: Int = 600,
         autoApprove: AutoApproveConfig = .off,
         reviewDrafts: Bool = false,
         excludeTitlePatterns: [String] = [],
@@ -361,6 +371,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.replaceBaseSystemPrompt = replaceBaseSystemPrompt
         self.maxToolCallsPerSubreview = maxToolCallsPerSubreview
         self.maxCostUsdPerSubreview = maxCostUsdPerSubreview
+        self.reviewTimeoutSeconds = reviewTimeoutSeconds
         self.autoApprove = autoApprove
         self.reviewDrafts = reviewDrafts
         self.excludeTitlePatterns = excludeTitlePatterns

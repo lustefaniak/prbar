@@ -795,7 +795,7 @@ final class ReviewQueueWorker {
                     repoBarePath: sharedHandle?.barePath,
                     maxToolCalls: config.maxToolCallsPerSubreview,
                     maxCostUsd: config.maxCostUsdPerSubreview,
-                    timeout: .seconds(120),
+                    timeout: .seconds(config.reviewTimeoutSeconds),
                     schema: try PromptLibrary.outputSchema()
                 )
                 let subStart = Date()

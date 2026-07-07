@@ -407,6 +407,9 @@ struct RepoConfigEditor: View {
                         Text("Max cost / subreview: $\(String(format: "%.2f", config.maxCostUsdPerSubreview))")
                         Slider(value: $config.maxCostUsdPerSubreview, in: 0.05...3.0, step: 0.05)
                     }
+                    Stepper("Review timeout / subreview: \(config.reviewTimeoutSeconds) s",
+                            value: $config.reviewTimeoutSeconds, in: 60...1800, step: 30)
+                        .help("Wall-clock ceiling per subreview. Sandboxed reviews explore a worktree over several turns and can take minutes on a large PR — too tight a value kills the run mid-flight (exited 143).")
                 }
 
                 section("Auto-approve") {
