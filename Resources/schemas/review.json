@@ -1,6 +1,6 @@
 {
   "type": "object",
-  "required": ["verdict", "confidence", "summary", "annotations"],
+  "required": ["verdict", "confidence", "summary"],
   "properties": {
     "verdict": {
       "type": "string",

@@ -116,15 +116,19 @@ struct ClaudeProvider: ReviewProvider {
             throw ClaudeError.budgetExceeded(String(format: "$%.4f spent (cap $%.2f)", cost, max))
         }
 
-        guard let soData = state.structuredOutput else {
+        if state.structuredOutput == nil && state.structuredOutputAttempts.isEmpty {
             throw ClaudeError.missingStructuredOutput
         }
 
-        let decoded: ProviderStructuredOutput
-        do {
-            decoded = try JSONDecoder().decode(ProviderStructuredOutput.self, from: soData)
-        } catch {
-            throw ClaudeError.decodeFailed(String(describing: error))
+        // Recover the substantive review even when the CLI's final answer
+        // degraded to a placeholder — see StructuredOutputRecovery.
+        guard let decoded = StructuredOutputRecovery.best(
+            final: state.structuredOutput,
+            attempts: state.structuredOutputAttempts
+        ) else {
+            throw ClaudeError.decodeFailed(
+                "no decodable structured output among final + \(state.structuredOutputAttempts.count) attempts"
+            )
         }
 
         return ProviderResult(

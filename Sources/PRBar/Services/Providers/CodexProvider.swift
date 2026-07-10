@@ -355,6 +355,13 @@ struct CodexProvider: ReviewProvider {
                     rewritten[k] = injectAdditionalPropertiesFalse(v) ?? v
                 }
                 obj["properties"] = rewritten
+                // OpenAI strict mode requires *every* declared property to
+                // appear in `required`. The shared review.json intentionally
+                // drops `annotations` (and could drop others) from its
+                // required list to keep claude from a rejection loop — but
+                // codex needs the full list, so force it here rather than
+                // maintaining a codex-specific schema.
+                obj["required"] = props.keys.sorted()
             }
             if let items = obj["items"] {
                 obj["items"] = injectAdditionalPropertiesFalse(items) ?? items

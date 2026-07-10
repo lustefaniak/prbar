@@ -247,6 +247,48 @@ final class CodexProviderTests: XCTestCase {
             "nested array-item objects must get the marker too")
     }
 
+    func testAddStrictAdditionalPropertiesForcesAllPropertiesRequired() throws {
+        // The shared review.json drops `annotations` from `required` (to keep
+        // claude out of a rejection loop), but OpenAI strict mode demands
+        // every declared property appear in `required`. The transform must
+        // restore the full list for codex, at every object level.
+        let original = """
+        {
+          "type": "object",
+          "required": ["verdict"],
+          "properties": {
+            "verdict": { "type": "string" },
+            "confidence": { "type": "number" },
+            "summary": { "type": "string" },
+            "annotations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "body": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+        """
+        guard let out = CodexProvider.addStrictAdditionalProperties(Data(original.utf8)),
+              let json = try JSONSerialization.jsonObject(with: out) as? [String: Any]
+        else {
+            return XCTFail("transform returned nil")
+        }
+        let topRequired = (json["required"] as? [String])?.sorted()
+        XCTAssertEqual(topRequired, ["annotations", "confidence", "summary", "verdict"],
+            "every top-level property must be required for codex strict mode")
+        let annotations = (json["properties"] as? [String: Any])?["annotations"] as? [String: Any]
+        let item = annotations?["items"] as? [String: Any]
+        let itemRequired = (item?["required"] as? [String])?.sorted()
+        XCTAssertEqual(itemRequired, ["body", "path"],
+            "nested annotation-item properties must all be required too")
+    }
+
     func testAddStrictAdditionalPropertiesPreservesExistingValue() throws {
         // If the schema already specifies additionalProperties (true or
         // false), we must NOT clobber it.
