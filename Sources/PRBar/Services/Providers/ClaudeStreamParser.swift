@@ -10,6 +10,14 @@ struct ClaudeStreamState: Sendable {
     var toolNamesUsed: [String] = []
     var permissionDenials: [String] = []
 
+    /// Every `StructuredOutput` tool_use *input* seen in the stream, in
+    /// order, re-serialized to JSON. The final `result` event's
+    /// `structured_output` is the CLI's chosen answer — but when claude
+    /// burns several rejected attempts and then degrades to a placeholder
+    /// (see `StructuredOutputRecovery`), the good review lives in an
+    /// earlier attempt. Capturing them lets the provider recover it.
+    var structuredOutputAttempts: [Data] = []
+
     /// Filled by the final `result` event.
     var costUsd: Double?
     var isError: Bool?
@@ -84,6 +92,11 @@ enum ClaudeStreamParser {
                         state.toolCallCount += 1
                         if let name = block["name"] as? String {
                             state.toolNamesUsed.append(name)
+                            if name == "StructuredOutput",
+                               let input = block["input"],
+                               let data = try? JSONSerialization.data(withJSONObject: input) {
+                                state.structuredOutputAttempts.append(data)
+                            }
                         }
                     }
                 }

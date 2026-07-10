@@ -18,7 +18,13 @@ final class PromptLibraryTests: XCTestCase {
             let required: [String]?
         }
         let decoded = try JSONDecoder().decode(Schema.self, from: data)
-        XCTAssertEqual(decoded.required, ["verdict", "confidence", "summary", "annotations"])
+        // `annotations` is deliberately NOT required: claude's
+        // StructuredOutput tool corrupts long summaries by leaking the
+        // annotations parameter into the summary string, leaving no
+        // top-level annotations key. Requiring it turned that into a
+        // rejection loop the model escaped with a placeholder ("test")
+        // summary. See StructuredOutputRecovery.
+        XCTAssertEqual(decoded.required, ["verdict", "confidence", "summary"])
     }
 
     func testOutputSchemaHasNoConstraintsClaudeRejects() throws {
