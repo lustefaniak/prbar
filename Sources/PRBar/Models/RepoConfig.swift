@@ -362,6 +362,24 @@ struct RepoConfig: Sendable, Hashable, Codable {
     var maxToolCallsPerSubreview: Int
     var maxCostUsdPerSubreview: Double
 
+    // --- Risk brief ---
+
+    /// Prepend a mechanical "where to look first" ranking of the changed
+    /// files to each subreview's prompt. See `RiskBrief` — it routes the
+    /// judge's attention on large diffs and never contributes to the
+    /// verdict. Cheap (pure computation plus one `git log`), so on by
+    /// default; turn off for a repo where the ranking misleads more than
+    /// it helps.
+    var riskBriefEnabled: Bool = true
+
+    /// Trailing window for the risk brief's commit-churn term, in days.
+    /// 0 disables churn and leaves the rest of the brief intact. The
+    /// bare clone is shallow (`--depth=50`), so on a busy repo the
+    /// observed window is much shorter than this — `RiskBrief` drops the
+    /// term entirely when too little history is present rather than rank
+    /// on noise.
+    var churnWindowDays: Int = 90
+
     /// Hard wall-clock ceiling per subreview, in seconds. The provider
     /// SIGTERMs (then SIGKILLs) the `claude`/`codex` child past this.
     /// Generous by default: `.sandboxed` reviews explore a worktree over
@@ -518,6 +536,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case maxParallelSubreviews, collapseAboveSubreviewCount
         case toolModeOverride, customSystemPrompt, replaceBaseSystemPrompt
         case maxToolCallsPerSubreview, maxCostUsdPerSubreview, reviewTimeoutSeconds
+        case riskBriefEnabled, churnWindowDays
         case autoApprove, autoDeny
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case aiReviewEnabled, providerOverride, notifyPolicy
@@ -549,6 +568,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.maxToolCallsPerSubreview = (try? c.decode(Int.self, forKey: .maxToolCallsPerSubreview)) ?? d.maxToolCallsPerSubreview
         self.maxCostUsdPerSubreview  = (try? c.decode(Double.self, forKey: .maxCostUsdPerSubreview)) ?? d.maxCostUsdPerSubreview
         self.reviewTimeoutSeconds    = (try? c.decode(Int.self, forKey: .reviewTimeoutSeconds)) ?? d.reviewTimeoutSeconds
+        self.riskBriefEnabled        = (try? c.decode(Bool.self, forKey: .riskBriefEnabled)) ?? d.riskBriefEnabled
+        self.churnWindowDays         = (try? c.decode(Int.self, forKey: .churnWindowDays)) ?? d.churnWindowDays
         self.autoApprove             = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
         self.autoDeny                = (try? c.decode(AutoDenyConfig.self, forKey: .autoDeny)) ?? d.autoDeny
         self.reviewDrafts            = (try? c.decode(Bool.self, forKey: .reviewDrafts)) ?? d.reviewDrafts
@@ -585,6 +606,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         maxToolCallsPerSubreview: Int = 10,
         maxCostUsdPerSubreview: Double = 1.0,
         reviewTimeoutSeconds: Int = 600,
+        riskBriefEnabled: Bool = true,
+        churnWindowDays: Int = 90,
         autoApprove: AutoApproveConfig = .off,
         autoDeny: AutoDenyConfig = .off,
         reviewDrafts: Bool = false,
@@ -615,6 +638,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.maxToolCallsPerSubreview = maxToolCallsPerSubreview
         self.maxCostUsdPerSubreview = maxCostUsdPerSubreview
         self.reviewTimeoutSeconds = reviewTimeoutSeconds
+        self.riskBriefEnabled = riskBriefEnabled
+        self.churnWindowDays = churnWindowDays
         self.autoApprove = autoApprove
         self.autoDeny = autoDeny
         self.reviewDrafts = reviewDrafts

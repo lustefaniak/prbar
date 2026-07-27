@@ -287,6 +287,21 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var checkoutManager: RepoCheckoutManager?
 
+    /// Reads commit history for `RiskBrief`'s churn term. Injected so tests
+    /// exercise the brief without a real checkout; returning nil is the
+    /// normal degraded path, not an error.
+    @ObservationIgnored
+    var churnFetcher: @Sendable (_ worktree: URL, _ windowDays: Int) async -> ChurnWindow? = { worktree, days in
+        await GitChurn.fetch(worktree: worktree, windowDays: days)
+    }
+
+    /// Finds changed files carrying a generated-code marker, for
+    /// `RiskBrief`. Injected so tests don't need files on disk.
+    @ObservationIgnored
+    var generatedScanner: @Sendable (_ paths: [String], _ worktree: URL) async -> Set<String> = { paths, worktree in
+        await GeneratedCodeScanner.scan(paths: paths, in: worktree)
+    }
+
     @ObservationIgnored
     private var inFlight: Int = 0
 
@@ -801,6 +816,23 @@ final class ReviewQueueWorker {
             } else {
                 chosenProvider = provider
             }
+            // Commit history for the risk brief's churn term. Read once per
+            // run (not per subdiff) — it's a single `git log` over the whole
+            // worktree and every subdiff indexes into the same map. Needs a
+            // checkout; without one the brief still ships, minus churn.
+            var churn: ChurnWindow? = nil
+            var markedGenerated: Set<String> = []
+            if config.riskBriefEnabled, let handle = sharedHandle {
+                if config.churnWindowDays > 0 {
+                    churn = await churnFetcher(handle.worktreePath, config.churnWindowDays)
+                }
+                // One scan across every subdiff's files — the same file can't
+                // appear in two subdiffs, and one pass keeps the ceiling in
+                // `GeneratedCodeScanner.maxFilesScanned` PR-wide.
+                let allPaths = subdiffs.flatMap(\.filePaths)
+                markedGenerated = await generatedScanner(allPaths, handle.worktreePath)
+            }
+
             // Local alias for the loop; the outer `completedOutcomes`
             // is what survives a throw. We append to both in lockstep.
             var outcomes: [SubreviewOutcome] = []
@@ -816,7 +848,14 @@ final class ReviewQueueWorker {
                     baseSha: sharedHandle?.baseSha ?? "",
                     customSystemPrompt: config.customSystemPrompt,
                     replaceBaseSystemPrompt: config.replaceBaseSystemPrompt,
-                    priorReviews: priorChainForPrompt
+                    priorReviews: priorChainForPrompt,
+                    riskBrief: config.riskBriefEnabled
+                        ? RiskBrief.compute(
+                            subdiff: subdiff,
+                            churn: churn,
+                            markedGenerated: markedGenerated
+                        )
+                        : nil
                 )
                 let options = ProviderOptions(
                     model: resolvedModel,

@@ -31,7 +31,8 @@ enum ContextAssembler {
         baseSha: String = "",
         customSystemPrompt: String? = nil,
         replaceBaseSystemPrompt: Bool = false,
-        priorReviews: [PriorReview] = []
+        priorReviews: [PriorReview] = [],
+        riskBrief: RiskBrief? = nil
     ) throws -> PromptBundle {
         let language = subdiff.dominantLanguage
         let basePrompt = try PromptLibrary.systemPrompt(for: language)
@@ -53,7 +54,8 @@ enum ContextAssembler {
             ciFailures: ciFailures,
             toolMode: toolMode,
             baseSha: baseSha,
-            priorReviews: priorReviews
+            priorReviews: priorReviews,
+            riskBrief: riskBrief
         )
         let subpathTag = subdiff.subpath.isEmpty ? "root" : subdiff.subpath
         return PromptBundle(
@@ -77,7 +79,8 @@ enum ContextAssembler {
         ciFailures: [CIFailureLog],
         toolMode: ToolMode,
         baseSha: String = "",
-        priorReviews: [PriorReview] = []
+        priorReviews: [PriorReview] = [],
+        riskBrief: RiskBrief? = nil
     ) -> String {
         var out = ""
         out += "# Pull Request Review\n\n"
@@ -98,6 +101,11 @@ enum ContextAssembler {
         out += "\n"
         out += filesChangedSection(subdiff: subdiff)
         out += "\n"
+        let brief = riskBrief.flatMap { $0.isEmpty ? nil : $0 }
+        if let brief {
+            out += riskBriefSection(brief)
+            out += "\n"
+        }
         if !existingComments.isEmpty {
             out += existingCommentsSection(existingComments)
             out += "\n"
@@ -109,7 +117,7 @@ enum ContextAssembler {
             out += "\n"
         }
         if toolMode == .sandboxed {
-            out += exploreSection(baseSha: baseSha, subdiff: subdiff)
+            out += exploreSection(baseSha: baseSha, subdiff: subdiff, hasRiskBrief: brief != nil)
         } else {
             out += diffSection(diffText)
         }
@@ -144,7 +152,7 @@ enum ContextAssembler {
     /// multi-thousand-line blob from the prompt. For large changes the
     /// guidance leads with file-list triage instead of a full diff so the
     /// agent's spend scales with attention, not diff size.
-    private static func exploreSection(baseSha: String, subdiff: Subdiff) -> String {
+    private static func exploreSection(baseSha: String, subdiff: Subdiff, hasRiskBrief: Bool) -> String {
         let subpath = subdiff.subpath
         let scope = subpath.isEmpty ? "" : " -- ."
         var s = "## Reviewing the change\n\n"
@@ -168,7 +176,11 @@ enum ContextAssembler {
         if isLarge {
             s += "This is a **large change** (\(subdiff.filePaths.count) files). "
             s += "**Do not** run a single `git diff` over everything — that floods your context and burns the budget. Instead:\n\n"
-            s += "- Start from the **Files changed** list above. Pick the highest-risk files first (logic, security, concurrency, data handling) and skim trivial ones (generated code, lockfiles, docs).\n"
+            if hasRiskBrief {
+                s += "- Work down the **Where to look first** order above. Diff the top entries, skim or skip what it marks low-signal, and stop once you can judge the change.\n"
+            } else {
+                s += "- Start from the **Files changed** list above. Pick the highest-risk files first (logic, security, concurrency, data handling) and skim trivial ones (generated code, lockfiles, docs).\n"
+            }
             s += "- Diff one file at a time: `git diff \(baseSha) HEAD -- <path>`. Base version of a file: `git show \(baseSha):<path>`.\n"
             s += "- Read or grep only the surrounding code you need to judge a specific change.\n"
             s += "- Emit your verdict as soon as you can judge the change — you do not need to open every file. If the important files are clean, that is an approve.\n"
@@ -311,6 +323,61 @@ enum ContextAssembler {
             let adds = addsByFile[path] ?? 0
             let dels = delsByFile[path] ?? 0
             s += "- `\(path)` (+\(adds) / -\(dels))\n"
+        }
+        return s
+    }
+
+    /// Cap on how many files get a ranked line. Past this the list stops
+    /// being a triage aid and becomes another thing to read.
+    static let riskBriefMaxRows = 12
+
+    /// Renders `RiskBrief` as a reading order.
+    ///
+    /// The framing paragraph is the load-bearing part. Every entry here is a
+    /// mechanical observation ("this file is hot", "no test changed"), and a
+    /// model handed a list under a heading like "risk" will reach for it as
+    /// evidence and publish `warning: no test coverage` on all six files.
+    /// The publication bar in the system prompt is what decides whether
+    /// anything gets said; this section only decides what gets *read*.
+    private static func riskBriefSection(_ brief: RiskBrief) -> String {
+        var s = "## Where to look first\n\n"
+        s += "A mechanical pre-scan of the files above — file names, diff size, "
+        s += "and recent commit history. It is a **reading order, not a finding**. "
+        s += "Nothing below is evidence that anything is wrong, and no entry here "
+        s += "clears the publication bar on its own: \"the pre-scan flagged it\" is "
+        s += "not a defect, and neither is \"no test file changed\" unless you can "
+        s += "name the regression that would slip through. Use it to decide where "
+        s += "to spend your lookups, then judge the code you actually read.\n\n"
+
+        let priority = brief.priorityRows.prefix(riskBriefMaxRows)
+        if priority.isEmpty {
+            s += "No source or test files in this subreview.\n"
+        } else {
+            for (idx, row) in priority.enumerated() {
+                s += "\(idx + 1). `\(row.path)` (+\(row.addedLines) / -\(row.removedLines))"
+                if !row.reasons.isEmpty {
+                    s += " — \(row.reasons.joined(separator: "; "))"
+                }
+                s += "\n"
+            }
+            let overflow = brief.priorityRows.count - priority.count
+            if overflow > 0 {
+                s += "\(priority.count + 1). … and \(overflow) more, lower-ranked\n"
+            }
+        }
+
+        let lowSignal = brief.lowSignalRows
+        if !lowSignal.isEmpty {
+            let names = lowSignal.prefix(8).map { "`\($0.path)`" }.joined(separator: ", ")
+            let more = lowSignal.count > 8 ? ", … and \(lowSignal.count - 8) more" : ""
+            s += "\nLikely low-signal (generated, vendored, or docs): \(names)\(more)\n"
+        }
+
+        if brief.changesSourceWithoutAnyTest {
+            s += "\nThis subreview changes source files and no test files.\n"
+        }
+        if let churn = brief.churnSummary {
+            s += "\nCommit-history window observed: \(churn).\n"
         }
         return s
     }
