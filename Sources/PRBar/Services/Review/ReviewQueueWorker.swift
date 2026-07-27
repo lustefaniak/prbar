@@ -775,7 +775,10 @@ final class ReviewQueueWorker {
                     sharedHandle = try await mgr.provision(
                         owner: pr.owner, repo: pr.repo,
                         headSha: pr.headSha, subpath: "",
-                        baseRef: effectiveToolMode == .sandboxed ? pr.baseRef : ""
+                        baseRef: effectiveToolMode == .sandboxed ? pr.baseRef : "",
+                        historyDepth: config.riskBriefEnabled && config.churnWindowDays > 0
+                            ? config.churnHistoryDepth
+                            : RepoCheckoutManager.defaultHistoryDepth
                     )
                 } catch {
                     // Checkout unavailable (no git/gh, network, etc.) — degrade

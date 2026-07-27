@@ -380,6 +380,14 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// on noise.
     var churnWindowDays: Int = 90
 
+    /// Commit depth fetched into the bare clone when the churn term is on.
+    /// The clone is `--filter=blob:none`, so deepening carries commits and
+    /// trees but never blobs — file size (binaries, vendored assets) does
+    /// not enter into the cost. Measured on a ~160 MB blobless monorepo
+    /// clone: 10 → 1000 commits cost 6.9 s and 1.8 MiB, once per repo, and
+    /// bought ~80 days of history where `--depth=50` covered 3.
+    var churnHistoryDepth: Int = 1_000
+
     /// Hard wall-clock ceiling per subreview, in seconds. The provider
     /// SIGTERMs (then SIGKILLs) the `claude`/`codex` child past this.
     /// Generous by default: `.sandboxed` reviews explore a worktree over
@@ -536,7 +544,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case maxParallelSubreviews, collapseAboveSubreviewCount
         case toolModeOverride, customSystemPrompt, replaceBaseSystemPrompt
         case maxToolCallsPerSubreview, maxCostUsdPerSubreview, reviewTimeoutSeconds
-        case riskBriefEnabled, churnWindowDays
+        case riskBriefEnabled, churnWindowDays, churnHistoryDepth
         case autoApprove, autoDeny
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case aiReviewEnabled, providerOverride, notifyPolicy
@@ -570,6 +578,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.reviewTimeoutSeconds    = (try? c.decode(Int.self, forKey: .reviewTimeoutSeconds)) ?? d.reviewTimeoutSeconds
         self.riskBriefEnabled        = (try? c.decode(Bool.self, forKey: .riskBriefEnabled)) ?? d.riskBriefEnabled
         self.churnWindowDays         = (try? c.decode(Int.self, forKey: .churnWindowDays)) ?? d.churnWindowDays
+        self.churnHistoryDepth       = (try? c.decode(Int.self, forKey: .churnHistoryDepth)) ?? d.churnHistoryDepth
         self.autoApprove             = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
         self.autoDeny                = (try? c.decode(AutoDenyConfig.self, forKey: .autoDeny)) ?? d.autoDeny
         self.reviewDrafts            = (try? c.decode(Bool.self, forKey: .reviewDrafts)) ?? d.reviewDrafts
@@ -608,6 +617,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         reviewTimeoutSeconds: Int = 600,
         riskBriefEnabled: Bool = true,
         churnWindowDays: Int = 90,
+        churnHistoryDepth: Int = 1_000,
         autoApprove: AutoApproveConfig = .off,
         autoDeny: AutoDenyConfig = .off,
         reviewDrafts: Bool = false,
@@ -640,6 +650,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.reviewTimeoutSeconds = reviewTimeoutSeconds
         self.riskBriefEnabled = riskBriefEnabled
         self.churnWindowDays = churnWindowDays
+        self.churnHistoryDepth = churnHistoryDepth
         self.autoApprove = autoApprove
         self.autoDeny = autoDeny
         self.reviewDrafts = reviewDrafts

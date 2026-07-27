@@ -327,15 +327,17 @@ final class RiskBriefTests: XCTestCase {
             baseSha: "abc1234",
             riskBrief: brief
         )
-        XCTAssertTrue(prompt.contains("## Where to look first"))
+        XCTAssertTrue(prompt.contains("## Files changed, in suggested reading order"))
         XCTAssertTrue(prompt.contains("1. `kernel-auth/session/store.go` (+40 / -5)"))
         XCTAssertTrue(prompt.contains("sensitive area (auth)"))
-        XCTAssertTrue(prompt.contains("Likely low-signal"))
+        XCTAssertTrue(prompt.contains("Generated, vendored, or docs"))
         // The disclaimer is the load-bearing part of the section: without it
         // a ranked list under a risk-flavoured heading reads as evidence.
         XCTAssertTrue(prompt.contains("reading order, not a finding"))
-        XCTAssertTrue(prompt.contains("not clears the publication bar")
-            || prompt.contains("clears the publication bar on its own"))
+        XCTAssertTrue(prompt.contains("clears the publication bar on its own"))
+        // The brief replaces the plain file list; rendering both duplicated
+        // every path and its counts.
+        XCTAssertFalse(prompt.contains("## Files changed in this subreview"))
     }
 
     func testPromptOmitsSectionWhenNoBrief() {
@@ -349,7 +351,8 @@ final class RiskBriefTests: XCTestCase {
             baseSha: "abc1234",
             riskBrief: nil
         )
-        XCTAssertFalse(prompt.contains("Where to look first"))
+        XCTAssertFalse(prompt.contains("reading order"))
+        XCTAssertTrue(prompt.contains("## Files changed in this subreview"))
     }
 
     func testPromptOmitsSectionForEmptyBrief() {
@@ -363,7 +366,8 @@ final class RiskBriefTests: XCTestCase {
             baseSha: "abc1234",
             riskBrief: RiskBrief.compute(subdiff: Subdiff(subpath: "", hunks: []))
         )
-        XCTAssertFalse(prompt.contains("Where to look first"))
+        XCTAssertFalse(prompt.contains("reading order"))
+        XCTAssertTrue(prompt.contains("## Files changed in this subreview"))
     }
 
     /// The large-diff branch of the explore section tells the agent how to
@@ -382,7 +386,7 @@ final class RiskBriefTests: XCTestCase {
         )
         XCTAssertGreaterThan(ContextAssembler.subdiffContentBytes(big),
                              ContextAssembler.largeDiffThresholdBytes)
-        XCTAssertTrue(withBrief.contains("Work down the **Where to look first** order"))
+        XCTAssertTrue(withBrief.contains("Work down the **reading order** above"))
         XCTAssertFalse(withBrief.contains("Start from the **Files changed** list"))
         XCTAssertTrue(without.contains("Start from the **Files changed** list"))
     }

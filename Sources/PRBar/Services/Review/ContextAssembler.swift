@@ -99,13 +99,19 @@ enum ContextAssembler {
         }
         out += subfolderSection(subdiff: subdiff, toolMode: toolMode)
         out += "\n"
-        out += filesChangedSection(subdiff: subdiff)
-        out += "\n"
+        // The brief carries every path with its +/- counts, so it *replaces*
+        // the plain file list rather than being appended to it — rendering
+        // both duplicated the whole file table for no added information. On a
+        // generated-heavy PR the brief is the cheaper of the two, since it
+        // collapses lockfiles and docs into one comma-separated line instead
+        // of a bullet each.
         let brief = riskBrief.flatMap { $0.isEmpty ? nil : $0 }
         if let brief {
             out += riskBriefSection(brief)
-            out += "\n"
+        } else {
+            out += filesChangedSection(subdiff: subdiff)
         }
+        out += "\n"
         if !existingComments.isEmpty {
             out += existingCommentsSection(existingComments)
             out += "\n"
@@ -177,7 +183,7 @@ enum ContextAssembler {
             s += "This is a **large change** (\(subdiff.filePaths.count) files). "
             s += "**Do not** run a single `git diff` over everything — that floods your context and burns the budget. Instead:\n\n"
             if hasRiskBrief {
-                s += "- Work down the **Where to look first** order above. Diff the top entries, skim or skip what it marks low-signal, and stop once you can judge the change.\n"
+                s += "- Work down the **reading order** above. Diff the top entries, skim or skip what it marks generated or docs, and stop once you can judge the change.\n"
             } else {
                 s += "- Start from the **Files changed** list above. Pick the highest-risk files first (logic, security, concurrency, data handling) and skim trivial ones (generated code, lockfiles, docs).\n"
             }
@@ -327,31 +333,30 @@ enum ContextAssembler {
         return s
     }
 
-    /// Cap on how many files get a ranked line. Past this the list stops
-    /// being a triage aid and becomes another thing to read.
-    static let riskBriefMaxRows = 12
+    /// Cap on ranked lines. The plain file list this replaces was uncapped,
+    /// so keep it generous — the cap exists to bound a pathological
+    /// several-hundred-file PR, not to truncate ordinary ones.
+    static let riskBriefMaxRows = 40
 
-    /// Renders `RiskBrief` as a reading order.
+    /// Renders `RiskBrief` as the subreview's file list, in reading order.
     ///
-    /// The framing paragraph is the load-bearing part. Every entry here is a
+    /// The framing paragraph is the load-bearing part. Every entry is a
     /// mechanical observation ("this file is hot", "no test changed"), and a
-    /// model handed a list under a heading like "risk" will reach for it as
-    /// evidence and publish `warning: no test coverage` on all six files.
-    /// The publication bar in the system prompt is what decides whether
-    /// anything gets said; this section only decides what gets *read*.
+    /// model handed a ranked list under a risk-flavoured heading will reach
+    /// for it as evidence and publish `warning: no test coverage` on all six
+    /// files. The publication bar in the system prompt decides whether
+    /// anything gets *said*; this section only decides what gets *read*.
     private static func riskBriefSection(_ brief: RiskBrief) -> String {
-        var s = "## Where to look first\n\n"
-        s += "A mechanical pre-scan of the files above — file names, diff size, "
-        s += "and recent commit history. It is a **reading order, not a finding**. "
-        s += "Nothing below is evidence that anything is wrong, and no entry here "
-        s += "clears the publication bar on its own: \"the pre-scan flagged it\" is "
-        s += "not a defect, and neither is \"no test file changed\" unless you can "
-        s += "name the regression that would slip through. Use it to decide where "
-        s += "to spend your lookups, then judge the code you actually read.\n\n"
+        var s = "## Files changed, in suggested reading order\n\n"
+        s += "Ordered by a mechanical pre-scan: diff size, whether a paired test "
+        s += "changed, recent commit history, sensitive paths. It is a **reading "
+        s += "order, not a finding** — no entry clears the publication bar on its "
+        s += "own, and \"no test file changed\" is not a defect unless you can name "
+        s += "the regression it lets through. Judge only the code you actually read.\n\n"
 
         let priority = brief.priorityRows.prefix(riskBriefMaxRows)
         if priority.isEmpty {
-            s += "No source or test files in this subreview.\n"
+            s += "_(no hand-written files in this subreview)_\n"
         } else {
             for (idx, row) in priority.enumerated() {
                 s += "\(idx + 1). `\(row.path)` (+\(row.addedLines) / -\(row.removedLines))"
@@ -362,15 +367,19 @@ enum ContextAssembler {
             }
             let overflow = brief.priorityRows.count - priority.count
             if overflow > 0 {
-                s += "\(priority.count + 1). … and \(overflow) more, lower-ranked\n"
+                s += "\(priority.count + 1). … and \(overflow) more, lower-ranked "
+                s += "(`git diff --stat` for the full list)\n"
             }
         }
 
+        // One line for the whole low-signal group rather than a bullet each:
+        // a lockfile-heavy PR would otherwise spend more prompt on files
+        // nobody should read than on the ones they should.
         let lowSignal = brief.lowSignalRows
         if !lowSignal.isEmpty {
-            let names = lowSignal.prefix(8).map { "`\($0.path)`" }.joined(separator: ", ")
-            let more = lowSignal.count > 8 ? ", … and \(lowSignal.count - 8) more" : ""
-            s += "\nLikely low-signal (generated, vendored, or docs): \(names)\(more)\n"
+            let names = lowSignal.prefix(12).map { "`\($0.path)`" }.joined(separator: ", ")
+            let more = lowSignal.count > 12 ? ", … and \(lowSignal.count - 12) more" : ""
+            s += "\nGenerated, vendored, or docs — skim or skip: \(names)\(more)\n"
         }
 
         if brief.changesSourceWithoutAnyTest {
