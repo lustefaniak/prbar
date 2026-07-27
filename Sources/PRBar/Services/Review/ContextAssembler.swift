@@ -31,7 +31,8 @@ enum ContextAssembler {
         baseSha: String = "",
         customSystemPrompt: String? = nil,
         replaceBaseSystemPrompt: Bool = false,
-        priorReviews: [PriorReview] = []
+        priorReviews: [PriorReview] = [],
+        riskBrief: RiskBrief? = nil
     ) throws -> PromptBundle {
         let language = subdiff.dominantLanguage
         let basePrompt = try PromptLibrary.systemPrompt(for: language)
@@ -53,7 +54,8 @@ enum ContextAssembler {
             ciFailures: ciFailures,
             toolMode: toolMode,
             baseSha: baseSha,
-            priorReviews: priorReviews
+            priorReviews: priorReviews,
+            riskBrief: riskBrief
         )
         let subpathTag = subdiff.subpath.isEmpty ? "root" : subdiff.subpath
         return PromptBundle(
@@ -77,7 +79,8 @@ enum ContextAssembler {
         ciFailures: [CIFailureLog],
         toolMode: ToolMode,
         baseSha: String = "",
-        priorReviews: [PriorReview] = []
+        priorReviews: [PriorReview] = [],
+        riskBrief: RiskBrief? = nil
     ) -> String {
         var out = ""
         out += "# Pull Request Review\n\n"
@@ -96,7 +99,18 @@ enum ContextAssembler {
         }
         out += subfolderSection(subdiff: subdiff, toolMode: toolMode)
         out += "\n"
-        out += filesChangedSection(subdiff: subdiff)
+        // The brief carries every path with its +/- counts, so it *replaces*
+        // the plain file list rather than being appended to it — rendering
+        // both duplicated the whole file table for no added information. On a
+        // generated-heavy PR the brief is the cheaper of the two, since it
+        // collapses lockfiles and docs into one comma-separated line instead
+        // of a bullet each.
+        let brief = riskBrief.flatMap { $0.isEmpty ? nil : $0 }
+        if let brief {
+            out += riskBriefSection(brief)
+        } else {
+            out += filesChangedSection(subdiff: subdiff)
+        }
         out += "\n"
         if !existingComments.isEmpty {
             out += existingCommentsSection(existingComments)
@@ -109,7 +123,7 @@ enum ContextAssembler {
             out += "\n"
         }
         if toolMode == .sandboxed {
-            out += exploreSection(baseSha: baseSha, subdiff: subdiff)
+            out += exploreSection(baseSha: baseSha, subdiff: subdiff, hasRiskBrief: brief != nil)
         } else {
             out += diffSection(diffText)
         }
@@ -144,7 +158,7 @@ enum ContextAssembler {
     /// multi-thousand-line blob from the prompt. For large changes the
     /// guidance leads with file-list triage instead of a full diff so the
     /// agent's spend scales with attention, not diff size.
-    private static func exploreSection(baseSha: String, subdiff: Subdiff) -> String {
+    private static func exploreSection(baseSha: String, subdiff: Subdiff, hasRiskBrief: Bool) -> String {
         let subpath = subdiff.subpath
         let scope = subpath.isEmpty ? "" : " -- ."
         var s = "## Reviewing the change\n\n"
@@ -168,7 +182,11 @@ enum ContextAssembler {
         if isLarge {
             s += "This is a **large change** (\(subdiff.filePaths.count) files). "
             s += "**Do not** run a single `git diff` over everything — that floods your context and burns the budget. Instead:\n\n"
-            s += "- Start from the **Files changed** list above. Pick the highest-risk files first (logic, security, concurrency, data handling) and skim trivial ones (generated code, lockfiles, docs).\n"
+            if hasRiskBrief {
+                s += "- Work down the **reading order** above. Diff the top entries, skim or skip what it marks generated or docs, and stop once you can judge the change.\n"
+            } else {
+                s += "- Start from the **Files changed** list above. Pick the highest-risk files first (logic, security, concurrency, data handling) and skim trivial ones (generated code, lockfiles, docs).\n"
+            }
             s += "- Diff one file at a time: `git diff \(baseSha) HEAD -- <path>`. Base version of a file: `git show \(baseSha):<path>`.\n"
             s += "- Read or grep only the surrounding code you need to judge a specific change.\n"
             s += "- Emit your verdict as soon as you can judge the change — you do not need to open every file. If the important files are clean, that is an approve.\n"
@@ -311,6 +329,64 @@ enum ContextAssembler {
             let adds = addsByFile[path] ?? 0
             let dels = delsByFile[path] ?? 0
             s += "- `\(path)` (+\(adds) / -\(dels))\n"
+        }
+        return s
+    }
+
+    /// Cap on ranked lines. The plain file list this replaces was uncapped,
+    /// so keep it generous — the cap exists to bound a pathological
+    /// several-hundred-file PR, not to truncate ordinary ones.
+    static let riskBriefMaxRows = 40
+
+    /// Renders `RiskBrief` as the subreview's file list, in reading order.
+    ///
+    /// The framing paragraph is the load-bearing part. Every entry is a
+    /// mechanical observation ("this file is hot", "no test changed"), and a
+    /// model handed a ranked list under a risk-flavoured heading will reach
+    /// for it as evidence and publish `warning: no test coverage` on all six
+    /// files. The publication bar in the system prompt decides whether
+    /// anything gets *said*; this section only decides what gets *read*.
+    private static func riskBriefSection(_ brief: RiskBrief) -> String {
+        var s = "## Files changed, in suggested reading order\n\n"
+        s += "Ordered by a mechanical pre-scan: diff size, whether a paired test "
+        s += "changed, recent commit history, sensitive paths. It is a **reading "
+        s += "order, not a finding** — no entry clears the publication bar on its "
+        s += "own, and \"no test file changed\" is not a defect unless you can name "
+        s += "the regression it lets through. Judge only the code you actually read.\n\n"
+
+        let priority = brief.priorityRows.prefix(riskBriefMaxRows)
+        if priority.isEmpty {
+            s += "_(no hand-written files in this subreview)_\n"
+        } else {
+            for (idx, row) in priority.enumerated() {
+                s += "\(idx + 1). `\(row.path)` (+\(row.addedLines) / -\(row.removedLines))"
+                if !row.reasons.isEmpty {
+                    s += " — \(row.reasons.joined(separator: "; "))"
+                }
+                s += "\n"
+            }
+            let overflow = brief.priorityRows.count - priority.count
+            if overflow > 0 {
+                s += "\(priority.count + 1). … and \(overflow) more, lower-ranked "
+                s += "(`git diff --stat` for the full list)\n"
+            }
+        }
+
+        // One line for the whole low-signal group rather than a bullet each:
+        // a lockfile-heavy PR would otherwise spend more prompt on files
+        // nobody should read than on the ones they should.
+        let lowSignal = brief.lowSignalRows
+        if !lowSignal.isEmpty {
+            let names = lowSignal.prefix(12).map { "`\($0.path)`" }.joined(separator: ", ")
+            let more = lowSignal.count > 12 ? ", … and \(lowSignal.count - 12) more" : ""
+            s += "\nGenerated, vendored, or docs — skim or skip: \(names)\(more)\n"
+        }
+
+        if brief.changesSourceWithoutAnyTest {
+            s += "\nThis subreview changes source files and no test files.\n"
+        }
+        if let churn = brief.churnSummary {
+            s += "\nCommit-history window observed: \(churn).\n"
         }
         return s
     }
