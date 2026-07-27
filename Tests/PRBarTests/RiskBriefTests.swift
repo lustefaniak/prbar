@@ -89,7 +89,7 @@ final class RiskBriefTests: XCTestCase {
     }
 
     func testUnpairedSourceGetsMissingTestReason() {
-        let brief = RiskBrief.compute(subdiff: subdiff([("audit/log.go", 10, 2)]))
+        let brief = RiskBrief.compute(subdiff: subdiff([("audit/log.go", 90, 20)]))
         XCTAssertTrue(
             row(brief, "audit/log.go").reasons.contains { $0.contains("no matching test") }
         )
@@ -284,8 +284,7 @@ final class RiskBriefTests: XCTestCase {
     /// last 4 commits" as though it meant something.
     func testThinChurnWindowIsDroppedEntirely() {
         let thinByCount = ChurnWindow(commitsByPath: ["hot/b.go": 3], commitsObserved: 4, spanDays: 30)
-        let thinBySpan = ChurnWindow(commitsByPath: ["hot/b.go": 3], commitsObserved: 40, spanDays: 2)
-        for churn in [thinByCount, thinBySpan] {
+        for churn in [thinByCount] {
             XCTAssertFalse(churn.isUsable)
             let brief = RiskBrief.compute(subdiff: subdiff([("hot/b.go", 5, 5)]), churn: churn)
             XCTAssertNil(brief.churnSummary)
@@ -294,12 +293,21 @@ final class RiskBriefTests: XCTestCase {
     }
 
     func testChurnWindowBoundaryIsUsable() {
-        let churn = ChurnWindow(
-            commitsByPath: [:],
-            commitsObserved: ChurnWindow.minCommits,
-            spanDays: ChurnWindow.minSpanDays
-        )
-        XCTAssertTrue(churn.isUsable)
+        XCTAssertTrue(ChurnWindow(
+            commitsByPath: [:], commitsObserved: ChurnWindow.minCommits, spanDays: 30
+        ).isUsable)
+        XCTAssertFalse(ChurnWindow(
+            commitsByPath: [:], commitsObserved: ChurnWindow.minCommits - 1, spanDays: 30
+        ).isUsable)
+    }
+
+    /// A busy monorepo's `--depth=50` window spans only a few days. Gating
+    /// churn on span rejected exactly those repos, so a short dense window
+    /// counts as usable.
+    func testDenseShortWindowIsUsable() {
+        XCTAssertTrue(ChurnWindow(
+            commitsByPath: ["a.go": 5], commitsObserved: 57, spanDays: 3
+        ).isUsable)
     }
 
     // MARK: - prompt rendering

@@ -17,15 +17,18 @@ struct ChurnWindow: Sendable, Hashable, Codable {
     /// Days between the oldest and newest observed commit.
     let spanDays: Int
 
-    /// Below this much history the ranking is noise: a handful of commits
-    /// on a busy repo means "whatever landed this week", not "this file is
-    /// hot". We render nothing rather than something misleading.
+    /// Below this many commits the per-file counts don't discriminate — one
+    /// or two touches each, which is not a hotness signal.
     static let minCommits = 12
-    static let minSpanDays = 7
 
-    var isUsable: Bool {
-        commitsObserved >= Self.minCommits && spanDays >= Self.minSpanDays
-    }
+    /// Gated on commit count alone, deliberately not on `spanDays`. An
+    /// earlier version also required a 7-day span, which on a busy monorepo
+    /// rejected every window: `--depth=50` there covers ~3 days, so the
+    /// repos where churn discriminates most were exactly the ones it was
+    /// switched off for. A short span makes this "hot right now" rather than
+    /// "chronically hot" — a different signal, still a useful one, and the
+    /// rendered summary states the observed span so it isn't oversold.
+    var isUsable: Bool { commitsObserved >= Self.minCommits }
 
     func commits(for path: String) -> Int { commitsByPath[path] ?? 0 }
 }
@@ -47,11 +50,26 @@ struct RiskBrief: Sendable, Hashable, Codable {
     enum FileClass: String, Sendable, Codable {
         case source
         case test
+        /// Schemas, migrations, dependency manifests, CI and service config:
+        /// hand-written and worth reading (a destructive migration is a real
+        /// blocker) but not unit-testable, so the test-pairing term must not
+        /// apply. Without this class a two-line `kernel.yaml` edit outranked
+        /// a 529-line new service purely for having no `_test.go` beside it.
+        case manifest
         /// Machine-produced or vendored: lockfiles, protobuf output, mocks,
         /// `vendor/`. Reviewing the generator's input beats reading these.
         case generated
         /// Prose. Wrong docs matter, but not the way wrong code does.
         case docs
+
+        /// Primary sort key: hand-written files first, machine-produced and
+        /// prose after, whatever their scores.
+        var sortRank: Int {
+            switch self {
+            case .source, .manifest, .test: return 0
+            case .generated, .docs:         return 1
+            }
+        }
     }
 
     struct FileRow: Sendable, Hashable, Codable {
@@ -93,14 +111,26 @@ struct RiskBrief: Sendable, Hashable, Codable {
     // MARK: - scoring weights
 
     /// Caps, mirroring code-review-graph's additive-with-ceilings shape.
-    /// They sum to 0.85 rather than 1.0 — the score is an ordering key, not
-    /// a probability, so normalising would imply a precision we don't have.
+    /// They don't sum to 1.0 — the score is an ordering key, not a
+    /// probability, so normalising would imply a precision we don't have.
     private static let churnWeight = 0.25
     private static let churnSaturationCommits = 10.0
     private static let missingTestWeight = 0.25
     private static let sensitiveWeight = 0.20
-    private static let sizeWeight = 0.15
+    private static let sizeWeight = 0.25
     private static let sizeSaturationLines = 200.0
+
+    /// The missing-test term scales with how much changed rather than being
+    /// flat. Measured against real PRs, a flat bonus put every one-line
+    /// untested config edit above every large well-tested file — the term
+    /// carried the ranking instead of contributing to it. An untested
+    /// two-line change is not a place to start reading; an untested 300-line
+    /// file is.
+    private static let missingTestSaturationLines = 80.0
+
+    /// Below this fraction of the missing-test term, the observation isn't
+    /// worth a line in the prompt even though it still nudges the score.
+    private static let missingTestMentionFloor = 0.5
 
     /// Generated and docs files keep a token score so ordering stays
     /// deterministic, but sink below anything real.
@@ -180,17 +210,23 @@ struct RiskBrief: Sendable, Hashable, Codable {
                 }
             }
 
-            if fileClass == .source, !testedStems.contains(normalizedStem(path)) {
-                score += missingTestWeight
-                reasons.append("no matching test file changed in this subreview")
+            let churnedLines = Double(adds + dels)
+
+            if fileClass == .source, !hasPairedTest(path, in: testedStems) {
+                let scale = min(churnedLines / missingTestSaturationLines, 1.0)
+                score += missingTestWeight * scale
+                if scale >= missingTestMentionFloor {
+                    reasons.append("no matching test file changed in this subreview")
+                }
             }
 
-            if let hit = sensitiveHit(path) {
+            // Test files are worth reading, but boosting them for a sensitive
+            // path just floats `token_test.go` above the code it covers.
+            if fileClass != .test, let hit = sensitiveHit(path) {
                 score += sensitiveWeight
                 reasons.append("path matches sensitive area (\(hit))")
             }
 
-            let churnedLines = Double(adds + dels)
             if churnedLines > 0 {
                 score += min(churnedLines / sizeSaturationLines, 1.0) * sizeWeight
             }
@@ -218,11 +254,18 @@ struct RiskBrief: Sendable, Hashable, Codable {
             ))
         }
 
-        // Stable order: score desc, then path asc so equal scores don't
-        // reshuffle between runs (the brief lands in the prompt, and a
-        // prompt that changes for no reason busts the review cache).
+        // Low-signal files sort below everything else by class, not by score
+        // alone. Damping a huge generated file's score isn't enough — a
+        // 1,300-line `go.sum` still outscored a four-line source edit, and no
+        // amount of lockfile churn should outrank real code. Within a class,
+        // score desc, then path asc so equal scores don't reshuffle between
+        // runs (the brief lands in the prompt, and a prompt that changes for
+        // no reason busts the review cache).
         rows.sort { lhs, rhs in
-            lhs.score == rhs.score ? lhs.path < rhs.path : lhs.score > rhs.score
+            let lr = lhs.fileClass.sortRank, rr = rhs.fileClass.sortRank
+            if lr != rr { return lr < rr }
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            return lhs.path < rhs.path
         }
 
         let hasSource = classes.values.contains(.source)
@@ -251,7 +294,25 @@ struct RiskBrief: Sendable, Hashable, Codable {
         if isGenerated(path: lower, name: name) { return .generated }
         if isTest(path: lower, name: name) { return .test }
         if isDocs(path: lower, name: name) { return .docs }
+        if isManifest(path: lower, name: name) { return .manifest }
         return .source
+    }
+
+    private static let manifestExtensions: Set<String> = [
+        "sql", "proto", "yaml", "yml", "json", "toml", "ini", "cfg", "conf",
+        "tf", "tfvars", "graphql", "gql", "mod", "properties", "plist",
+        "entitlements", "xcconfig", "gradle", "cmake",
+    ]
+
+    private static let manifestNames: Set<String> = [
+        "dockerfile", "makefile", "procfile", "gemfile", "podfile",
+        "brewfile", "justfile", "rakefile", ".env", "project.yml",
+    ]
+
+    private static func isManifest(path: String, name: String) -> Bool {
+        if manifestNames.contains(name) { return true }
+        if name.hasPrefix("dockerfile.") { return true }
+        return manifestExtensions.contains((name as NSString).pathExtension)
     }
 
     private static let generatedNames: Set<String> = [
@@ -295,7 +356,7 @@ struct RiskBrief: Sendable, Hashable, Codable {
         return false
     }
 
-    private static let docExtensions: Set<String> = ["md", "markdown", "rst", "txt", "adoc"]
+    private static let docExtensions: Set<String> = ["md", "mdx", "markdown", "rst", "txt", "adoc"]
 
     private static func isDocs(path: String, name: String) -> Bool {
         let ext = (name as NSString).pathExtension
@@ -321,6 +382,27 @@ struct RiskBrief: Sendable, Hashable, Codable {
         }
         if stem.hasPrefix("test_") { stem = String(stem.dropFirst(5)) }
         return stem.trimmingCharacters(in: CharacterSet(charactersIn: "._-"))
+    }
+
+    /// True when some changed test file covers `path`.
+    ///
+    /// Exact stem equality is not enough: Go's `_integration_test.go`,
+    /// `_query_test.go` and `_slack_test.go` suffixes are common, and on real
+    /// PRs they made well-tested files report as untested. So a test stem
+    /// also pairs when the source stem is its leading `_`/`-`/`.`-delimited
+    /// component — `revalidate` pairs with `revalidate_integration`, while
+    /// `log` still does not pair with `logger`.
+    static func hasPairedTest(_ path: String, in testedStems: Set<String>) -> Bool {
+        let stem = normalizedStem(path)
+        guard !stem.isEmpty else { return false }
+        if testedStems.contains(stem) { return true }
+        return testedStems.contains { testStem in
+            leadingComponent(testStem) == stem
+        }
+    }
+
+    private static func leadingComponent(_ stem: String) -> String {
+        String(stem.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == "." }).first ?? "")
     }
 
     /// First sensitive fragment the path matches, or nil.
