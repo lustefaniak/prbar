@@ -353,12 +353,24 @@ final class StubProvider: ReviewProvider, @unchecked Sendable {
     var verdict: ReviewVerdict
     var summary: String
     var cost: Double
+    /// Defaulted so the ~dozen existing call sites compile unchanged;
+    /// the auto-review staging tests need a provider that emits them.
+    var annotations: [DiffAnnotation]
+    var confidence: Double
     private(set) var callCount: Int = 0
 
-    init(verdict: ReviewVerdict, summary: String, cost: Double) {
+    init(
+        verdict: ReviewVerdict,
+        summary: String,
+        cost: Double,
+        annotations: [DiffAnnotation] = [],
+        confidence: Double = 0.9
+    ) {
         self.verdict = verdict
         self.summary = summary
         self.cost = cost
+        self.annotations = annotations
+        self.confidence = confidence
     }
 
     func availability() async -> ProviderAvailability { .ready }
@@ -370,8 +382,8 @@ final class StubProvider: ReviewProvider, @unchecked Sendable {
     ) async throws -> ProviderResult {
         callCount += 1
         return ProviderResult(
-            verdict: verdict, confidence: 0.9, summaryMarkdown: summary,
-            annotations: [], costUsd: cost, toolCallCount: 0, toolNamesUsed: [],
+            verdict: verdict, confidence: confidence, summaryMarkdown: summary,
+            annotations: annotations, costUsd: cost, toolCallCount: 0, toolNamesUsed: [],
             rawJson: Data()
         )
     }

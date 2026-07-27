@@ -164,7 +164,17 @@ final class RepoConfigFilterTests: XCTestCase {
         cfg.maxCostUsdPerSubreview = 0.5
         cfg.autoApprove = AutoApproveConfig(
             enabled: true, minConfidence: 0.95,
-            requireZeroBlockingAnnotations: true, maxAdditions: 100
+            claudeMinConfidence: 0.90, codexMinConfidence: 0.98,
+            allowApproveWithNotes: true,
+            maxAnnotationSeverity: .warning, maxAnnotations: 5,
+            maxAdditions: 100, maxDeletions: 200, maxChangedFiles: 12,
+            postAttributionComment: true, postInlineAnnotations: true
+        )
+        cfg.autoDeny = AutoDenyConfig(
+            action: .requestChanges, minConfidence: 0.92,
+            claudeMinConfidence: 0.93, codexMinConfidence: 0.94,
+            requiredSeverity: .blocker, minMatchingAnnotations: 2,
+            maxAdditions: 300, postInlineAnnotations: false
         )
         cfg.reviewDrafts = true
         cfg.excludeTitlePatterns = ["[Prod deploy]*"]
@@ -205,6 +215,32 @@ final class RepoConfigFilterTests: XCTestCase {
         // Per-repo merge-confirmation override absent in old payloads →
         // nil = follow the global setting.
         XCTAssertNil(cfg.skipMergeConfirmation)
+        // Auto-deny postdates these payloads and must stay off — a
+        // migration that silently enabled it would have PRBar posting
+        // "changes requested" on repos the user never opted in.
+        XCTAssertEqual(cfg.autoDeny.action, .off)
+    }
+
+    /// The severity ceiling replaced a boolean. Payloads written before
+    /// the swap must keep meaning what they meant: "no blocking
+    /// annotations" == tolerate nothing above `.suggestion`.
+    func testAutoApproveMigratesLegacyBlockingAnnotationFlag() throws {
+        let strict = """
+        {"enabled": true, "minConfidence": 0.9, "requireZeroBlockingAnnotations": true, "maxAdditions": 200}
+        """
+        let lenient = """
+        {"enabled": true, "minConfidence": 0.9, "requireZeroBlockingAnnotations": false, "maxAdditions": 200}
+        """
+        let decodedStrict = try JSONDecoder().decode(AutoApproveConfig.self, from: Data(strict.utf8))
+        let decodedLenient = try JSONDecoder().decode(AutoApproveConfig.self, from: Data(lenient.utf8))
+
+        XCTAssertEqual(decodedStrict.maxAnnotationSeverity, .suggestion)
+        XCTAssertEqual(decodedLenient.maxAnnotationSeverity, .blocker)
+        // Both predate the posting flags, which must default to off so an
+        // upgrade stops the attribution comments rather than continuing them.
+        XCTAssertFalse(decodedStrict.postAttributionComment)
+        XCTAssertFalse(decodedStrict.postInlineAnnotations)
+        XCTAssertFalse(decodedStrict.allowApproveWithNotes)
     }
 
     // MARK: - helpers
