@@ -16,7 +16,8 @@ import XCTest
 ///  "rootPatterns": ["services/*/", "web/"],
 ///  "minFilesPerSubreview": 10,
 ///  "collapseAboveSubreviewCount": 2,
-///  "churnWindowDays": 90}
+///  "churnWindowDays": 90,
+///  "churnHistoryDepth": 1000}
 /// JSON
 /// xcodebuild ... -only-testing:PRBarTests/RiskBriefLivePRTests test
 /// ```
@@ -35,11 +36,12 @@ final class RiskBriefLivePRTests: XCTestCase {
         var minFilesPerSubreview: Int = 1
         var collapseAboveSubreviewCount: Int? = nil
         var churnWindowDays: Int = 90
+        var churnHistoryDepth: Int = 1_000
         var maxPRs: Int = 25
 
         enum CodingKeys: String, CodingKey {
             case repo, rootPatterns, minFilesPerSubreview
-            case collapseAboveSubreviewCount, churnWindowDays, maxPRs
+            case collapseAboveSubreviewCount, churnWindowDays, churnHistoryDepth, maxPRs
         }
 
         init(from decoder: Decoder) throws {
@@ -49,6 +51,7 @@ final class RiskBriefLivePRTests: XCTestCase {
             self.minFilesPerSubreview = (try? c.decode(Int.self, forKey: .minFilesPerSubreview)) ?? 1
             self.collapseAboveSubreviewCount = try? c.decodeIfPresent(Int.self, forKey: .collapseAboveSubreviewCount)
             self.churnWindowDays = (try? c.decode(Int.self, forKey: .churnWindowDays)) ?? 90
+            self.churnHistoryDepth = (try? c.decode(Int.self, forKey: .churnHistoryDepth)) ?? 1_000
             self.maxPRs = (try? c.decode(Int.self, forKey: .maxPRs)) ?? 25
         }
     }
@@ -80,6 +83,7 @@ final class RiskBriefLivePRTests: XCTestCase {
         config.minFilesPerSubreview = settings.minFilesPerSubreview
         config.collapseAboveSubreviewCount = settings.collapseAboveSubreviewCount
         config.churnWindowDays = settings.churnWindowDays
+        config.churnHistoryDepth = settings.churnHistoryDepth
 
         let prs = try await listOpenPRs(repo: settings.repo, limit: settings.maxPRs)
         print("\n===== RISK BRIEF over \(prs.count) open PR(s) in \(settings.repo) =====\n")
@@ -97,7 +101,8 @@ final class RiskBriefLivePRTests: XCTestCase {
             do {
                 handle = try await manager.provision(
                     owner: owner, repo: repo, headSha: pr.headRefOid,
-                    subpath: "", baseRef: pr.baseRefName
+                    subpath: "", baseRef: pr.baseRefName,
+                    historyDepth: settings.churnHistoryDepth
                 )
             } catch {
                 print("    provision failed (\(error)) — churn and marker scan skipped")

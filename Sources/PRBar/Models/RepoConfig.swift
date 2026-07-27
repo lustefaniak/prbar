@@ -381,11 +381,19 @@ struct RepoConfig: Sendable, Hashable, Codable {
     var churnWindowDays: Int = 90
 
     /// Commit depth fetched into the bare clone when the churn term is on.
-    /// The clone is `--filter=blob:none`, so deepening carries commits and
-    /// trees but never blobs — file size (binaries, vendored assets) does
-    /// not enter into the cost. Measured on a ~160 MB blobless monorepo
-    /// clone: 10 → 1000 commits cost 6.9 s and 1.8 MiB, once per repo, and
-    /// bought ~80 days of history where `--depth=50` covered 3.
+    ///
+    /// Cheap because the clone is `--filter=blob:none`: deepening carries
+    /// commits and trees but never blobs, so file size (binaries, vendored
+    /// assets) does not enter into it. Measured on a ~160 MB blobless
+    /// monorepo clone, 10 → 1000 commits cost 6.9 s and 1.8 MiB of pack,
+    /// once per repo.
+    ///
+    /// **Depth, not `churnWindowDays`, is the binding constraint.** On a busy
+    /// monorepo 1000 commits spanned 17–21 days in practice, so a 90-day
+    /// `churnWindowDays` really yields ~3 weeks — enough for "hot right now",
+    /// short of "chronically hot". `RiskBrief` reports the observed span in
+    /// the prompt so the window is never oversold. Raise this (roughly
+    /// linearly) if you want the full window; 4000 ≈ 3 months there.
     var churnHistoryDepth: Int = 1_000
 
     /// Hard wall-clock ceiling per subreview, in seconds. The provider
