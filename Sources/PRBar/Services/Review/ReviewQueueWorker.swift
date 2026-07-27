@@ -306,19 +306,29 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var cache: ReviewCache?
 
-    // MARK: - Auto-approve batch state
+    // MARK: - Auto-review batch state
     //
-    // Approvals stage here when `AutoApprovePolicy` says yes. The undo
-    // banner only appears once *all* enqueued reviews have settled
+    // Approvals and denials stage here when `AutoReviewPolicy` says yes.
+    // The undo banner only appears once *all* enqueued reviews have settled
     // (no .queued / .running). Design goal: one context switch per cycle,
     // not one per PR.
 
-    /// PRs the worker would auto-approve, keyed by node ID. Population
-    /// happens at completion time; presentation is gated by `batchReady`.
-    private(set) var pendingAutoApprovals: [String: PendingAutoApprove] = [:]
+    /// PRs with a staged post (approve / comment / request-changes), keyed
+    /// by node ID. Population happens at completion time; presentation is
+    /// gated by `batchUndoActive`.
+    private(set) var pendingAutoActions: [String: StagedAutoReview] = [:]
+
+    /// PRs whose negative verdict cleared the deny gates under
+    /// `AutoDenyAction.flagOnly`. Nothing is ever posted for these — they
+    /// exist so the banner can surface "the AI wants changes here" without
+    /// PRBar speaking on the user's behalf. In-memory only: the verdict
+    /// itself persists in `reviews`, so a relaunch loses the nudge, not the
+    /// finding.
+    private(set) var flaggedDenials: [String: StagedAutoReview] = [:]
 
     /// True when a batch undo banner is currently counting down (visible
-    /// in `PopoverView`). Set by `commitBatch()`, cleared on undo / fire.
+    /// in `PopoverView`). Set by `scheduleBatchIfSettled()`, cleared on
+    /// undo / fire.
     private(set) var batchUndoActive: Bool = false
 
     /// Wall-clock deadline at which the batch fires. Nil unless the
@@ -328,26 +338,38 @@ final class ReviewQueueWorker {
     /// How long the user has to undo the staged batch. 30 s per PLAN.
     var undoWindow: TimeInterval = 30
 
-    /// Closure that posts the actual `gh pr review --approve`. Injected
-    /// so tests don't shell out. Default uses the shared `GHClient`.
-    /// Only used by the fallback path when `enqueueAutoApprove` is nil
-    /// (i.e. in tests); production routes through `ActionQueue` instead.
+    /// Closure that posts a staged auto-review. Injected so tests don't
+    /// shell out. Only used by the fallback path when `enqueueAutoReview`
+    /// is nil (i.e. in tests); production routes through `ActionQueue`.
     @ObservationIgnored
-    var approvePoster: @Sendable (_ pr: InboxPR, _ body: String) async throws -> Void = { pr, body in
+    var autoReviewPoster: @Sendable (
+        _ pr: InboxPR, _ kind: ReviewActionKind, _ body: String,
+        _ comments: [GHClient.InlineComment]
+    ) async throws -> Void = { pr, kind, body, comments in
         let c = try GHClient()
-        try await c.postReview(
-            owner: pr.owner, repo: pr.repo, number: pr.number,
-            kind: .approve, body: body
-        )
+        if comments.isEmpty {
+            try await c.postReview(
+                owner: pr.owner, repo: pr.repo, number: pr.number,
+                kind: kind, body: body
+            )
+        } else {
+            try await c.postReviewWithComments(
+                owner: pr.owner, repo: pr.repo, number: pr.number,
+                event: kind.apiEvent, body: body, comments: comments
+            )
+        }
     }
 
-    /// When set, `fireBatch` hands each staged approval to the shared
-    /// `ActionQueue` instead of posting it inline — so auto-approve shares
+    /// When set, `fireBatch` hands each staged post to the shared
+    /// `ActionQueue` instead of posting it inline — so auto-review shares
     /// the same serialization, dedup, retry, and action-log path as manual
-    /// writes. Nil keeps the legacy `approvePoster` path (tests). Wired by
-    /// `AppDelegate`.
+    /// writes. Nil keeps the legacy `autoReviewPoster` path (tests). Wired
+    /// by `AppDelegate`.
     @ObservationIgnored
-    var enqueueAutoApprove: (@MainActor (_ pr: InboxPR, _ body: String, _ costUsd: Double) -> Void)?
+    var enqueueAutoReview: (@MainActor (
+        _ pr: InboxPR, _ kind: ReviewActionKind, _ body: String,
+        _ comments: [GHClient.InlineComment], _ costUsd: Double
+    ) -> Void)?
 
     @ObservationIgnored
     private var batchTimer: Task<Void, Never>?
@@ -371,15 +393,24 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     weak var reviewLog: ReviewLogStore?
 
-    /// Hook fired after a successful auto-approve post so the inbox row
+    /// Hook fired after a successful auto-review post so the inbox row
     /// reflects the new reviewDecision without waiting for the next 60s
     /// poll. Wired to `PRPoller.refreshPR` from `AppDelegate`.
     @ObservationIgnored
-    var onAutoApproved: (@MainActor (_ pr: InboxPR) -> Void)?
+    var onAutoReviewPosted: (@MainActor (_ pr: InboxPR) -> Void)?
 
-    struct PendingAutoApprove: Sendable, Hashable {
+    /// One decided-but-not-yet-posted auto review. Body and inline
+    /// comments are resolved at staging time, while the run's diff is
+    /// still in hand — `fireBatch` runs minutes later and has no diff.
+    struct StagedAutoReview: Sendable, Hashable, Identifiable {
+        var id: String { pr.nodeId }
         let pr: InboxPR
         let review: AggregatedReview
+        /// The GitHub review action to post. Nil for `.flagOnly` denials,
+        /// which never reach `fireBatch`.
+        let action: ReviewActionKind?
+        let body: String
+        let comments: [GHClient.InlineComment]
         let stagedAt: Date
     }
 
@@ -851,7 +882,10 @@ final class ReviewQueueWorker {
                 pr: pr, headSha: pr.headSha, providerId: provId,
                 triggeredAt: triggeredAt, review: aggregated
             )
-            stageAutoApproveIfEligible(pr: pr, review: aggregated, config: config)
+            stageAutoReviewIfEligible(
+                pr: pr, review: aggregated, config: config,
+                providerId: chosenProviderId, diffText: diffText
+            )
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
@@ -904,29 +938,98 @@ final class ReviewQueueWorker {
         return tmp
     }
 
-    // MARK: - auto-approve batching
+    // MARK: - auto-review batching
 
-    private func stageAutoApproveIfEligible(
+    /// Evaluate both auto-review sides and stage whatever clears. Called
+    /// with the run's `diffText` still in scope so inline comments can be
+    /// correlated against the diff now — `fireBatch` runs after the undo
+    /// window and no longer has one.
+    private func stageAutoReviewIfEligible(
         pr: InboxPR,
         review: AggregatedReview,
-        config: RepoConfig
+        config: RepoConfig,
+        providerId: ProviderID,
+        diffText: String
     ) {
-        let decision = AutoApprovePolicy.evaluate(
-            pr: pr, review: review, config: config.autoApprove
+        // A fresh verdict supersedes whatever the previous run decided for
+        // this PR — including a still-counting-down staged post from an
+        // older SHA, which would otherwise fire against a review nobody
+        // holds anymore.
+        pendingAutoActions[pr.nodeId] = nil
+        flaggedDenials[pr.nodeId] = nil
+        // Removing the last entry mid-countdown would otherwise leave the
+        // banner ticking down to a batch with nothing in it.
+        if batchUndoActive && pendingAutoActions.isEmpty {
+            cancelAutoReviewBatch()
+        }
+
+        let decision = AutoReviewPolicy.evaluate(
+            pr: pr, review: review, providerId: providerId, config: config
         )
-        guard case .approve = decision else { return }
-        pendingAutoApprovals[pr.nodeId] = PendingAutoApprove(
-            pr: pr, review: review, stagedAt: Date()
-        )
-        scheduleBatchIfSettled()
+        switch decision {
+        case .skip(let reason):
+            PRBarLog.triage.debug("auto-review skip pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=\(reason, privacy: .public)")
+        case .approve:
+            let cfg = config.autoApprove
+            let staged = StagedAutoReview(
+                pr: pr,
+                review: review,
+                action: .approve,
+                // Empty body = a bare GitHub approval, which is what the
+                // green check already says. The attribution line is opt-in
+                // because it lands as a comment on every PR the bot touches.
+                body: cfg.postAttributionComment ? attributionBody(review) : "",
+                comments: cfg.postInlineAnnotations
+                    ? inlineComments(review: review, diffText: diffText)
+                    : [],
+                stagedAt: Date()
+            )
+            pendingAutoActions[pr.nodeId] = staged
+            PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=approve comments=\(staged.comments.count, privacy: .public)")
+            scheduleBatchIfSettled()
+        case .deny(let denyAction):
+            let cfg = config.autoDeny
+            let comments = cfg.postInlineAnnotations
+                ? inlineComments(review: review, diffText: diffText)
+                : []
+            let staged = StagedAutoReview(
+                pr: pr,
+                review: review,
+                action: denyAction.reviewActionKind,
+                // GitHub rejects an empty body on REQUEST_CHANGES and
+                // COMMENT, so the AI summary is the body — falling back to
+                // the attribution line only if the summary came back blank.
+                body: review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? denyFallbackBody(review)
+                    : review.summaryMarkdown,
+                comments: comments,
+                stagedAt: Date()
+            )
+            if denyAction == .flagOnly {
+                flaggedDenials[pr.nodeId] = staged
+                PRBarLog.triage.notice("auto-review flagged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+            } else {
+                pendingAutoActions[pr.nodeId] = staged
+                PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=\(denyAction.rawValue, privacy: .public) comments=\(comments.count, privacy: .public)")
+                scheduleBatchIfSettled()
+            }
+        }
     }
 
-    /// Start the undo-window timer iff (a) we have staged approvals and
+    private func inlineComments(review: AggregatedReview, diffText: String) -> [GHClient.InlineComment] {
+        guard !review.annotations.isEmpty else { return [] }
+        return InlineCommentMapper.map(
+            annotations: review.annotations,
+            hunks: DiffParser.parse(diffText)
+        )
+    }
+
+    /// Start the undo-window timer iff (a) we have staged posts and
     /// (b) no review is still in-flight. The "wait until everything is
     /// settled" rule deliberately collapses many notifications into one.
     private func scheduleBatchIfSettled() {
         guard !batchUndoActive else { return }
-        guard !pendingAutoApprovals.isEmpty else { return }
+        guard !pendingAutoActions.isEmpty else { return }
         let anyInFlight = reviews.values.contains { $0.status.isInFlight }
         guard !anyInFlight else { return }
 
@@ -941,61 +1044,78 @@ final class ReviewQueueWorker {
     }
 
     /// User-pressed "Undo" — discard the staged batch.
-    func cancelAutoApproveBatch() {
+    func cancelAutoReviewBatch() {
         batchTimer?.cancel()
         batchTimer = nil
-        pendingAutoApprovals.removeAll()
+        pendingAutoActions.removeAll()
         batchUndoActive = false
         batchUndoDeadline = nil
     }
 
-    /// User-pressed "Approve now" — fire immediately instead of waiting.
-    func approveBatchNow() {
+    /// User-pressed "Post now" — fire immediately instead of waiting.
+    func fireAutoReviewBatchNow() {
         batchTimer?.cancel()
         batchTimer = nil
         fireBatch()
     }
 
+    /// Dismiss a flag-only denial the user has looked at.
+    func dismissFlaggedDenial(_ nodeId: String) {
+        flaggedDenials[nodeId] = nil
+    }
+
+    func dismissAllFlaggedDenials() {
+        flaggedDenials.removeAll()
+    }
+
     private func fireBatch() {
-        let toApprove = Array(pendingAutoApprovals.values)
-        pendingAutoApprovals.removeAll()
+        let toPost = Array(pendingAutoActions.values)
+        pendingAutoActions.removeAll()
         batchUndoActive = false
         batchUndoDeadline = nil
-        for entry in toApprove {
-            let body = "Auto-approved by PRBar (\(formatConfidence(entry.review.confidence)) confidence)."
+        for entry in toPost {
+            guard let action = entry.action else { continue }
             // Production: route through the shared ActionQueue so the post
             // is serialized + dedup'd + retryable + logged on the one path.
             // The queue records its own ActionLog entry and triggers the
             // PR refresh via onActionCompleted, so we don't duplicate that
             // here.
-            if let enqueueAutoApprove {
-                enqueueAutoApprove(entry.pr, body, entry.review.costUsd)
+            if let enqueueAutoReview {
+                enqueueAutoReview(entry.pr, action, entry.body, entry.comments, entry.review.costUsd)
                 continue
             }
             // Fallback (tests / no queue wired): post inline.
-            Task { [poster = approvePoster, weak self] in
+            Task { [poster = autoReviewPoster, weak self] in
                 do {
-                    try await poster(entry.pr, body)
+                    try await poster(entry.pr, action, entry.body, entry.comments)
                     await MainActor.run {
                         self?.actionLog?.record(
-                            kind: .autoApprove, outcome: .success, pr: entry.pr,
-                            detail: body, headSha: entry.pr.headSha,
+                            kind: action.autoActionLogKind, outcome: .success, pr: entry.pr,
+                            detail: entry.body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
                         )
-                        self?.onAutoApproved?(entry.pr)
+                        self?.onAutoReviewPosted?(entry.pr)
                     }
                 } catch {
                     await MainActor.run {
                         self?.actionLog?.record(
-                            kind: .autoApprove, outcome: .failure, pr: entry.pr,
+                            kind: action.autoActionLogKind, outcome: .failure, pr: entry.pr,
                             errorMessage: error.localizedDescription,
-                            detail: body, headSha: entry.pr.headSha,
+                            detail: entry.body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
                         )
                     }
                 }
             }
         }
+    }
+
+    private func attributionBody(_ review: AggregatedReview) -> String {
+        "Auto-approved by PRBar (\(formatConfidence(review.confidence)) confidence)."
+    }
+
+    private func denyFallbackBody(_ review: AggregatedReview) -> String {
+        "PRBar's AI review requested changes (\(formatConfidence(review.confidence)) confidence) but returned no summary. See the annotations."
     }
 
     private func formatConfidence(_ c: Double) -> String {

@@ -170,8 +170,8 @@ struct PopoverView: View {
             missingToolsBanner
         }
 
-        if queue.batchUndoActive {
-            AutoApproveBanner()
+        if queue.batchUndoActive || !queue.flaggedDenials.isEmpty {
+            AutoReviewBanner()
         }
 
         tabPicker

@@ -1585,49 +1585,7 @@ struct PRDetailView: View {
     private var postableInlineComments: [GHClient.InlineComment] {
         guard let annotations = review?.annotations, !annotations.isEmpty else { return [] }
         guard case .loaded(let hunks) = diffStore.status(for: pr) else { return [] }
-        return Self.inlineComments(from: annotations, hunks: hunks)
-    }
-
-    /// Map annotations whose `(path, lineEnd)` lands on an added or
-    /// context line in the new file to a GHClient.InlineComment. Body
-    /// is the annotation's body (full text); the title isn't included
-    /// because GitHub renders the comment as plain Markdown.
-    static func inlineComments(
-        from annotations: [DiffAnnotation],
-        hunks: [Hunk]
-    ) -> [GHClient.InlineComment] {
-        // Build per-path map of valid new-file line numbers.
-        var validByPath: [String: Set<Int>] = [:]
-        for h in hunks {
-            var newLine = h.newStart
-            var valid: Set<Int> = []
-            for line in h.lines {
-                switch line {
-                case .added, .context:
-                    valid.insert(newLine)
-                    newLine += 1
-                case .removed:
-                    break
-                }
-            }
-            validByPath[h.filePath, default: []].formUnion(valid)
-        }
-        return annotations.compactMap { ann in
-            guard let valid = validByPath[ann.path] else { return nil }
-            guard valid.contains(ann.lineEnd) else { return nil }
-            let startLine = ann.lineStart < ann.lineEnd && valid.contains(ann.lineStart)
-                ? ann.lineStart : nil
-            let header: String = {
-                if let t = ann.title, !t.isEmpty { return "**\(t)**\n\n" }
-                return ""
-            }()
-            return GHClient.InlineComment(
-                path: ann.path,
-                line: ann.lineEnd,
-                startLine: startLine,
-                body: header + ann.body
-            )
-        }
+        return InlineCommentMapper.map(annotations: annotations, hunks: hunks)
     }
 
     /// Informational verdict pill. Posting now happens through the

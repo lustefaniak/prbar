@@ -44,23 +44,260 @@ enum SplitMode: String, Codable, Sendable, Hashable, CaseIterable {
 /// an aggregated AI review meets all gates. A 30 s undo banner shows in
 /// the popover before the actual call.
 struct AutoApproveConfig: Sendable, Hashable, Codable {
-    var enabled: Bool
+    var enabled: Bool = false
 
-    /// Aggregated confidence floor (0 to 1). Defaults to 0.85.
-    var minConfidence: Double
+    /// Aggregated confidence floor (0 to 1), used for any provider that
+    /// has no dedicated floor below.
+    var minConfidence: Double = 0.85
 
-    /// Reject auto-approval if any annotation is `.warning` or `.blocker`.
-    var requireZeroBlockingAnnotations: Bool
+    /// Provider-specific confidence floors. Nil → fall back to
+    /// `minConfidence`. Claude and codex don't calibrate their confidence
+    /// the same way, so one shared number over-trusts whichever is looser.
+    var claudeMinConfidence: Double? = nil
+    var codexMinConfidence: Double? = nil
 
-    /// Cap on diff size in additions. 0 = unlimited.
-    var maxAdditions: Int
+    /// Whether the `.comment` verdict ("Approve with notes") is eligible
+    /// too. Off by default: an approval carrying notes usually wants a
+    /// human to decide whether the notes matter.
+    var allowApproveWithNotes: Bool = false
 
-    static let off = AutoApproveConfig(
-        enabled: false,
-        minConfidence: 0.85,
-        requireZeroBlockingAnnotations: true,
-        maxAdditions: 200
-    )
+    /// Highest annotation severity tolerated on an auto-approved review.
+    /// `.suggestion` reproduces the old "require zero blocking
+    /// annotations" behaviour; `.blocker` tolerates anything.
+    var maxAnnotationSeverity: AnnotationSeverity = .suggestion
+
+    /// Cap on total annotation count regardless of severity — a review
+    /// with 30 nitpicks is worth reading even when none of them block.
+    /// 0 = unlimited.
+    var maxAnnotations: Int = 0
+
+    /// Diff-size caps. 0 = unlimited on each.
+    var maxAdditions: Int = 200
+    var maxDeletions: Int = 0
+    var maxChangedFiles: Int = 0
+
+    /// Post "Auto-approved by PRBar (N% confidence)." as the review body.
+    /// Off by default — the approval itself is the signal, and the comment
+    /// is noise on every PR the bot touches.
+    var postAttributionComment: Bool = false
+
+    /// Attach the AI's annotations as inline review comments on the
+    /// auto-approved review. Off by default for the same reason.
+    var postInlineAnnotations: Bool = false
+
+    /// Confidence floor that applies to a review produced by `provider`.
+    func confidenceFloor(for provider: ProviderID) -> Double {
+        switch provider {
+        case .claude: return claudeMinConfidence ?? minConfidence
+        case .codex:  return codexMinConfidence ?? minConfidence
+        }
+    }
+
+    static let off = AutoApproveConfig()
+
+    // MARK: - Codable (forward-compatible)
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, minConfidence
+        case claudeMinConfidence, codexMinConfidence
+        case allowApproveWithNotes
+        case maxAnnotationSeverity, maxAnnotations
+        case maxAdditions, maxDeletions, maxChangedFiles
+        case postAttributionComment, postInlineAnnotations
+        /// Pre-`maxAnnotationSeverity` boolean gate. Decode-only.
+        case requireZeroBlockingAnnotations
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AutoApproveConfig()
+        self.enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? d.enabled
+        self.minConfidence = (try? c.decode(Double.self, forKey: .minConfidence)) ?? d.minConfidence
+        self.claudeMinConfidence = try? c.decodeIfPresent(Double.self, forKey: .claudeMinConfidence)
+        self.codexMinConfidence = try? c.decodeIfPresent(Double.self, forKey: .codexMinConfidence)
+        self.allowApproveWithNotes = (try? c.decode(Bool.self, forKey: .allowApproveWithNotes)) ?? d.allowApproveWithNotes
+        // Migration: payloads written before the severity threshold carry
+        // the boolean. true → tolerate at most `.suggestion` (the old
+        // meaning of "no blocking annotations"); false → tolerate all.
+        if let severity = try? c.decodeIfPresent(AnnotationSeverity.self, forKey: .maxAnnotationSeverity) {
+            self.maxAnnotationSeverity = severity
+        } else if let legacy = try? c.decodeIfPresent(Bool.self, forKey: .requireZeroBlockingAnnotations) {
+            self.maxAnnotationSeverity = legacy ? .suggestion : .blocker
+        } else {
+            self.maxAnnotationSeverity = d.maxAnnotationSeverity
+        }
+        self.maxAnnotations = (try? c.decode(Int.self, forKey: .maxAnnotations)) ?? d.maxAnnotations
+        self.maxAdditions = (try? c.decode(Int.self, forKey: .maxAdditions)) ?? d.maxAdditions
+        self.maxDeletions = (try? c.decode(Int.self, forKey: .maxDeletions)) ?? d.maxDeletions
+        self.maxChangedFiles = (try? c.decode(Int.self, forKey: .maxChangedFiles)) ?? d.maxChangedFiles
+        self.postAttributionComment = (try? c.decode(Bool.self, forKey: .postAttributionComment)) ?? d.postAttributionComment
+        self.postInlineAnnotations = (try? c.decode(Bool.self, forKey: .postInlineAnnotations)) ?? d.postInlineAnnotations
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(minConfidence, forKey: .minConfidence)
+        try c.encodeIfPresent(claudeMinConfidence, forKey: .claudeMinConfidence)
+        try c.encodeIfPresent(codexMinConfidence, forKey: .codexMinConfidence)
+        try c.encode(allowApproveWithNotes, forKey: .allowApproveWithNotes)
+        try c.encode(maxAnnotationSeverity, forKey: .maxAnnotationSeverity)
+        try c.encode(maxAnnotations, forKey: .maxAnnotations)
+        try c.encode(maxAdditions, forKey: .maxAdditions)
+        try c.encode(maxDeletions, forKey: .maxDeletions)
+        try c.encode(maxChangedFiles, forKey: .maxChangedFiles)
+        try c.encode(postAttributionComment, forKey: .postAttributionComment)
+        try c.encode(postInlineAnnotations, forKey: .postInlineAnnotations)
+    }
+
+    /// Restored explicitly — Swift drops the synthesized memberwise init
+    /// once `init(from:)` exists.
+    init(
+        enabled: Bool = false,
+        minConfidence: Double = 0.85,
+        claudeMinConfidence: Double? = nil,
+        codexMinConfidence: Double? = nil,
+        allowApproveWithNotes: Bool = false,
+        maxAnnotationSeverity: AnnotationSeverity = .suggestion,
+        maxAnnotations: Int = 0,
+        maxAdditions: Int = 200,
+        maxDeletions: Int = 0,
+        maxChangedFiles: Int = 0,
+        postAttributionComment: Bool = false,
+        postInlineAnnotations: Bool = false
+    ) {
+        self.enabled = enabled
+        self.minConfidence = minConfidence
+        self.claudeMinConfidence = claudeMinConfidence
+        self.codexMinConfidence = codexMinConfidence
+        self.allowApproveWithNotes = allowApproveWithNotes
+        self.maxAnnotationSeverity = maxAnnotationSeverity
+        self.maxAnnotations = maxAnnotations
+        self.maxAdditions = maxAdditions
+        self.maxDeletions = maxDeletions
+        self.maxChangedFiles = maxChangedFiles
+        self.postAttributionComment = postAttributionComment
+        self.postInlineAnnotations = postInlineAnnotations
+    }
+}
+
+/// What the auto-deny side does when a negative AI verdict clears its
+/// gates. Deliberately separate from a bool: posting `REQUEST_CHANGES` on
+/// a colleague's PR on the AI's say-so is a much heavier act than
+/// approving, and some repos want the signal without the public verdict.
+enum AutoDenyAction: String, Codable, Sendable, Hashable, CaseIterable {
+    /// No auto-deny at all (default).
+    case off
+    /// Mark the PR in PRBar only. Nothing is posted to GitHub; the user
+    /// gets a banner and the pre-filled review draft in the detail view.
+    case flagOnly = "flag_only"
+    /// Post a neutral GitHub COMMENT review with the AI summary. Surfaces
+    /// the concerns without blocking the merge.
+    case comment
+    /// Post a blocking GitHub REQUEST_CHANGES review with the AI summary.
+    case requestChanges = "request_changes"
+
+    var displayName: String {
+        switch self {
+        case .off:            return "Off"
+        case .flagOnly:       return "Flag in PRBar only"
+        case .comment:        return "Post comment review"
+        case .requestChanges: return "Post request changes"
+        }
+    }
+
+    /// The GitHub review action this posts, or nil when nothing is posted.
+    var reviewActionKind: ReviewActionKind? {
+        switch self {
+        case .off, .flagOnly: return nil
+        case .comment:        return .comment
+        case .requestChanges: return .requestChanges
+        }
+    }
+}
+
+/// Per-repo auto-deny policy — the mirror of `AutoApproveConfig` for
+/// negative verdicts. Gates are separate on purpose: the confidence you
+/// need before letting a bot approve is rarely the confidence you need
+/// before letting it push back.
+struct AutoDenyConfig: Sendable, Hashable, Codable {
+    var action: AutoDenyAction = .off
+
+    /// Aggregated confidence floor, used for any provider with no
+    /// dedicated floor below.
+    var minConfidence: Double = 0.85
+    var claudeMinConfidence: Double? = nil
+    var codexMinConfidence: Double? = nil
+
+    /// Severity an annotation must reach to count as corroborating the
+    /// negative verdict.
+    var requiredSeverity: AnnotationSeverity = .warning
+
+    /// How many annotations at or above `requiredSeverity` the review
+    /// needs before auto-deny fires. 0 = the verdict alone is enough —
+    /// use with care, a summary-only rejection is hard for the author to
+    /// action.
+    var minMatchingAnnotations: Int = 1
+
+    /// Skip auto-deny above this diff size — a sprawling PR's pushback
+    /// reads better authored by a human. 0 = unlimited.
+    var maxAdditions: Int = 0
+
+    /// Attach the AI's annotations as inline review comments. On by
+    /// default: a "changes requested" without line-level detail is the
+    /// least actionable review there is.
+    var postInlineAnnotations: Bool = true
+
+    func confidenceFloor(for provider: ProviderID) -> Double {
+        switch provider {
+        case .claude: return claudeMinConfidence ?? minConfidence
+        case .codex:  return codexMinConfidence ?? minConfidence
+        }
+    }
+
+    static let off = AutoDenyConfig()
+
+    // MARK: - Codable (forward-compatible)
+
+    enum CodingKeys: String, CodingKey {
+        case action, minConfidence
+        case claudeMinConfidence, codexMinConfidence
+        case requiredSeverity, minMatchingAnnotations
+        case maxAdditions, postInlineAnnotations
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AutoDenyConfig()
+        self.action = (try? c.decode(AutoDenyAction.self, forKey: .action)) ?? d.action
+        self.minConfidence = (try? c.decode(Double.self, forKey: .minConfidence)) ?? d.minConfidence
+        self.claudeMinConfidence = try? c.decodeIfPresent(Double.self, forKey: .claudeMinConfidence)
+        self.codexMinConfidence = try? c.decodeIfPresent(Double.self, forKey: .codexMinConfidence)
+        self.requiredSeverity = (try? c.decode(AnnotationSeverity.self, forKey: .requiredSeverity)) ?? d.requiredSeverity
+        self.minMatchingAnnotations = (try? c.decode(Int.self, forKey: .minMatchingAnnotations)) ?? d.minMatchingAnnotations
+        self.maxAdditions = (try? c.decode(Int.self, forKey: .maxAdditions)) ?? d.maxAdditions
+        self.postInlineAnnotations = (try? c.decode(Bool.self, forKey: .postInlineAnnotations)) ?? d.postInlineAnnotations
+    }
+
+    init(
+        action: AutoDenyAction = .off,
+        minConfidence: Double = 0.85,
+        claudeMinConfidence: Double? = nil,
+        codexMinConfidence: Double? = nil,
+        requiredSeverity: AnnotationSeverity = .warning,
+        minMatchingAnnotations: Int = 1,
+        maxAdditions: Int = 0,
+        postInlineAnnotations: Bool = true
+    ) {
+        self.action = action
+        self.minConfidence = minConfidence
+        self.claudeMinConfidence = claudeMinConfidence
+        self.codexMinConfidence = codexMinConfidence
+        self.requiredSeverity = requiredSeverity
+        self.minMatchingAnnotations = minMatchingAnnotations
+        self.maxAdditions = maxAdditions
+        self.postInlineAnnotations = postInlineAnnotations
+    }
 }
 
 /// Per-repo configuration: monorepo splitter shape, prompt overrides,
@@ -132,9 +369,12 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// ceiling kills the run mid-flight (surfaces as `exited 143`).
     var reviewTimeoutSeconds: Int
 
-    // --- Auto-approve ---
+    // --- Auto-review ---
 
     var autoApprove: AutoApproveConfig = .off
+
+    /// Negative-verdict counterpart to `autoApprove`. Off by default.
+    var autoDeny: AutoDenyConfig = .off
 
     // --- Filters ---
 
@@ -236,6 +476,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         maxCostUsdPerSubreview: 1.0,
         reviewTimeoutSeconds: 600,
         autoApprove: .off,
+        autoDeny: .off,
         reviewDrafts: false,
         aiReviewEnabled: true,
         notifyPolicy: .batchSettled,
@@ -277,7 +518,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case maxParallelSubreviews, collapseAboveSubreviewCount
         case toolModeOverride, customSystemPrompt, replaceBaseSystemPrompt
         case maxToolCallsPerSubreview, maxCostUsdPerSubreview, reviewTimeoutSeconds
-        case autoApprove
+        case autoApprove, autoDeny
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case aiReviewEnabled, providerOverride, notifyPolicy
         case forceFullReview
@@ -309,6 +550,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.maxCostUsdPerSubreview  = (try? c.decode(Double.self, forKey: .maxCostUsdPerSubreview)) ?? d.maxCostUsdPerSubreview
         self.reviewTimeoutSeconds    = (try? c.decode(Int.self, forKey: .reviewTimeoutSeconds)) ?? d.reviewTimeoutSeconds
         self.autoApprove             = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
+        self.autoDeny                = (try? c.decode(AutoDenyConfig.self, forKey: .autoDeny)) ?? d.autoDeny
         self.reviewDrafts            = (try? c.decode(Bool.self, forKey: .reviewDrafts)) ?? d.reviewDrafts
         self.excludeTitlePatterns    = (try? c.decode([String].self, forKey: .excludeTitlePatterns)) ?? d.excludeTitlePatterns
         self.skipAIIfReviewedByOthers = (try? c.decode(Bool.self, forKey: .skipAIIfReviewedByOthers)) ?? d.skipAIIfReviewedByOthers
@@ -344,6 +586,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         maxCostUsdPerSubreview: Double = 1.0,
         reviewTimeoutSeconds: Int = 600,
         autoApprove: AutoApproveConfig = .off,
+        autoDeny: AutoDenyConfig = .off,
         reviewDrafts: Bool = false,
         excludeTitlePatterns: [String] = [],
         skipAIIfReviewedByOthers: Bool = true,
@@ -373,6 +616,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.maxCostUsdPerSubreview = maxCostUsdPerSubreview
         self.reviewTimeoutSeconds = reviewTimeoutSeconds
         self.autoApprove = autoApprove
+        self.autoDeny = autoDeny
         self.reviewDrafts = reviewDrafts
         self.excludeTitlePatterns = excludeTitlePatterns
         self.skipAIIfReviewedByOthers = skipAIIfReviewedByOthers

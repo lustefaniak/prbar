@@ -113,11 +113,21 @@ struct RepositoriesSettings: View {
                     Text("built-in").font(.caption2).foregroundStyle(.secondary)
                 } else if config.excluded {
                     Text("excluded").font(.caption2).foregroundStyle(.orange)
-                } else if config.autoApprove.enabled {
-                    Text("auto-approve").font(.caption2).foregroundStyle(.green)
+                } else if config.autoApprove.enabled || config.autoDeny.action != .off {
+                    Text(autoReviewLabel(config))
+                        .font(.caption2)
+                        .foregroundStyle(config.autoApprove.enabled ? .green : .orange)
                 }
             }
             Spacer()
+        }
+    }
+
+    private func autoReviewLabel(_ config: RepoConfig) -> String {
+        switch (config.autoApprove.enabled, config.autoDeny.action != .off) {
+        case (true, true):  return "auto-approve + deny"
+        case (true, false): return "auto-approve"
+        default:            return "auto-deny"
         }
     }
 
@@ -421,13 +431,99 @@ struct RepoConfigEditor: View {
                             Text("Min confidence: \(String(format: "%.2f", config.autoApprove.minConfidence))")
                             Slider(value: $config.autoApprove.minConfidence, in: 0.5...1.0, step: 0.01)
                         }
-                        Toggle("Require zero blocking annotations",
-                               isOn: $config.autoApprove.requireZeroBlockingAnnotations)
-                        Stepper("Max additions: \(config.autoApprove.maxAdditions == 0 ? "unlimited" : "\(config.autoApprove.maxAdditions)")",
+                        Toggle("Per-provider confidence floors",
+                               isOn: approvePerProviderBinding)
+                            .help("Claude and codex don't calibrate confidence the same way — one shared floor over-trusts whichever is looser.")
+                        if config.autoApprove.claudeMinConfidence != nil
+                            || config.autoApprove.codexMinConfidence != nil {
+                            providerFloorSlider(
+                                label: "Claude",
+                                value: optionalConfidence($config.autoApprove.claudeMinConfidence,
+                                                          fallback: config.autoApprove.minConfidence)
+                            )
+                            providerFloorSlider(
+                                label: "Codex",
+                                value: optionalConfidence($config.autoApprove.codexMinConfidence,
+                                                          fallback: config.autoApprove.minConfidence)
+                            )
+                        }
+
+                        Toggle("Also auto-approve \"Approve with notes\" verdicts",
+                               isOn: $config.autoApprove.allowApproveWithNotes)
+                            .help("The .comment verdict means the AI approves but has observations. Off by default — the notes usually want a human read.")
+
+                        Picker("Tolerate annotations up to",
+                               selection: $config.autoApprove.maxAnnotationSeverity) {
+                            ForEach(AnnotationSeverity.allCases, id: \.self) { severity in
+                                Text(severity.displayName).tag(severity)
+                            }
+                        }
+                        Stepper("Max annotations: \(config.autoApprove.maxAnnotations == 0 ? "unlimited" : "\(config.autoApprove.maxAnnotations)")",
+                                value: $config.autoApprove.maxAnnotations, in: 0...100)
+                            .help("A review with 30 nitpicks is worth reading even when none of them block.")
+
+                        Stepper("Max additions: \(capLabel(config.autoApprove.maxAdditions))",
                                 value: $config.autoApprove.maxAdditions, in: 0...10000, step: 50)
+                        Stepper("Max deletions: \(capLabel(config.autoApprove.maxDeletions))",
+                                value: $config.autoApprove.maxDeletions, in: 0...10000, step: 50)
+                        Stepper("Max changed files: \(capLabel(config.autoApprove.maxChangedFiles))",
+                                value: $config.autoApprove.maxChangedFiles, in: 0...500, step: 5)
+
+                        Toggle("Post \"Auto-approved by PRBar\" comment",
+                               isOn: $config.autoApprove.postAttributionComment)
+                            .help("Off: a bare approval, no comment body. On: adds the attribution line with the confidence score.")
+                        Toggle("Post AI annotations as inline comments",
+                               isOn: $config.autoApprove.postInlineAnnotations)
+                            .help("Annotations that don't land on a line of the diff are dropped — GitHub rejects them.")
                     }
                     .disabled(!config.autoApprove.enabled)
                     .opacity(config.autoApprove.enabled ? 1 : 0.5)
+                }
+
+                section("Auto-deny") {
+                    Picker("On a request-changes verdict", selection: $config.autoDeny.action) {
+                        ForEach(AutoDenyAction.allCases, id: \.self) { action in
+                            Text(action.displayName).tag(action)
+                        }
+                    }
+                    .help("\"Flag in PRBar only\" never posts to GitHub — it surfaces the PR in the banner and leaves the review to you.")
+                    Group {
+                        HStack {
+                            Text("Min confidence: \(String(format: "%.2f", config.autoDeny.minConfidence))")
+                            Slider(value: $config.autoDeny.minConfidence, in: 0.5...1.0, step: 0.01)
+                        }
+                        Toggle("Per-provider confidence floors", isOn: denyPerProviderBinding)
+                        if config.autoDeny.claudeMinConfidence != nil
+                            || config.autoDeny.codexMinConfidence != nil {
+                            providerFloorSlider(
+                                label: "Claude",
+                                value: optionalConfidence($config.autoDeny.claudeMinConfidence,
+                                                          fallback: config.autoDeny.minConfidence)
+                            )
+                            providerFloorSlider(
+                                label: "Codex",
+                                value: optionalConfidence($config.autoDeny.codexMinConfidence,
+                                                          fallback: config.autoDeny.minConfidence)
+                            )
+                        }
+
+                        Picker("Corroborating severity", selection: $config.autoDeny.requiredSeverity) {
+                            ForEach(AnnotationSeverity.allCases, id: \.self) { severity in
+                                Text("\(severity.displayName) or above").tag(severity)
+                            }
+                        }
+                        Stepper("Need at least \(config.autoDeny.minMatchingAnnotations) matching annotation(s)",
+                                value: $config.autoDeny.minMatchingAnnotations, in: 0...20)
+                            .help("0 lets the verdict alone fire. A summary-only rejection is hard for the author to action.")
+                        Stepper("Max additions: \(capLabel(config.autoDeny.maxAdditions))",
+                                value: $config.autoDeny.maxAdditions, in: 0...10000, step: 50)
+                            .help("Skip auto-deny above this size — a sprawling PR's pushback reads better authored by a human.")
+                        Toggle("Post AI annotations as inline comments",
+                               isOn: $config.autoDeny.postInlineAnnotations)
+                            .disabled(config.autoDeny.action == .flagOnly)
+                    }
+                    .disabled(config.autoDeny.action == .off)
+                    .opacity(config.autoDeny.action == .off ? 0.5 : 1)
                 }
             }
     }
@@ -439,6 +535,60 @@ struct RepoConfigEditor: View {
             content()
         }
         .padding(.bottom, 4)
+    }
+
+    @ViewBuilder
+    private func providerFloorSlider(label: String, value: Binding<Double>) -> some View {
+        HStack {
+            Text("\(label): \(String(format: "%.2f", value.wrappedValue))")
+                .frame(width: 110, alignment: .leading)
+            Slider(value: value, in: 0.5...1.0, step: 0.01)
+        }
+        .padding(.leading, 16)
+    }
+
+    private func capLabel(_ value: Int) -> String {
+        value == 0 ? "unlimited" : "\(value)"
+    }
+
+    /// Surfaces an optional floor as a plain slider value. Writing always
+    /// sets a concrete number; clearing back to "inherit" happens through
+    /// the per-provider toggle, not the slider.
+    private func optionalConfidence(_ source: Binding<Double?>, fallback: Double) -> Binding<Double> {
+        Binding(
+            get: { source.wrappedValue ?? fallback },
+            set: { source.wrappedValue = $0 }
+        )
+    }
+
+    /// Toggling per-provider floors on seeds both from the shared floor;
+    /// toggling off clears them so the shared floor applies again.
+    private var approvePerProviderBinding: Binding<Bool> {
+        Binding(
+            get: {
+                config.autoApprove.claudeMinConfidence != nil
+                    || config.autoApprove.codexMinConfidence != nil
+            },
+            set: { on in
+                let seed = config.autoApprove.minConfidence
+                config.autoApprove.claudeMinConfidence = on ? seed : nil
+                config.autoApprove.codexMinConfidence = on ? seed : nil
+            }
+        )
+    }
+
+    private var denyPerProviderBinding: Binding<Bool> {
+        Binding(
+            get: {
+                config.autoDeny.claudeMinConfidence != nil
+                    || config.autoDeny.codexMinConfidence != nil
+            },
+            set: { on in
+                let seed = config.autoDeny.minConfidence
+                config.autoDeny.claudeMinConfidence = on ? seed : nil
+                config.autoDeny.codexMinConfidence = on ? seed : nil
+            }
+        )
     }
 
     // MARK: - bindings

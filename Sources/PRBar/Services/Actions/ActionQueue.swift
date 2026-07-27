@@ -15,10 +15,11 @@ enum GHActionKind: Sendable, Equatable {
 }
 
 /// Where an action originated. Drives which `ActionLogKind` is recorded
-/// and whether cost is logged (auto-approve carries the AI cost).
+/// and whether cost is logged (an automated post carries the AI cost).
 enum ActionSource: Sendable, Equatable {
     case manual
-    case autoApprove
+    /// Posted by the auto-review policy rather than a user click.
+    case automated
 }
 
 /// One captured GitHub write, fully self-describing so the queue can run
@@ -28,7 +29,7 @@ struct GHAction: Sendable, Identifiable, Equatable {
     let pr: InboxPR
     let kind: GHActionKind
     let source: ActionSource
-    /// AI cost to log for auto-approve entries; nil for manual writes.
+    /// AI cost to log for automated entries; nil for manual writes.
     let costUsd: Double?
     let enqueuedAt: Date
     var attempts: Int
@@ -333,7 +334,7 @@ final class ActionQueue {
         actionLog?.record(
             kind: kind, outcome: .success, pr: action.pr,
             detail: detail,
-            headSha: action.source == .autoApprove ? action.pr.headSha : nil,
+            headSha: action.source == .automated ? action.pr.headSha : nil,
             costUsd: action.costUsd
         )
     }
@@ -343,7 +344,7 @@ final class ActionQueue {
         actionLog?.record(
             kind: kind, outcome: .failure, pr: action.pr,
             errorMessage: message, detail: detail,
-            headSha: action.source == .autoApprove ? action.pr.headSha : nil,
+            headSha: action.source == .automated ? action.pr.headSha : nil,
             costUsd: action.costUsd
         )
     }
@@ -351,7 +352,9 @@ final class ActionQueue {
     private static func logKindAndDetail(_ action: GHAction) -> (ActionLogKind, String?) {
         switch action.kind {
         case .review(let kind, let body, _):
-            let logKind: ActionLogKind = action.source == .autoApprove ? .autoApprove : kind.actionLogKind
+            let logKind: ActionLogKind = action.source == .automated
+                ? kind.autoActionLogKind
+                : kind.actionLogKind
             return (logKind, body.isEmpty ? nil : body)
         case .merge(let method):
             return (.merge, method.rawValue)

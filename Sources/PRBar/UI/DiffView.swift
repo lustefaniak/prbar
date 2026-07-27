@@ -391,14 +391,3 @@ private struct OptionalIDModifier: ViewModifier {
         if let id { content.id(id) } else { content }
     }
 }
-
-private extension AnnotationSeverity {
-    var rank: Int {
-        switch self {
-        case .info:       return 0
-        case .suggestion: return 1
-        case .warning:    return 2
-        case .blocker:    return 3
-        }
-    }
-}
