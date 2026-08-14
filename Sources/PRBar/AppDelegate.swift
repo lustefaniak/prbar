@@ -348,7 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return popover.contentViewController?.view.window?.windowNumber ?? 0
         case .windowDetail:
             return screenshotWindow?.windowNumber ?? 0
-        case .settingsGeneral, .settingsRepositories, .settingsDiagnostics:
+        case .settingsGeneral, .settingsReviewDefaults, .settingsRepositories, .settingsDiagnostics:
             // SwiftUI's Settings window may not exist immediately after
             // `openSettings(_:)` returns — the selector dispatches
             // asynchronously. Pick the first titled, visible, non-popover
@@ -387,13 +387,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .windowDetail:
             openScreenshotDetailWindow(ScreenshotFixtures.detailPR(for: stage))
         case .settingsGeneral:
-            UserDefaults.standard.set(0, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
+            SettingsDestination.general.select()
+            openSettings(nil)
+        case .settingsReviewDefaults:
+            SettingsDestination.reviewDefaults.select()
             openSettings(nil)
         case .settingsRepositories:
-            UserDefaults.standard.set(1, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
+            SettingsDestination.repositories.select()
             openSettings(nil)
         case .settingsDiagnostics:
-            UserDefaults.standard.set(3, forKey: "com_apple_SwiftUI_Settings_selectedTabIndex")
+            SettingsDestination.diagnostics.select()
             openSettings(nil)
         }
     }

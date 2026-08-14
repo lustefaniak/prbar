@@ -7,10 +7,10 @@ final class RepoConfigFilterTests: XCTestCase {
     // MARK: - PRPoller title-exclude filter
 
     func testPollerDropsTitleMatchedPRs() async throws {
-        let resolver: @Sendable (String, String) -> RepoConfig = { _, _ in
+        let resolver: @Sendable (String, String) -> ResolvedRepoConfig = { _, _ in
             var c = RepoConfig.default
             c.excludeTitlePatterns = ["[Prod deploy]*", "*chore: bump*"]
-            return c
+            return c.resolved()
         }
         let prs = [
             makePR(nodeId: "P1", title: "[Prod deploy] kernel-foo 2026-04-27"),
@@ -25,10 +25,10 @@ final class RepoConfigFilterTests: XCTestCase {
     }
 
     func testPollerCaseInsensitiveTitleMatch() async throws {
-        let resolver: @Sendable (String, String) -> RepoConfig = { _, _ in
+        let resolver: @Sendable (String, String) -> ResolvedRepoConfig = { _, _ in
             var c = RepoConfig.default
             c.excludeTitlePatterns = ["RELEASE/*"]
-            return c
+            return c.resolved()
         }
         let prs = [
             makePR(nodeId: "P1", title: "release/v1.2.3 cut"),
@@ -42,7 +42,9 @@ final class RepoConfigFilterTests: XCTestCase {
     }
 
     func testPollerKeepsAllWhenPatternsEmpty() async throws {
-        let resolver: @Sendable (String, String) -> RepoConfig = { _, _ in .default }
+        let resolver: @Sendable (String, String) -> ResolvedRepoConfig = { _, _ in
+            RepoConfig.default.resolved()
+        }
         let prs = [makePR(nodeId: "P1", title: "anything")]
         let poller = PRPoller(fetcher: { prs })
         poller.configResolver = resolver
@@ -205,13 +207,20 @@ final class RepoConfigFilterTests: XCTestCase {
           "maxCostUsdPerSubreview": 0.30
         }
         """
-        let cfg = try JSONDecoder().decode(RepoConfig.self, from: Data(oldJSON.utf8))
+        let rule = try JSONDecoder().decode(RepoConfig.self, from: Data(oldJSON.utf8))
+        let cfg = rule.resolved()
         XCTAssertEqual(cfg.repoGlobs, ["acme/x"])
         XCTAssertEqual(cfg.excludeTitlePatterns, [])
-        // Default flipped to true on 2026-04-27; old payloads that
-        // predate the field adopt the current default.
+        // Fields absent from a payload written before they existed are
+        // not overrides — they inherit from ReviewDefaults, which is what
+        // an unconfigured repo would get anyway.
+        XCTAssertNil(rule.skipAIIfReviewedByOthers)
         XCTAssertTrue(cfg.skipAIIfReviewedByOthers)
         XCTAssertTrue(cfg.aiReviewEnabled)
+        // Fields the payload *does* carry stay explicit overrides, so a
+        // rule the user already tuned keeps behaving as it did.
+        XCTAssertEqual(rule.maxCostUsdPerSubreview, 0.30)
+        XCTAssertEqual(cfg.maxCostUsdPerSubreview, 0.30)
         // Per-repo merge-confirmation override absent in old payloads →
         // nil = follow the global setting.
         XCTAssertNil(cfg.skipMergeConfirmation)

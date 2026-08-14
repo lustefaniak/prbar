@@ -232,7 +232,7 @@ final class ReviewQueueWorker {
     /// Resolve the `--model` to pass for a run: repo override wins over
     /// the app-level default; empty strings (unset fields) mean "no
     /// override" and resolve to nil (no `--model` flag).
-    func resolveModel(providerId: ProviderID, config: RepoConfig) -> String? {
+    func resolveModel(providerId: ProviderID, config: ResolvedRepoConfig) -> String? {
         switch providerId {
         case .claude: return Self.nonEmpty(config.claudeModelOverride) ?? Self.nonEmpty(defaultClaudeModel)
         case .codex:  return Self.nonEmpty(config.codexModelOverride) ?? Self.nonEmpty(defaultCodexModel)
@@ -241,7 +241,7 @@ final class ReviewQueueWorker {
 
     /// Resolve the reasoning-effort override to pass for a run. Same
     /// repo-override-wins-over-app-default precedence as `resolveModel`.
-    func resolveEffort(providerId: ProviderID, config: RepoConfig) -> String? {
+    func resolveEffort(providerId: ProviderID, config: ResolvedRepoConfig) -> String? {
         switch providerId {
         case .claude: return Self.nonEmpty(config.claudeEffortOverride) ?? Self.nonEmpty(defaultClaudeEffort)
         case .codex:  return Self.nonEmpty(config.codexEffortOverride) ?? Self.nonEmpty(defaultCodexEffort)
@@ -252,13 +252,6 @@ final class ReviewQueueWorker {
         guard let s, !s.isEmpty else { return nil }
         return s
     }
-
-    /// What tool-access mode the provider runs in. Defaults to
-    /// `.sandboxed`: claude reviews against a real OS-sandboxed worktree
-    /// and explores the change with git rather than reading an inlined
-    /// diff. Falls back to `.none` (inline diff) when no checkout can be
-    /// provisioned or for non-claude providers.
-    var toolMode: ToolMode = .sandboxed
 
     /// Closure that fetches the unified diff for a PR. Injected so tests
     /// don't need a real `gh` install.
@@ -273,12 +266,13 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var failureLogStore: FailureLogStore?
 
-    /// Resolves the per-repo config used when reviewing a PR. Pluggable so
+    /// Resolves the effective config used when reviewing a PR — the
+    /// matching repo rule with `ReviewDefaults` folded in. Pluggable so
     /// tests can stub it and runtime can swap the live `RepoConfigStore`.
-    /// Default uses the built-in registry only.
+    /// Default uses the built-in registry and the shipped defaults.
     @ObservationIgnored
-    var configResolver: @Sendable (_ owner: String, _ repo: String) -> RepoConfig = { owner, repo in
-        RepoConfig.match(owner: owner, repo: repo)
+    var configResolver: @Sendable (_ owner: String, _ repo: String) -> ResolvedRepoConfig = { owner, repo in
+        RepoConfig.match(owner: owner, repo: repo).resolved()
     }
 
     /// On-disk checkout manager. Used in `.minimal` tool mode to give the
@@ -549,7 +543,8 @@ final class ReviewQueueWorker {
         if dailyCostCapEnabled && cumulativeSpend() >= dailyCostCap {
             PRBarLog.triage.notice("enqueue blocked reason=daily-cap pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) cap=\(self.fmt(self.dailyCostCap), privacy: .public)")
             let now = Date()
-            let capMessage = "Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."
+            let capMessage = "Daily $\(String(format: "%.2f", dailyCostCap)) cap reached. "
+                + "Raise it in Settings → General."
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
                 providerId: resolvedProviderId,
@@ -742,7 +737,7 @@ final class ReviewQueueWorker {
                 ?? defaultProviderId
             let resolvedModel = resolveModel(providerId: chosenProviderId, config: config)
             let resolvedEffort = resolveEffort(providerId: chosenProviderId, config: config)
-            var effectiveToolMode = config.toolModeOverride ?? toolMode
+            var effectiveToolMode = config.toolMode
             // `.sandboxed` works for both providers: claude via its
             // `--settings` Seatbelt sandbox, codex via `exec --sandbox
             // read-only`. Both explore the worktree with git instead of an
@@ -989,7 +984,7 @@ final class ReviewQueueWorker {
     private func stageAutoReviewIfEligible(
         pr: InboxPR,
         review: AggregatedReview,
-        config: RepoConfig,
+        config: ResolvedRepoConfig,
         providerId: ProviderID,
         diffText: String
     ) {

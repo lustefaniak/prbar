@@ -56,7 +56,7 @@ final class PRPoller {
     /// matching PRs are dropped from `prs`, notifications, and the
     /// queue worker auto-enqueue (since the worker reads `prs`).
     @ObservationIgnored
-    var configResolver: (@Sendable (_ owner: String, _ repo: String) -> RepoConfig)?
+    var configResolver: (@Sendable (_ owner: String, _ repo: String) -> ResolvedRepoConfig)?
 
     /// Fires after every successful poll with the latest inbox. Used by
     /// `ReadinessCoordinator` to track which review-requested PRs are

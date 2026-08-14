@@ -21,7 +21,7 @@ enum AutoReviewPolicy {
         pr: InboxPR,
         review: AggregatedReview,
         providerId: ProviderID,
-        config: RepoConfig
+        config: ResolvedRepoConfig
     ) -> Decision {
         switch review.verdict {
         case .approve:

@@ -308,7 +308,7 @@ final class AutoReviewPolicyTests: XCTestCase {
         config: RepoConfig
     ) -> AutoReviewPolicy.Decision {
         AutoReviewPolicy.evaluate(
-            pr: pr, review: review, providerId: providerId, config: config
+            pr: pr, review: review, providerId: providerId, config: config.resolved()
         )
     }
 

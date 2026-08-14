@@ -5,6 +5,8 @@ struct SettingsRoot: View {
         TabView {
             GeneralSettings()
                 .tabItem { Label("General", systemImage: "gear") }
+            ReviewDefaultsSettings()
+                .tabItem { Label("Review defaults", systemImage: "slider.horizontal.3") }
             RepositoriesSettings()
                 .tabItem { Label("Repositories", systemImage: "folder.badge.gearshape") }
             ReviewHistoryView()

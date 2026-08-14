@@ -15,7 +15,7 @@ final class ReadinessCoordinatorTests: XCTestCase {
         cfg.aiReviewEnabled = false
         let pr = makePR(nodeId: "P1")
 
-        coord.track(prs: [pr]) { _, _ in cfg }
+        coord.track(prs: [pr]) { _, _ in cfg.resolved() }
 
         try await Task.sleep(for: .milliseconds(120))
         let calls = await recorder.calls
@@ -35,7 +35,7 @@ final class ReadinessCoordinatorTests: XCTestCase {
         let p1 = makePR(nodeId: "P1")
         let p2 = makePR(nodeId: "P2")
 
-        coord.track(prs: [p1, p2]) { _, _ in cfg }
+        coord.track(prs: [p1, p2]) { _, _ in cfg.resolved() }
 
         // First triage finishes but worker is not yet settled.
         coord.noteReviewSettled(prNodeId: "P1", isWorkerSettled: false)
@@ -68,7 +68,7 @@ final class ReadinessCoordinatorTests: XCTestCase {
         let noAI   = makePR(nodeId: "NOAI", repo: "no-ai")
 
         coord.track(prs: [withAI, noAI]) { _, repo in
-            repo == "ai" ? aiOn : aiOff
+            repo == "ai" ? aiOn.resolved() : aiOff.resolved()
         }
 
         // No-AI PR doesn't trigger anything yet — we're still in batch mode
@@ -95,8 +95,8 @@ final class ReadinessCoordinatorTests: XCTestCase {
         cfg.aiReviewEnabled = false
         let pr = makePR(nodeId: "P1")
 
-        coord.track(prs: [pr]) { _, _ in cfg }
-        coord.track(prs: [pr]) { _, _ in cfg }     // same PR, second poll
+        coord.track(prs: [pr]) { _, _ in cfg.resolved() }
+        coord.track(prs: [pr]) { _, _ in cfg.resolved() }     // same PR, second poll
         try await Task.sleep(for: .milliseconds(120))
 
         let calls = await recorder.calls
@@ -115,7 +115,7 @@ final class ReadinessCoordinatorTests: XCTestCase {
         cfg.aiReviewEnabled = false
         let pr = makePR(nodeId: "P1")
 
-        coord1.track(prs: [pr]) { _, _ in cfg }
+        coord1.track(prs: [pr]) { _, _ in cfg.resolved() }
         try await Task.sleep(for: .milliseconds(120))
         let firstCalls = await recorder1.calls
         XCTAssertEqual(firstCalls.count, 1)
@@ -126,7 +126,7 @@ final class ReadinessCoordinatorTests: XCTestCase {
         n2.debounceWindow = .milliseconds(40)
         let coord2 = ReadinessCoordinator(notifier: n2, store: store)
 
-        coord2.track(prs: [pr]) { _, _ in cfg }
+        coord2.track(prs: [pr]) { _, _ in cfg.resolved() }
         try await Task.sleep(for: .milliseconds(120))
         let secondCalls = await recorder2.calls
         XCTAssertEqual(secondCalls.count, 0,
@@ -144,7 +144,7 @@ final class ReadinessCoordinatorTests: XCTestCase {
         cfg.notifyPolicy = .eachReady
         cfg.aiReviewEnabled = false
 
-        coord1.track(prs: [makePR(nodeId: "P1", headSha: "abc")]) { _, _ in cfg }
+        coord1.track(prs: [makePR(nodeId: "P1", headSha: "abc")]) { _, _ in cfg.resolved() }
         try await Task.sleep(for: .milliseconds(120))
         let firstCalls = await recorder1.calls
         XCTAssertEqual(firstCalls.count, 1)
@@ -155,7 +155,7 @@ final class ReadinessCoordinatorTests: XCTestCase {
         n2.debounceWindow = .milliseconds(40)
         let coord2 = ReadinessCoordinator(notifier: n2, store: store)
 
-        coord2.track(prs: [makePR(nodeId: "P1", headSha: "def")]) { _, _ in cfg }
+        coord2.track(prs: [makePR(nodeId: "P1", headSha: "def")]) { _, _ in cfg.resolved() }
         try await Task.sleep(for: .milliseconds(120))
         let secondCalls = await recorder2.calls
         XCTAssertEqual(secondCalls.count, 1,

@@ -4,6 +4,10 @@ import SwiftUI
 /// (with built-ins shown as read-only suggestions you can clone), and
 /// pops a detail editor when a row is selected. Saves write through to
 /// `RepoConfigStore` immediately.
+///
+/// A rule holds *overrides*, not a full configuration: anything it doesn't
+/// override comes from Settings → Review defaults, and the editor shows
+/// which is which.
 struct RepositoriesSettings: View {
     @Environment(RepoConfigStore.self) private var store
     @Environment(PRPoller.self) private var poller
@@ -113,21 +117,28 @@ struct RepositoriesSettings: View {
                     Text("built-in").font(.caption2).foregroundStyle(.secondary)
                 } else if config.excluded {
                     Text("excluded").font(.caption2).foregroundStyle(.orange)
-                } else if config.autoApprove.enabled || config.autoDeny.action != .off {
-                    Text(autoReviewLabel(config))
+                } else if let label = autoReviewLabel(config) {
+                    Text(label)
                         .font(.caption2)
-                        .foregroundStyle(config.autoApprove.enabled ? .green : .orange)
+                        .foregroundStyle(config.resolved(with: store.defaults).autoApprove.enabled ? .green : .orange)
                 }
             }
             Spacer()
         }
     }
 
-    private func autoReviewLabel(_ config: RepoConfig) -> String {
-        switch (config.autoApprove.enabled, config.autoDeny.action != .off) {
-        case (true, true):  return "auto-approve + deny"
-        case (true, false): return "auto-approve"
-        default:            return "auto-deny"
+    private func autoReviewLabel(_ config: RepoConfig) -> String? {
+        let effective = config.resolved(with: store.defaults)
+        let approves = effective.autoApprove.enabled
+        let denies = effective.autoDeny.action != .off
+        // Say where it comes from: an inherited policy is easy to miss
+        // when the rule itself looks empty.
+        let suffix = (config.autoApprove == nil && config.autoDeny == nil) ? " (inherited)" : ""
+        switch (approves, denies) {
+        case (true, true):  return "auto-approve + deny" + suffix
+        case (true, false): return "auto-approve" + suffix
+        case (false, true): return "auto-deny" + suffix
+        case (false, false): return nil
         }
     }
 
@@ -149,6 +160,7 @@ struct RepositoriesSettings: View {
                         }
                     }
                 ),
+                defaults: store.defaults,
                 isUserConfig: store.userConfigs.contains(where: { $0.id == selected.id }),
                 onPromoteToUser: {
                     let copy = draft ?? selected
@@ -159,10 +171,19 @@ struct RepositoriesSettings: View {
             .padding()
             .id(selection)
         } else {
-            Text("Select a repo rule, or click + to add a new one.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 8) {
+                Text("Select a repo rule, or click + to add a new one.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("Repos with no rule use \(SettingsDestination.reviewDefaults.settingsPath) as-is.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Button("Open Review defaults") {
+                    SettingsDestination.open(.reviewDefaults)
+                }
+                .buttonStyle(.link)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -229,304 +250,315 @@ struct RepositoriesSettings: View {
 
 struct RepoConfigEditor: View {
     @Binding var config: RepoConfig
+    /// What every un-overridden field resolves to. Shown inline so the
+    /// editor never presents an empty control as if it meant "off".
+    let defaults: ReviewDefaults
     let isUserConfig: Bool
     let onPromoteToUser: () -> Void
 
-    /// Local text buffers for the multiline pattern editors. Round-
-    /// tripping through `[String]` strips trailing empty lines, which
-    /// made pressing Return appear broken (the newline got immediately
-    /// erased on every keystroke). Buffers keep the literal editor
-    /// text; we only filter empties when writing back into the
-    /// persisted array.
-    @State private var titlePatternsText: String = ""
+    /// Local text buffer for the root-pattern editor. Round-tripping
+    /// through `[String]` strips trailing empty lines, which made pressing
+    /// Return appear broken (the newline got immediately erased on every
+    /// keystroke). The buffer keeps the literal editor text; we only
+    /// filter empties when writing back into the persisted array.
     @State private var rootPatternsText: String = ""
 
     var body: some View {
         ScrollView { editorContent }
-            .onAppear {
-                titlePatternsText = config.excludeTitlePatterns.joined(separator: "\n")
-                rootPatternsText  = config.rootPatterns.joined(separator: "\n")
-            }
+            .onAppear { rootPatternsText = config.rootPatterns.joined(separator: "\n") }
             .onChange(of: config.id) { _, _ in
-                // Switched to a different rule — re-seed buffers from
+                // Switched to a different rule — re-seed the buffer from
                 // the new config.
-                titlePatternsText = config.excludeTitlePatterns.joined(separator: "\n")
-                rootPatternsText  = config.rootPatterns.joined(separator: "\n")
+                rootPatternsText = config.rootPatterns.joined(separator: "\n")
             }
     }
 
     @ViewBuilder
     private var editorContent: some View {
         VStack(alignment: .leading, spacing: 14) {
-                if !isUserConfig {
-                    HStack {
-                        Image(systemName: "info.circle")
-                        Text("Built-in rule. Edit to create a user override.")
-                            .font(.caption)
-                        Spacer()
-                        Button("Save as user override", action: onPromoteToUser)
-                    }
-                    .padding(8)
-                    .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            if !isUserConfig {
+                HStack {
+                    Image(systemName: "info.circle")
+                    Text("Built-in rule. Edit to create a user override.")
+                        .font(.caption)
+                    Spacer()
+                    Button("Save as user override", action: onPromoteToUser)
                 }
+                .padding(8)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            }
 
-                section("Match") {
-                    LabeledContent("Repo globs") {
-                        TextField("owner/repo  (or owner/*, !owner/private)",
-                                  text: globBinding)
-                            .font(.system(.body, design: .monospaced))
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    Toggle("Exclude (skip all PRs from these repos)", isOn: $config.excluded)
-                    Toggle("Auto-review draft PRs", isOn: $config.reviewDrafts)
-                        .help("Drafts churn a lot; off by default. Re-run is always available manually.")
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Ignore PRs by title (one glob per line)")
-                            .font(.callout)
-                        TextEditor(text: $titlePatternsText)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(minHeight: 60, maxHeight: 140)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .stroke(.secondary.opacity(0.2))
-                            )
-                            .onChange(of: titlePatternsText) { _, newValue in
-                                config.excludeTitlePatterns = parsePatterns(newValue)
-                            }
-                        Text("fnmatch-style, case-insensitive. Examples: \"[Prod deploy]*\", \"chore: bump *\". Matching PRs disappear from lists, notifications, and AI triage.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Toggle("Skip AI when another reviewer has already weighed in",
-                           isOn: $config.skipAIIfReviewedByOthers)
-                        .help("Row stays visible; AI just doesn't auto-run when reviewDecision is APPROVED or CHANGES_REQUESTED. Manual Re-run still works.")
+            inheritanceBanner
+
+            section("Match") {
+                LabeledContent("Repo globs") {
+                    TextField("owner/repo  (or owner/*, !owner/private)",
+                              text: globBinding)
+                        .font(.system(.body, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
                 }
+                Toggle("Exclude (skip all PRs from these repos)", isOn: $config.excluded)
+            }
 
-                section("Merging") {
-                    Picker("Confirm before merge", selection: mergeConfirmBinding) {
-                        Text("Follow global setting").tag(MergeConfirmChoice.followGlobal)
-                        Text("Merge without confirmation").tag(MergeConfirmChoice.skip)
-                        Text("Always confirm").tag(MergeConfirmChoice.confirm)
-                    }
-                    .help("Overrides the global \"Merge without confirmation\" setting for repos matching these globs.")
-                }
-
-                section("Splitter") {
-                    Picker("Mode", selection: $config.splitMode) {
-                        Text("Per-subfolder").tag(SplitMode.perSubfolder)
-                        Text("Single review").tag(SplitMode.single)
-                    }
-                    .pickerStyle(.segmented)
-
-                    if config.splitMode == .perSubfolder {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Root patterns (one per line)")
-                                .font(.callout)
-                            TextEditor(text: $rootPatternsText)
-                                .font(.system(.body, design: .monospaced))
-                                .frame(minHeight: 100, maxHeight: 220)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .stroke(.secondary.opacity(0.2))
-                                )
-                                .onChange(of: rootPatternsText) { _, newValue in
-                                    config.rootPatterns = parsePatterns(newValue)
-                                }
-                            Text("fnmatch globs that mark each subreview root. Examples: \"kernel-*\", \"lib/*\", \"dev-infra\". Order matters within a single rule — first match wins.")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Picker("Unmatched", selection: $config.unmatchedStrategy) {
-                            Text("Review at root").tag(UnmatchedStrategy.reviewAtRoot)
-                            Text("Skip review").tag(UnmatchedStrategy.skipReview)
-                            Text("Group as <other>").tag(UnmatchedStrategy.groupAsOther)
-                        }
-                        Stepper("Min files / subreview: \(config.minFilesPerSubreview)",
-                                value: $config.minFilesPerSubreview, in: 1...100)
-                        Stepper("Max parallel subreviews: \(config.maxParallelSubreviews)",
-                                value: $config.maxParallelSubreviews, in: 1...10)
-                        Stepper("Collapse above N subreviews: \(config.collapseAboveSubreviewCount.map(String.init) ?? "off")",
-                                onIncrement: { config.collapseAboveSubreviewCount = (config.collapseAboveSubreviewCount ?? 5) + 1 },
-                                onDecrement: {
-                                    let cur = config.collapseAboveSubreviewCount ?? 0
-                                    config.collapseAboveSubreviewCount = cur <= 1 ? nil : cur - 1
-                                })
+            section("AI review") {
+                inheritableToggle("Run AI triage", \.aiReviewEnabled,
+                                  inherited: defaults.aiReviewEnabled)
+                inheritable("Tool mode", \.toolModeOverride,
+                            inherited: defaults.toolMode,
+                            describe: { $0.rawValue }) { ReviewSettingControls.toolMode($0) }
+                inheritableToggle("Always do a full review (ignore prior verdict)",
+                                  \.forceFullReview,
+                                  inherited: defaults.forceFullReview)
+                Picker("Provider", selection: providerOverrideBinding) {
+                    Text("(use app default)").tag("default")
+                    ForEach(ProviderID.allCases, id: \.self) { p in
+                        Text(p.displayName).tag(p.rawValue)
                     }
                 }
-
-                section("AI") {
-                    Toggle("Enable AI triage on this repo",
-                           isOn: $config.aiReviewEnabled)
-                        .help("When off, PRs go straight to 'ready for review' — the AI never runs. Manual Re-run still works from the detail view.")
-                    Toggle("Always do a full review (ignore prior verdict)",
-                           isOn: $config.forceFullReview)
-                        .help("When the PR head moves, retriages re-evaluate the whole diff with no incremental framing. Default off — the prior summary is folded into the prompt so the AI can focus on what changed; this saves cost but biases toward judging only the increment.")
-                    Picker("Provider", selection: providerOverrideBinding) {
-                        Text("(use app default)").tag("default")
-                        ForEach(ProviderID.allCases, id: \.self) { p in
-                            Text(p.displayName).tag(p.rawValue)
-                        }
-                    }
-                    .help("Overrides the app-wide default for this repo. Per-PR \"Re-run with…\" can still override this for a single run.")
-
-                    TextField("Claude model (blank = app default)", text: claudeModelOverrideBinding)
-                    Picker("Claude effort", selection: claudeEffortOverrideBinding) {
-                        Text("(use app default)").tag("default")
-                        Text("Low").tag("low")
-                        Text("Medium").tag("medium")
-                        Text("High").tag("high")
-                        Text("XHigh").tag("xhigh")
-                        Text("Max").tag("max")
-                    }
-                    TextField("Codex model (blank = app default)", text: codexModelOverrideBinding)
-                    Picker("Codex effort", selection: codexEffortOverrideBinding) {
-                        Text("(use app default)").tag("default")
-                        Text("None").tag("none")
-                        Text("Minimal").tag("minimal")
-                        Text("Low").tag("low")
-                        Text("Medium").tag("medium")
-                        Text("High").tag("high")
-                        Text("XHigh").tag("xhigh")
-                    }
-                    .help("Model/effort overrides for this repo. Whichever fields are blank / \"use app default\" fall back to Settings → General.")
-
-                    Picker("Tool mode", selection: toolModeBinding) {
-                        Text("(use global default)").tag("default")
-                        Text("Sandboxed — explore a real checkout via git (claude)").tag("sandboxed")
-                        Text("Minimal — read-only code exploration, inlined diff").tag("minimal")
-                        Text("None — pure prompt, no exploration").tag("none")
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Custom system prompt")
-                            .font(.callout)
-                        TextEditor(text: customPromptBinding)
-                            .font(.system(.caption, design: .monospaced))
-                            .frame(minHeight: 200, maxHeight: 480)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .stroke(.secondary.opacity(0.2))
-                            )
-                    }
-                    Toggle("Replace base system prompt entirely",
-                           isOn: $config.replaceBaseSystemPrompt)
-                        .disabled((config.customSystemPrompt ?? "").isEmpty)
-
-                    Stepper("Max tool calls / subreview: \(config.maxToolCallsPerSubreview)",
-                            value: $config.maxToolCallsPerSubreview, in: 0...50)
-                    HStack {
-                        Text("Max cost / subreview: $\(String(format: "%.2f", config.maxCostUsdPerSubreview))")
-                        Slider(value: $config.maxCostUsdPerSubreview, in: 0.05...3.0, step: 0.05)
-                    }
-                    Stepper("Review timeout / subreview: \(config.reviewTimeoutSeconds) s",
-                            value: $config.reviewTimeoutSeconds, in: 60...1800, step: 30)
-                        .help("Wall-clock ceiling per subreview. Sandboxed reviews explore a worktree over several turns and can take minutes on a large PR — too tight a value kills the run mid-flight (exited 143).")
+                TextField("Claude model (blank = app default)", text: claudeModelOverrideBinding)
+                Picker("Claude effort", selection: claudeEffortOverrideBinding) {
+                    Text("(use app default)").tag("default")
+                    Text("Low").tag("low")
+                    Text("Medium").tag("medium")
+                    Text("High").tag("high")
+                    Text("XHigh").tag("xhigh")
+                    Text("Max").tag("max")
                 }
-
-                section("Auto-approve") {
-                    Toggle("Enable auto-approve for this repo",
-                           isOn: $config.autoApprove.enabled)
-                        .help("Fires after AI review with a 30 s undo banner before posting.")
-                    Group {
-                        HStack {
-                            Text("Min confidence: \(String(format: "%.2f", config.autoApprove.minConfidence))")
-                            Slider(value: $config.autoApprove.minConfidence, in: 0.5...1.0, step: 0.01)
-                        }
-                        Toggle("Per-provider confidence floors",
-                               isOn: approvePerProviderBinding)
-                            .help("Claude and codex don't calibrate confidence the same way — one shared floor over-trusts whichever is looser.")
-                        if config.autoApprove.claudeMinConfidence != nil
-                            || config.autoApprove.codexMinConfidence != nil {
-                            providerFloorSlider(
-                                label: "Claude",
-                                value: optionalConfidence($config.autoApprove.claudeMinConfidence,
-                                                          fallback: config.autoApprove.minConfidence)
-                            )
-                            providerFloorSlider(
-                                label: "Codex",
-                                value: optionalConfidence($config.autoApprove.codexMinConfidence,
-                                                          fallback: config.autoApprove.minConfidence)
-                            )
-                        }
-
-                        Toggle("Also auto-approve \"Approve with notes\" verdicts",
-                               isOn: $config.autoApprove.allowApproveWithNotes)
-                            .help("The .comment verdict means the AI approves but has observations. Off by default — the notes usually want a human read.")
-
-                        Picker("Tolerate annotations up to",
-                               selection: $config.autoApprove.maxAnnotationSeverity) {
-                            ForEach(AnnotationSeverity.allCases, id: \.self) { severity in
-                                Text(severity.displayName).tag(severity)
-                            }
-                        }
-                        Stepper("Max annotations: \(config.autoApprove.maxAnnotations == 0 ? "unlimited" : "\(config.autoApprove.maxAnnotations)")",
-                                value: $config.autoApprove.maxAnnotations, in: 0...100)
-                            .help("A review with 30 nitpicks is worth reading even when none of them block.")
-
-                        Stepper("Max additions: \(capLabel(config.autoApprove.maxAdditions))",
-                                value: $config.autoApprove.maxAdditions, in: 0...10000, step: 50)
-                        Stepper("Max deletions: \(capLabel(config.autoApprove.maxDeletions))",
-                                value: $config.autoApprove.maxDeletions, in: 0...10000, step: 50)
-                        Stepper("Max changed files: \(capLabel(config.autoApprove.maxChangedFiles))",
-                                value: $config.autoApprove.maxChangedFiles, in: 0...500, step: 5)
-
-                        Toggle("Post \"Auto-approved by PRBar\" comment",
-                               isOn: $config.autoApprove.postAttributionComment)
-                            .help("Off: a bare approval, no comment body. On: adds the attribution line with the confidence score.")
-                        Toggle("Post AI annotations as inline comments",
-                               isOn: $config.autoApprove.postInlineAnnotations)
-                            .help("Annotations that don't land on a line of the diff are dropped — GitHub rejects them.")
-                    }
-                    .disabled(!config.autoApprove.enabled)
-                    .opacity(config.autoApprove.enabled ? 1 : 0.5)
-                }
-
-                section("Auto-deny") {
-                    Picker("On a request-changes verdict", selection: $config.autoDeny.action) {
-                        ForEach(AutoDenyAction.allCases, id: \.self) { action in
-                            Text(action.displayName).tag(action)
-                        }
-                    }
-                    .help("\"Flag in PRBar only\" never posts to GitHub — it surfaces the PR in the banner and leaves the review to you.")
-                    Group {
-                        HStack {
-                            Text("Min confidence: \(String(format: "%.2f", config.autoDeny.minConfidence))")
-                            Slider(value: $config.autoDeny.minConfidence, in: 0.5...1.0, step: 0.01)
-                        }
-                        Toggle("Per-provider confidence floors", isOn: denyPerProviderBinding)
-                        if config.autoDeny.claudeMinConfidence != nil
-                            || config.autoDeny.codexMinConfidence != nil {
-                            providerFloorSlider(
-                                label: "Claude",
-                                value: optionalConfidence($config.autoDeny.claudeMinConfidence,
-                                                          fallback: config.autoDeny.minConfidence)
-                            )
-                            providerFloorSlider(
-                                label: "Codex",
-                                value: optionalConfidence($config.autoDeny.codexMinConfidence,
-                                                          fallback: config.autoDeny.minConfidence)
-                            )
-                        }
-
-                        Picker("Corroborating severity", selection: $config.autoDeny.requiredSeverity) {
-                            ForEach(AnnotationSeverity.allCases, id: \.self) { severity in
-                                Text("\(severity.displayName) or above").tag(severity)
-                            }
-                        }
-                        Stepper("Need at least \(config.autoDeny.minMatchingAnnotations) matching annotation(s)",
-                                value: $config.autoDeny.minMatchingAnnotations, in: 0...20)
-                            .help("0 lets the verdict alone fire. A summary-only rejection is hard for the author to action.")
-                        Stepper("Max additions: \(capLabel(config.autoDeny.maxAdditions))",
-                                value: $config.autoDeny.maxAdditions, in: 0...10000, step: 50)
-                            .help("Skip auto-deny above this size — a sprawling PR's pushback reads better authored by a human.")
-                        Toggle("Post AI annotations as inline comments",
-                               isOn: $config.autoDeny.postInlineAnnotations)
-                            .disabled(config.autoDeny.action == .flagOnly)
-                    }
-                    .disabled(config.autoDeny.action == .off)
-                    .opacity(config.autoDeny.action == .off ? 0.5 : 1)
+                TextField("Codex model (blank = app default)", text: codexModelOverrideBinding)
+                Picker("Codex effort", selection: codexEffortOverrideBinding) {
+                    Text("(use app default)").tag("default")
+                    Text("None").tag("none")
+                    Text("Minimal").tag("minimal")
+                    Text("Low").tag("low")
+                    Text("Medium").tag("medium")
+                    Text("High").tag("high")
+                    Text("XHigh").tag("xhigh")
                 }
             }
+
+            section("Per-subreview budget") {
+                inheritable("Max cost / subreview", \.maxCostUsdPerSubreview,
+                            inherited: defaults.maxCostUsdPerSubreview,
+                            describe: { $0 == 0 ? "uncapped" : String(format: "$%.2f", $0) }) {
+                    ReviewSettingControls.costCap($0, label: "")
+                }
+                inheritable("Max tool calls", \.maxToolCallsPerSubreview,
+                            inherited: defaults.maxToolCallsPerSubreview,
+                            describe: { "\($0)" }) { ReviewSettingControls.maxToolCalls($0) }
+                inheritable("Review timeout", \.reviewTimeoutSeconds,
+                            inherited: defaults.reviewTimeoutSeconds,
+                            describe: { "\($0) s" }) { ReviewSettingControls.reviewTimeout($0) }
+            }
+
+            section("Splitter") {
+                inheritable("Mode", \.splitMode,
+                            inherited: defaults.splitMode,
+                            describe: { $0 == .single ? "single review" : "per-subfolder" }) {
+                    ReviewSettingControls.splitMode($0)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Root patterns (one per line)")
+                        .font(.callout)
+                    TextEditor(text: $rootPatternsText)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 100, maxHeight: 220)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(.secondary.opacity(0.2))
+                        )
+                        .onChange(of: rootPatternsText) { _, newValue in
+                            config.rootPatterns = ReviewSettingControls.PatternEditor.parse(newValue)
+                        }
+                    Text("Per-repo only — a directory layout has no app-wide default. fnmatch globs marking each subreview root: \"kernel-*\", \"lib/*\", \"dev-infra\". Order matters within a rule; first match wins.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                inheritable("Unmatched files", \.unmatchedStrategy,
+                            inherited: defaults.unmatchedStrategy,
+                            describe: { $0.rawValue }) { ReviewSettingControls.unmatchedStrategy($0) }
+                inheritable("Min files / subreview", \.minFilesPerSubreview,
+                            inherited: defaults.minFilesPerSubreview,
+                            describe: { "\($0)" }) { ReviewSettingControls.minFilesPerSubreview($0) }
+                inheritable("Max parallel subreviews", \.maxParallelSubreviews,
+                            inherited: defaults.maxParallelSubreviews,
+                            describe: { "\($0)" }) { ReviewSettingControls.maxParallelSubreviews($0) }
+                inheritable("Collapse above N subreviews", \.collapseAboveSubreviewCount,
+                            inherited: defaults.collapseAboveSubreviewCount,
+                            describe: { $0 == 0 ? "off" : "\($0)" }) {
+                    ReviewSettingControls.collapseAboveSubreviewCount($0)
+                }
+            }
+
+            section("Risk brief") {
+                inheritableToggle("Rank changed files by where to look first",
+                                  \.riskBriefEnabled,
+                                  inherited: defaults.riskBriefEnabled)
+                inheritable("Churn window", \.churnWindowDays,
+                            inherited: defaults.churnWindowDays,
+                            describe: { $0 == 0 ? "off" : "\($0) days" }) {
+                    ReviewSettingControls.churnWindowDays($0)
+                }
+                inheritable("Commit depth", \.churnHistoryDepth,
+                            inherited: defaults.churnHistoryDepth,
+                            describe: { "\($0)" }) { ReviewSettingControls.churnHistoryDepth($0) }
+            }
+
+            section("Filters") {
+                inheritableToggle("Review draft PRs", \.reviewDrafts,
+                                  inherited: defaults.reviewDrafts)
+                inheritableToggle("Skip AI when another reviewer has weighed in",
+                                  \.skipAIIfReviewedByOthers,
+                                  inherited: defaults.skipAIIfReviewedByOthers)
+                inheritable("Extra title patterns to ignore", \.excludeTitlePatterns,
+                            inherited: [],
+                            describe: { _ in "none beyond the \(defaults.excludeTitlePatterns.count) global" }) { binding in
+                    ReviewSettingControls.PatternEditor(
+                        title: "Added to the global list, not replacing it",
+                        footnote: "To exempt this repo from a global pattern, negate it here: !chore: bump *",
+                        patterns: binding
+                    )
+                }
+            }
+
+            section("Notifications") {
+                inheritable("Ready-for-review notifications", \.notifyPolicy,
+                            inherited: defaults.notifyPolicy,
+                            describe: { $0 == .eachReady ? "as each PR is ready" : "one batch" }) {
+                    ReviewSettingControls.notifyPolicy($0)
+                }
+                Picker("Confirm before merge", selection: mergeConfirmBinding) {
+                    Text("Follow global setting").tag(MergeConfirmChoice.followGlobal)
+                    Text("Merge without confirmation").tag(MergeConfirmChoice.skip)
+                    Text("Always confirm").tag(MergeConfirmChoice.confirm)
+                }
+                .help("Overrides the global \"Merge without confirmation\" setting for repos matching these globs.")
+            }
+
+            section("System prompt") {
+                inheritable("Custom system prompt", \.customSystemPrompt,
+                            inherited: defaults.customSystemPrompt,
+                            describe: { $0.isEmpty ? "none" : "\($0.count) characters" }) { binding in
+                    VStack(alignment: .leading, spacing: 6) {
+                        ReviewSettingControls.customSystemPrompt(binding)
+                        Toggle("Replace base system prompt entirely",
+                               isOn: replaceBaseBinding)
+                            .disabled(binding.wrappedValue.isEmpty)
+                    }
+                }
+            }
+
+            section("Auto-approve") {
+                inheritable("Auto-approve policy", \.autoApprove,
+                            inherited: defaults.autoApprove,
+                            describe: { $0.enabled ? "enabled" : "off" }) { binding in
+                    AutoApproveEditor(config: binding)
+                }
+            }
+
+            section("Auto-deny") {
+                inheritable("Auto-deny policy", \.autoDeny,
+                            inherited: defaults.autoDeny,
+                            describe: { $0.action.displayName.lowercased() }) { binding in
+                    AutoDenyEditor(config: binding)
+                }
+            }
+        }
     }
+
+    // MARK: - inheritance
+
+    private var inheritanceBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.down.left.circle")
+                .foregroundStyle(.secondary)
+            Text("Unchecked settings come from \(SettingsDestination.reviewDefaults.settingsPath).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Open") { SettingsDestination.open(.reviewDefaults) }
+                .buttonStyle(.link)
+                .font(.caption)
+        }
+        .padding(8)
+        .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
+    }
+
+    /// One row per overridable setting: a checkbox that flips the field
+    /// between `nil` (inherit) and a concrete value, plus the real control
+    /// once it's overridden. Checking it seeds from the inherited value, so
+    /// turning an override on never silently changes behaviour.
+    @ViewBuilder
+    private func inheritable<T: Equatable, C: View>(
+        _ title: String,
+        _ path: WritableKeyPath<RepoConfig, T?>,
+        inherited: T,
+        describe: @escaping (T) -> String,
+        @ViewBuilder control: @escaping (Binding<T>) -> C
+    ) -> some View {
+        let isOverridden = config[keyPath: path] != nil
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Toggle(isOn: Binding(
+                    get: { config[keyPath: path] != nil },
+                    set: { on in config[keyPath: path] = on ? inherited : nil }
+                )) {
+                    Text(title).font(.callout)
+                }
+                .toggleStyle(.checkbox)
+                Spacer()
+                if !isOverridden {
+                    Text("inherits \(describe(inherited))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if isOverridden {
+                control(Binding(
+                    get: { config[keyPath: path] ?? inherited },
+                    set: { config[keyPath: path] = $0 }
+                ))
+                .padding(.leading, 20)
+            }
+        }
+    }
+
+    /// A boolean setting reads badly through `inheritable` — the override
+    /// checkbox and the value checkbox stack into two boxes that look like
+    /// they mean the same thing. Keep the value on the same row as a
+    /// switch instead.
+    @ViewBuilder
+    private func inheritableToggle(
+        _ title: String,
+        _ path: WritableKeyPath<RepoConfig, Bool?>,
+        inherited: Bool
+    ) -> some View {
+        HStack(spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { config[keyPath: path] != nil },
+                set: { on in config[keyPath: path] = on ? inherited : nil }
+            )) {
+                Text(title).font(.callout)
+            }
+            .toggleStyle(.checkbox)
+            Spacer()
+            if config[keyPath: path] != nil {
+                Toggle("", isOn: Binding(
+                    get: { config[keyPath: path] ?? inherited },
+                    set: { config[keyPath: path] = $0 }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+            } else {
+                Text("inherits \(onOff(inherited))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func onOff(_ value: Bool) -> String { value ? "on" : "off" }
 
     @ViewBuilder
     private func section(_ title: String, @ViewBuilder content: () -> some View) -> some View {
@@ -535,60 +567,6 @@ struct RepoConfigEditor: View {
             content()
         }
         .padding(.bottom, 4)
-    }
-
-    @ViewBuilder
-    private func providerFloorSlider(label: String, value: Binding<Double>) -> some View {
-        HStack {
-            Text("\(label): \(String(format: "%.2f", value.wrappedValue))")
-                .frame(width: 110, alignment: .leading)
-            Slider(value: value, in: 0.5...1.0, step: 0.01)
-        }
-        .padding(.leading, 16)
-    }
-
-    private func capLabel(_ value: Int) -> String {
-        value == 0 ? "unlimited" : "\(value)"
-    }
-
-    /// Surfaces an optional floor as a plain slider value. Writing always
-    /// sets a concrete number; clearing back to "inherit" happens through
-    /// the per-provider toggle, not the slider.
-    private func optionalConfidence(_ source: Binding<Double?>, fallback: Double) -> Binding<Double> {
-        Binding(
-            get: { source.wrappedValue ?? fallback },
-            set: { source.wrappedValue = $0 }
-        )
-    }
-
-    /// Toggling per-provider floors on seeds both from the shared floor;
-    /// toggling off clears them so the shared floor applies again.
-    private var approvePerProviderBinding: Binding<Bool> {
-        Binding(
-            get: {
-                config.autoApprove.claudeMinConfidence != nil
-                    || config.autoApprove.codexMinConfidence != nil
-            },
-            set: { on in
-                let seed = config.autoApprove.minConfidence
-                config.autoApprove.claudeMinConfidence = on ? seed : nil
-                config.autoApprove.codexMinConfidence = on ? seed : nil
-            }
-        )
-    }
-
-    private var denyPerProviderBinding: Binding<Bool> {
-        Binding(
-            get: {
-                config.autoDeny.claudeMinConfidence != nil
-                    || config.autoDeny.codexMinConfidence != nil
-            },
-            set: { on in
-                let seed = config.autoDeny.minConfidence
-                config.autoDeny.claudeMinConfidence = on ? seed : nil
-                config.autoDeny.codexMinConfidence = on ? seed : nil
-            }
-        )
     }
 
     // MARK: - bindings
@@ -605,21 +583,10 @@ struct RepoConfigEditor: View {
         )
     }
 
-    /// Parse a newline-separated (or comma-separated, for legacy paste)
-    /// pattern list into the persisted array — trimming whitespace,
-    /// dropping empties.
-    private func parsePatterns(_ text: String) -> [String] {
-        text.split(whereSeparator: { $0.isNewline || $0 == "," })
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
-
     private var providerOverrideBinding: Binding<String> {
         Binding(
             get: { config.providerOverride?.rawValue ?? "default" },
-            set: { tag in
-                config.providerOverride = ProviderID(rawValue: tag)
-            }
+            set: { tag in config.providerOverride = ProviderID(rawValue: tag) }
         )
     }
 
@@ -646,31 +613,12 @@ struct RepoConfigEditor: View {
         )
     }
 
-    private var toolModeBinding: Binding<String> {
+    /// `replaceBaseSystemPrompt` only matters alongside a custom prompt,
+    /// so it rides the prompt's override rather than getting its own row.
+    private var replaceBaseBinding: Binding<Bool> {
         Binding(
-            get: {
-                guard let mode = config.toolModeOverride else { return "default" }
-                switch mode {
-                case .sandboxed: return "sandboxed"
-                case .minimal:   return "minimal"
-                case .none:      return "none"
-                }
-            },
-            set: { tag in
-                switch tag {
-                case "sandboxed": config.toolModeOverride = .sandboxed
-                case "minimal":   config.toolModeOverride = .minimal
-                case "none":      config.toolModeOverride = ToolMode.none
-                default:          config.toolModeOverride = nil
-                }
-            }
-        )
-    }
-
-    private var customPromptBinding: Binding<String> {
-        Binding(
-            get: { config.customSystemPrompt ?? "" },
-            set: { config.customSystemPrompt = $0.isEmpty ? nil : $0 }
+            get: { config.replaceBaseSystemPrompt ?? defaults.replaceBaseSystemPrompt },
+            set: { config.replaceBaseSystemPrompt = $0 }
         )
     }
 
@@ -701,5 +649,4 @@ struct RepoConfigEditor: View {
             set: { tag in config.codexEffortOverride = tag == "default" ? nil : tag }
         )
     }
-
 }

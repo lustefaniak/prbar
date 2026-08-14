@@ -30,6 +30,8 @@ enum ScreenshotMode {
         case windowDetail = "window-detail"
         /// Settings pane open on the General tab.
         case settingsGeneral = "settings-general"
+        /// Settings pane open on the Review defaults tab.
+        case settingsReviewDefaults = "settings-review-defaults"
         /// Settings pane open on the Repositories tab.
         case settingsRepositories = "settings-repositories"
         /// Settings pane open on the Diagnostics tab.
