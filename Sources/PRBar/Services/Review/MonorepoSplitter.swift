@@ -19,14 +19,14 @@ import Foundation
 enum MonorepoSplitter {
     static func split(
         diffText: String,
-        config: RepoConfig = .default,
+        config: ResolvedRepoConfig = RepoConfig.default.resolved(),
         toolMode: ToolMode? = nil
     ) -> [Subdiff] {
         let hunks = DiffParser.parse(diffText)
         return split(hunks: hunks, config: config, toolMode: toolMode)
     }
 
-    static func split(hunks: [Hunk], config: RepoConfig, toolMode: ToolMode? = nil) -> [Subdiff] {
+    static func split(hunks: [Hunk], config: ResolvedRepoConfig, toolMode: ToolMode? = nil) -> [Subdiff] {
         if hunks.isEmpty { return [] }
         if config.excluded { return [] }
 

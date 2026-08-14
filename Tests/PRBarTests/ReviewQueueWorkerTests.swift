@@ -104,7 +104,7 @@ final class ReviewQueueWorkerTests: XCTestCase {
         worker.configResolver = { _, _ in
             var c = RepoConfig.default
             c.forceFullReview = true
-            return c
+            return c.resolved()
         }
 
         let oldPR = makePR(nodeId: "PR_F", number: 7, headSha: "oldShaA")
@@ -140,7 +140,7 @@ final class ReviewQueueWorkerTests: XCTestCase {
         worker.defaultProviderId = .claude
 
         // 1. No overrides → app default (claude).
-        worker.configResolver = { _, _ in RepoConfig.default }
+        worker.configResolver = { _, _ in RepoConfig.default.resolved() }
         worker.enqueue(makePR(nodeId: "P1", number: 1))
         try await waitUntil { self.isCompleted(worker.reviews["P1"]?.status) }
         XCTAssertEqual(recorder.lastUsed, .claude)
@@ -150,7 +150,7 @@ final class ReviewQueueWorkerTests: XCTestCase {
         worker.configResolver = { _, _ in
             var c = RepoConfig.default
             c.providerOverride = .codex
-            return c
+            return c.resolved()
         }
         worker.enqueue(makePR(nodeId: "P2", number: 2))
         try await waitUntil { self.isCompleted(worker.reviews["P2"]?.status) }
@@ -173,10 +173,11 @@ final class ReviewQueueWorkerTests: XCTestCase {
         worker.defaultCodexEffort = "medium"
 
         // App default only.
-        XCTAssertEqual(worker.resolveModel(providerId: .claude, config: .default), "sonnet")
-        XCTAssertNil(worker.resolveEffort(providerId: .claude, config: .default))
-        XCTAssertNil(worker.resolveModel(providerId: .codex, config: .default))
-        XCTAssertEqual(worker.resolveEffort(providerId: .codex, config: .default), "medium")
+        let noOverrides = RepoConfig.default.resolved()
+        XCTAssertEqual(worker.resolveModel(providerId: .claude, config: noOverrides), "sonnet")
+        XCTAssertNil(worker.resolveEffort(providerId: .claude, config: noOverrides))
+        XCTAssertNil(worker.resolveModel(providerId: .codex, config: noOverrides))
+        XCTAssertEqual(worker.resolveEffort(providerId: .codex, config: noOverrides), "medium")
 
         // Repo override wins over app default.
         var cfg = RepoConfig.default
@@ -184,10 +185,10 @@ final class ReviewQueueWorkerTests: XCTestCase {
         cfg.claudeEffortOverride = "high"
         cfg.codexModelOverride = "gpt-5.5"
         cfg.codexEffortOverride = "low"
-        XCTAssertEqual(worker.resolveModel(providerId: .claude, config: cfg), "opus")
-        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: cfg), "high")
-        XCTAssertEqual(worker.resolveModel(providerId: .codex, config: cfg), "gpt-5.5")
-        XCTAssertEqual(worker.resolveEffort(providerId: .codex, config: cfg), "low")
+        XCTAssertEqual(worker.resolveModel(providerId: .claude, config: cfg.resolved()), "opus")
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: cfg.resolved()), "high")
+        XCTAssertEqual(worker.resolveModel(providerId: .codex, config: cfg.resolved()), "gpt-5.5")
+        XCTAssertEqual(worker.resolveEffort(providerId: .codex, config: cfg.resolved()), "low")
     }
 
     func testForceReRunReevaluatesCompletedPR() async throws {

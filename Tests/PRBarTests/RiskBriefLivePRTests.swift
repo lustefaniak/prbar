@@ -84,6 +84,7 @@ final class RiskBriefLivePRTests: XCTestCase {
         config.collapseAboveSubreviewCount = settings.collapseAboveSubreviewCount
         config.churnWindowDays = settings.churnWindowDays
         config.churnHistoryDepth = settings.churnHistoryDepth
+        let resolvedConfig = config.resolved()
 
         let prs = try await listOpenPRs(repo: settings.repo, limit: settings.maxPRs)
         print("\n===== RISK BRIEF over \(prs.count) open PR(s) in \(settings.repo) =====\n")
@@ -91,7 +92,7 @@ final class RiskBriefLivePRTests: XCTestCase {
         let manager = RepoCheckoutManager()
         for pr in prs {
             let diff = try await gh(["pr", "diff", "\(pr.number)", "--repo", settings.repo])
-            let subdiffs = MonorepoSplitter.split(diffText: diff, config: config, toolMode: .sandboxed)
+            let subdiffs = MonorepoSplitter.split(diffText: diff, config: resolvedConfig, toolMode: .sandboxed)
 
             print("─── #\(pr.number) — \(pr.title)")
             print("    \(pr.changedFiles) files, +\(pr.additions)/-\(pr.deletions), "

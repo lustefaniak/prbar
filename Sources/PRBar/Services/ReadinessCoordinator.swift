@@ -68,7 +68,7 @@ final class ReadinessCoordinator {
     /// was off so they entered ready immediately).
     func track(
         prs: [InboxPR],
-        configResolver: (_ owner: String, _ repo: String) -> RepoConfig
+        configResolver: (_ owner: String, _ repo: String) -> ResolvedRepoConfig
     ) {
         let inboxIds = Set(prs.map(\.nodeId))
         // Forget PRs no longer in the inbox.

@@ -304,6 +304,17 @@ struct AutoDenyConfig: Sendable, Hashable, Codable {
 /// tool-mode override, auto-approve policy, exclusion. One config per
 /// `repoGlobs` entry; the most-specific match wins (built-ins as
 /// fallback). Persisted as JSON via `RepoConfigStore`.
+///
+/// **This is a rule, not an effective configuration.** Every optional
+/// field below is an *override*: `nil` means "inherit whatever Settings →
+/// Review defaults says". Read them through
+/// `RepoConfigStore.resolve(owner:repo:)`, which returns a
+/// `ResolvedRepoConfig` with the defaults folded in — reading a raw `nil`
+/// here as a value is the mistake this split exists to prevent.
+///
+/// Two fields needed a second sentinel because `nil` was already taken:
+/// `collapseAboveSubreviewCount` uses `0` for "off" and
+/// `customSystemPrompt` uses `""` for "none".
 struct RepoConfig: Sendable, Hashable, Codable {
     /// Stable identity. Generated on creation, persisted in the JSON
     /// payload, reused as the UI's row id. Lets the user edit
@@ -322,45 +333,49 @@ struct RepoConfig: Sendable, Hashable, Codable {
 
     // --- Splitter ---
 
-    var splitMode: SplitMode = .perSubfolder
+    var splitMode: SplitMode?
 
     /// Ordered list of fnmatch-style root patterns. Longest literal prefix
-    /// wins on ties. Ignored when `splitMode == .single`.
+    /// wins on ties. Ignored when `splitMode == .single`. Per-repo only —
+    /// a directory layout has no meaningful app-wide default.
     var rootPatterns: [String]
 
-    var unmatchedStrategy: UnmatchedStrategy
+    var unmatchedStrategy: UnmatchedStrategy?
 
     /// Subreviews with fewer files than this fold into the unmatched
     /// bucket per `unmatchedStrategy`.
-    var minFilesPerSubreview: Int
+    var minFilesPerSubreview: Int?
 
     /// Cap on the number of subreviews per PR. Excess subreviews (sorted
     /// by file count desc) are tail-merged into the unmatched bucket.
-    var maxParallelSubreviews: Int
+    var maxParallelSubreviews: Int?
 
     /// If the splitter (after fanout cap) still produces more than this
     /// many subreviews, collapse them all into one repo-root review. The
-    /// PR is too sprawling to split usefully. Nil disables.
+    /// PR is too sprawling to split usefully. **0 disables** — `nil` means
+    /// inherit.
     var collapseAboveSubreviewCount: Int?
 
     // --- Prompt + tools ---
 
     /// Force a tool mode for this repo (e.g. `.none` for security-sensitive
-    /// repos, `.minimal` to enable code exploration). Nil → use the
-    /// worker's global default.
+    /// repos, `.minimal` to enable code exploration).
     var toolModeOverride: ToolMode?
 
-    /// Optional repo-specific addition (or replacement) for the AI's
-    /// system prompt. See `replaceBaseSystemPrompt`.
+    /// Repo-specific addition to (or replacement for) the AI's system
+    /// prompt. See `replaceBaseSystemPrompt`. **`""` means none** — `nil`
+    /// means inherit.
     var customSystemPrompt: String?
 
     /// When true, `customSystemPrompt` *replaces* the base system prompt
-    /// entirely. Default false: append after the base prompt so the
-    /// schema/budget directives still apply.
-    var replaceBaseSystemPrompt: Bool = false
+    /// entirely. False appends after the base prompt so the schema/budget
+    /// directives still apply.
+    var replaceBaseSystemPrompt: Bool?
 
-    var maxToolCallsPerSubreview: Int
-    var maxCostUsdPerSubreview: Double
+    var maxToolCallsPerSubreview: Int?
+
+    /// **0 = uncapped** (the daily cap still applies); `nil` = inherit.
+    var maxCostUsdPerSubreview: Double?
 
     // --- Risk brief ---
 
@@ -370,7 +385,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// verdict. Cheap (pure computation plus one `git log`), so on by
     /// default; turn off for a repo where the ranking misleads more than
     /// it helps.
-    var riskBriefEnabled: Bool = true
+    var riskBriefEnabled: Bool?
 
     /// Trailing window for the risk brief's commit-churn term, in days.
     /// 0 disables churn and leaves the rest of the brief intact. The
@@ -378,7 +393,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// observed window is much shorter than this — `RiskBrief` drops the
     /// term entirely when too little history is present rather than rank
     /// on noise.
-    var churnWindowDays: Int = 90
+    var churnWindowDays: Int?
 
     /// Commit depth fetched into the bare clone when the churn term is on.
     ///
@@ -394,21 +409,25 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// short of "chronically hot". `RiskBrief` reports the observed span in
     /// the prompt so the window is never oversold. Raise this (roughly
     /// linearly) if you want the full window; 4000 ≈ 3 months there.
-    var churnHistoryDepth: Int = 1_000
+    var churnHistoryDepth: Int?
 
     /// Hard wall-clock ceiling per subreview, in seconds. The provider
     /// SIGTERMs (then SIGKILLs) the `claude`/`codex` child past this.
     /// Generous by default: `.sandboxed` reviews explore a worktree over
     /// multiple turns and legitimately run minutes on a large PR — a tight
     /// ceiling kills the run mid-flight (surfaces as `exited 143`).
-    var reviewTimeoutSeconds: Int
+    var reviewTimeoutSeconds: Int?
 
     // --- Auto-review ---
 
-    var autoApprove: AutoApproveConfig = .off
+    /// Inherits as a whole struct: a rule either defines its own
+    /// auto-approve policy or takes the app-level one. There is no
+    /// field-level merge inside it — half-inherited gates would be very
+    /// hard to reason about for something that posts to GitHub.
+    var autoApprove: AutoApproveConfig?
 
-    /// Negative-verdict counterpart to `autoApprove`. Off by default.
-    var autoDeny: AutoDenyConfig = .off
+    /// Negative-verdict counterpart to `autoApprove`.
+    var autoDeny: AutoDenyConfig?
 
     // --- Filters ---
 
@@ -417,29 +436,30 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// still hit Re-run manually from the detail view if they want a
     /// triage of a draft. Flip to true for repos where drafts get real
     /// review activity.
-    var reviewDrafts: Bool = false
+    var reviewDrafts: Bool?
 
     /// fnmatch-style globs matched against the PR title (case-insensitive).
+    /// **Added to** the app-level list rather than replacing it.
     /// Any match → the PR is hidden from the inbox / My PRs lists, isn't
     /// considered for notifications, and the worker never auto-enqueues
     /// it. Manual Re-run from the detail view is unreachable since the
     /// row is hidden — that's intended; if you want to review one of
     /// these, edit the title or unmute the pattern. Examples:
     /// `["[Prod deploy]*", "*chore: bump*"]`.
-    var excludeTitlePatterns: [String] = []
+    var excludeTitlePatterns: [String]?
 
     /// When true (default), the worker skips auto-enqueueing PRs that
     /// already have an APPROVED or CHANGES_REQUESTED decision from
     /// another reviewer. PR stays visible in the list — you may still
     /// want to glance at it — just doesn't burn an AI run on something
     /// already covered.
-    var skipAIIfReviewedByOthers: Bool = true
+    var skipAIIfReviewedByOthers: Bool?
 
     /// Master switch for AI triage on this repo. When false, the queue
     /// worker never auto-enqueues PRs from matching repos and they go
     /// straight to "ready for human" — no waiting on AI. Manual Re-run
     /// from the detail view still bypasses this.
-    var aiReviewEnabled: Bool = true
+    var aiReviewEnabled: Bool?
 
     /// Which `ReviewProvider` runs reviews for this repo. Nil → fall
     /// back to the app-level default (UserDefaults `defaultProviderId`,
@@ -475,7 +495,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// When (and how) to interrupt the user with "ready for review"
     /// notifications. See `NotifyPolicy`. Default batches across the
     /// whole inbox to minimise context switches.
-    var notifyPolicy: NotifyPolicy = .batchSettled
+    var notifyPolicy: NotifyPolicy?
 
     /// Per-repo override for the "confirm before merge" dialog. Nil →
     /// follow the global `skipMergeConfirmation` setting; `true` → always
@@ -488,34 +508,16 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// commits address prior concerns?" — saves cost and reduces churn,
     /// but biases the model toward judging only the increment. Flip on
     /// for repos where every retriage should re-evaluate the whole diff.
-    var forceFullReview: Bool = false
+    var forceFullReview: Bool?
 
-    /// Default for any repo not explicitly configured. Computed (not a
-    /// `static let`) so each access produces a fresh `id` — otherwise
-    /// `var cfg = .default` style cloning at multiple call sites would
-    /// have them all collide on the same static UUID.
-    static var `default`: RepoConfig { RepoConfig(
-        repoGlobs: ["*/*"],
-        excluded: false,
-        splitMode: .perSubfolder,
-        rootPatterns: [],
-        unmatchedStrategy: .reviewAtRoot,
-        minFilesPerSubreview: 1,
-        maxParallelSubreviews: 1,
-        collapseAboveSubreviewCount: nil,
-        toolModeOverride: nil,
-        customSystemPrompt: nil,
-        replaceBaseSystemPrompt: false,
-        maxToolCallsPerSubreview: 10,
-        maxCostUsdPerSubreview: 1.0,
-        reviewTimeoutSeconds: 600,
-        autoApprove: .off,
-        autoDeny: .off,
-        reviewDrafts: false,
-        aiReviewEnabled: true,
-        notifyPolicy: .batchSettled,
-        forceFullReview: false
-    ) }
+    /// The rule used for any repo without one of its own: matches
+    /// everything and overrides nothing, so every setting resolves from
+    /// `ReviewDefaults`. Also the shape a freshly-added rule starts in.
+    ///
+    /// Computed (not a `static let`) so each access produces a fresh `id`
+    /// — otherwise `var cfg = .default` style cloning at multiple call
+    /// sites would have them all collide on the same static UUID.
+    static var `default`: RepoConfig { RepoConfig(repoGlobs: ["*/*"]) }
 
     /// Pick the first config whose `repoGlobs` match (negations honored).
     /// Falls back to `.default`. With no built-ins shipped, this only
@@ -564,38 +566,41 @@ struct RepoConfig: Sendable, Hashable, Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let d = RepoConfig.default
         // id was added later. For payloads that predate it we generate
         // a fresh UUID here; the store layer overrides it with the
         // SwiftData row's persistent id so identity stabilizes after
         // the first save.
         self.id                      = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
         self.repoGlobs               = try c.decode([String].self, forKey: .repoGlobs)
-        self.excluded                = (try? c.decode(Bool.self, forKey: .excluded)) ?? d.excluded
-        self.splitMode               = (try? c.decode(SplitMode.self, forKey: .splitMode)) ?? d.splitMode
-        self.rootPatterns            = (try? c.decode([String].self, forKey: .rootPatterns)) ?? d.rootPatterns
-        self.unmatchedStrategy       = (try? c.decode(UnmatchedStrategy.self, forKey: .unmatchedStrategy)) ?? d.unmatchedStrategy
-        self.minFilesPerSubreview    = (try? c.decode(Int.self, forKey: .minFilesPerSubreview)) ?? d.minFilesPerSubreview
-        self.maxParallelSubreviews   = (try? c.decode(Int.self, forKey: .maxParallelSubreviews)) ?? d.maxParallelSubreviews
+        self.excluded                = (try? c.decode(Bool.self, forKey: .excluded)) ?? false
+        self.rootPatterns            = (try? c.decode([String].self, forKey: .rootPatterns)) ?? []
+        // Every field below is an override. A payload written before
+        // inheritance existed carries a concrete value for each, which
+        // decodes as an explicit override — so a rule a user already
+        // configured keeps behaving exactly as it did.
+        self.splitMode               = try? c.decodeIfPresent(SplitMode.self, forKey: .splitMode)
+        self.unmatchedStrategy       = try? c.decodeIfPresent(UnmatchedStrategy.self, forKey: .unmatchedStrategy)
+        self.minFilesPerSubreview    = try? c.decodeIfPresent(Int.self, forKey: .minFilesPerSubreview)
+        self.maxParallelSubreviews   = try? c.decodeIfPresent(Int.self, forKey: .maxParallelSubreviews)
         self.collapseAboveSubreviewCount = try? c.decodeIfPresent(Int.self, forKey: .collapseAboveSubreviewCount)
         self.toolModeOverride        = try? c.decodeIfPresent(ToolMode.self, forKey: .toolModeOverride)
         self.customSystemPrompt      = try? c.decodeIfPresent(String.self, forKey: .customSystemPrompt)
-        self.replaceBaseSystemPrompt = (try? c.decode(Bool.self, forKey: .replaceBaseSystemPrompt)) ?? d.replaceBaseSystemPrompt
-        self.maxToolCallsPerSubreview = (try? c.decode(Int.self, forKey: .maxToolCallsPerSubreview)) ?? d.maxToolCallsPerSubreview
-        self.maxCostUsdPerSubreview  = (try? c.decode(Double.self, forKey: .maxCostUsdPerSubreview)) ?? d.maxCostUsdPerSubreview
-        self.reviewTimeoutSeconds    = (try? c.decode(Int.self, forKey: .reviewTimeoutSeconds)) ?? d.reviewTimeoutSeconds
-        self.riskBriefEnabled        = (try? c.decode(Bool.self, forKey: .riskBriefEnabled)) ?? d.riskBriefEnabled
-        self.churnWindowDays         = (try? c.decode(Int.self, forKey: .churnWindowDays)) ?? d.churnWindowDays
-        self.churnHistoryDepth       = (try? c.decode(Int.self, forKey: .churnHistoryDepth)) ?? d.churnHistoryDepth
-        self.autoApprove             = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
-        self.autoDeny                = (try? c.decode(AutoDenyConfig.self, forKey: .autoDeny)) ?? d.autoDeny
-        self.reviewDrafts            = (try? c.decode(Bool.self, forKey: .reviewDrafts)) ?? d.reviewDrafts
-        self.excludeTitlePatterns    = (try? c.decode([String].self, forKey: .excludeTitlePatterns)) ?? d.excludeTitlePatterns
-        self.skipAIIfReviewedByOthers = (try? c.decode(Bool.self, forKey: .skipAIIfReviewedByOthers)) ?? d.skipAIIfReviewedByOthers
-        self.aiReviewEnabled         = (try? c.decode(Bool.self, forKey: .aiReviewEnabled)) ?? d.aiReviewEnabled
+        self.replaceBaseSystemPrompt = try? c.decodeIfPresent(Bool.self, forKey: .replaceBaseSystemPrompt)
+        self.maxToolCallsPerSubreview = try? c.decodeIfPresent(Int.self, forKey: .maxToolCallsPerSubreview)
+        self.maxCostUsdPerSubreview  = try? c.decodeIfPresent(Double.self, forKey: .maxCostUsdPerSubreview)
+        self.reviewTimeoutSeconds    = try? c.decodeIfPresent(Int.self, forKey: .reviewTimeoutSeconds)
+        self.riskBriefEnabled        = try? c.decodeIfPresent(Bool.self, forKey: .riskBriefEnabled)
+        self.churnWindowDays         = try? c.decodeIfPresent(Int.self, forKey: .churnWindowDays)
+        self.churnHistoryDepth       = try? c.decodeIfPresent(Int.self, forKey: .churnHistoryDepth)
+        self.autoApprove             = try? c.decodeIfPresent(AutoApproveConfig.self, forKey: .autoApprove)
+        self.autoDeny                = try? c.decodeIfPresent(AutoDenyConfig.self, forKey: .autoDeny)
+        self.reviewDrafts            = try? c.decodeIfPresent(Bool.self, forKey: .reviewDrafts)
+        self.excludeTitlePatterns    = try? c.decodeIfPresent([String].self, forKey: .excludeTitlePatterns)
+        self.skipAIIfReviewedByOthers = try? c.decodeIfPresent(Bool.self, forKey: .skipAIIfReviewedByOthers)
+        self.aiReviewEnabled         = try? c.decodeIfPresent(Bool.self, forKey: .aiReviewEnabled)
         self.providerOverride        = try? c.decodeIfPresent(ProviderID.self, forKey: .providerOverride)
-        self.notifyPolicy            = (try? c.decode(NotifyPolicy.self, forKey: .notifyPolicy)) ?? d.notifyPolicy
-        self.forceFullReview         = (try? c.decode(Bool.self, forKey: .forceFullReview)) ?? d.forceFullReview
+        self.notifyPolicy            = try? c.decodeIfPresent(NotifyPolicy.self, forKey: .notifyPolicy)
+        self.forceFullReview         = try? c.decodeIfPresent(Bool.self, forKey: .forceFullReview)
         self.skipMergeConfirmation   = try? c.decodeIfPresent(Bool.self, forKey: .skipMergeConfirmation)
         self.claudeModelOverride     = try? c.decodeIfPresent(String.self, forKey: .claudeModelOverride)
         self.claudeEffortOverride    = try? c.decodeIfPresent(String.self, forKey: .claudeEffortOverride)
@@ -611,30 +616,30 @@ struct RepoConfig: Sendable, Hashable, Codable {
         id: UUID = UUID(),
         repoGlobs: [String],
         excluded: Bool = false,
-        splitMode: SplitMode = .perSubfolder,
+        splitMode: SplitMode? = nil,
         rootPatterns: [String] = [],
-        unmatchedStrategy: UnmatchedStrategy = .reviewAtRoot,
-        minFilesPerSubreview: Int = 1,
-        maxParallelSubreviews: Int = 1,
+        unmatchedStrategy: UnmatchedStrategy? = nil,
+        minFilesPerSubreview: Int? = nil,
+        maxParallelSubreviews: Int? = nil,
         collapseAboveSubreviewCount: Int? = nil,
         toolModeOverride: ToolMode? = nil,
         customSystemPrompt: String? = nil,
-        replaceBaseSystemPrompt: Bool = false,
-        maxToolCallsPerSubreview: Int = 10,
-        maxCostUsdPerSubreview: Double = 1.0,
-        reviewTimeoutSeconds: Int = 600,
-        riskBriefEnabled: Bool = true,
-        churnWindowDays: Int = 90,
-        churnHistoryDepth: Int = 1_000,
-        autoApprove: AutoApproveConfig = .off,
-        autoDeny: AutoDenyConfig = .off,
-        reviewDrafts: Bool = false,
-        excludeTitlePatterns: [String] = [],
-        skipAIIfReviewedByOthers: Bool = true,
-        aiReviewEnabled: Bool = true,
+        replaceBaseSystemPrompt: Bool? = nil,
+        maxToolCallsPerSubreview: Int? = nil,
+        maxCostUsdPerSubreview: Double? = nil,
+        reviewTimeoutSeconds: Int? = nil,
+        riskBriefEnabled: Bool? = nil,
+        churnWindowDays: Int? = nil,
+        churnHistoryDepth: Int? = nil,
+        autoApprove: AutoApproveConfig? = nil,
+        autoDeny: AutoDenyConfig? = nil,
+        reviewDrafts: Bool? = nil,
+        excludeTitlePatterns: [String]? = nil,
+        skipAIIfReviewedByOthers: Bool? = nil,
+        aiReviewEnabled: Bool? = nil,
         providerOverride: ProviderID? = nil,
-        notifyPolicy: NotifyPolicy = .batchSettled,
-        forceFullReview: Bool = false,
+        notifyPolicy: NotifyPolicy? = nil,
+        forceFullReview: Bool? = nil,
         skipMergeConfirmation: Bool? = nil,
         claudeModelOverride: String? = nil,
         claudeEffortOverride: String? = nil,

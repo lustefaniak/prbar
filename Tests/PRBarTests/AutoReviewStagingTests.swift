@@ -202,7 +202,7 @@ final class AutoReviewStagingTests: XCTestCase {
         })
         w.provider = provider
         w.providerLookup = nil
-        let resolved = config
+        let resolved = config.resolved()
         w.configResolver = { _, _ in resolved }
         return w
     }
