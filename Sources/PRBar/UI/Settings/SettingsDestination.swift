@@ -41,6 +41,17 @@ enum SettingsDestination: String, CaseIterable, Sendable {
 
     var settingsPath: String { "Settings → \(title)" }
 
+    /// Pre-select this tab. Separate from opening so `AppDelegate` can
+    /// pair it with its own `openSettings` rather than reaching back
+    /// through `NSApp.delegate` at launch.
+    @MainActor
+    func select() {
+        UserDefaults.standard.set(
+            tabIndex,
+            forKey: "com_apple_SwiftUI_Settings_selectedTabIndex"
+        )
+    }
+
     /// Select this tab, then open (or raise) the Settings window.
     ///
     /// Dismisses the popover first: `NSPopover.transient` does not close on
@@ -48,10 +59,7 @@ enum SettingsDestination: String, CaseIterable, Sendable {
     /// otherwise linger behind Settings.
     @MainActor
     static func open(_ destination: SettingsDestination) {
-        UserDefaults.standard.set(
-            destination.tabIndex,
-            forKey: "com_apple_SwiftUI_Settings_selectedTabIndex"
-        )
+        destination.select()
         let delegate = NSApp.delegate as? AppDelegate
         delegate?.dismissPopover()
         delegate?.openSettings(nil)

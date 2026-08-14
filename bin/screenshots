@@ -79,6 +79,7 @@ STAGES=(
   popover-detail
   window-detail
   settings-general
+  settings-review-defaults
   settings-repositories
   settings-diagnostics
 )

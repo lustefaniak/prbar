@@ -387,13 +387,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .windowDetail:
             openScreenshotDetailWindow(ScreenshotFixtures.detailPR(for: stage))
         case .settingsGeneral:
-            SettingsDestination.open(.general)
+            SettingsDestination.general.select()
+            openSettings(nil)
         case .settingsReviewDefaults:
-            SettingsDestination.open(.reviewDefaults)
+            SettingsDestination.reviewDefaults.select()
+            openSettings(nil)
         case .settingsRepositories:
-            SettingsDestination.open(.repositories)
+            SettingsDestination.repositories.select()
+            openSettings(nil)
         case .settingsDiagnostics:
-            SettingsDestination.open(.diagnostics)
+            SettingsDestination.diagnostics.select()
+            openSettings(nil)
         }
     }
 

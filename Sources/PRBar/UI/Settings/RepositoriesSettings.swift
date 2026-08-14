@@ -301,15 +301,14 @@ struct RepoConfigEditor: View {
             }
 
             section("AI review") {
-                inheritable("Run AI triage", \.aiReviewEnabled,
-                            inherited: defaults.aiReviewEnabled,
-                            describe: onOff) { Toggle("Enabled", isOn: $0) }
+                inheritableToggle("Run AI triage", \.aiReviewEnabled,
+                                  inherited: defaults.aiReviewEnabled)
                 inheritable("Tool mode", \.toolModeOverride,
                             inherited: defaults.toolMode,
                             describe: { $0.rawValue }) { ReviewSettingControls.toolMode($0) }
-                inheritable("Always do a full review", \.forceFullReview,
-                            inherited: defaults.forceFullReview,
-                            describe: onOff) { Toggle("Ignore prior verdict", isOn: $0) }
+                inheritableToggle("Always do a full review (ignore prior verdict)",
+                                  \.forceFullReview,
+                                  inherited: defaults.forceFullReview)
                 Picker("Provider", selection: providerOverrideBinding) {
                     Text("(use app default)").tag("default")
                     ForEach(ProviderID.allCases, id: \.self) { p in
@@ -338,10 +337,10 @@ struct RepoConfigEditor: View {
             }
 
             section("Per-subreview budget") {
-                inheritable("Max cost", \.maxCostUsdPerSubreview,
+                inheritable("Max cost / subreview", \.maxCostUsdPerSubreview,
                             inherited: defaults.maxCostUsdPerSubreview,
                             describe: { $0 == 0 ? "uncapped" : String(format: "$%.2f", $0) }) {
-                    ReviewSettingControls.costCap($0, label: "Max cost / subreview")
+                    ReviewSettingControls.costCap($0, label: "")
                 }
                 inheritable("Max tool calls", \.maxToolCallsPerSubreview,
                             inherited: defaults.maxToolCallsPerSubreview,
@@ -393,9 +392,9 @@ struct RepoConfigEditor: View {
             }
 
             section("Risk brief") {
-                inheritable("Rank changed files", \.riskBriefEnabled,
-                            inherited: defaults.riskBriefEnabled,
-                            describe: onOff) { Toggle("Enabled", isOn: $0) }
+                inheritableToggle("Rank changed files by where to look first",
+                                  \.riskBriefEnabled,
+                                  inherited: defaults.riskBriefEnabled)
                 inheritable("Churn window", \.churnWindowDays,
                             inherited: defaults.churnWindowDays,
                             describe: { $0 == 0 ? "off" : "\($0) days" }) {
@@ -407,13 +406,11 @@ struct RepoConfigEditor: View {
             }
 
             section("Filters") {
-                inheritable("Review draft PRs", \.reviewDrafts,
-                            inherited: defaults.reviewDrafts,
-                            describe: onOff) { Toggle("Enabled", isOn: $0) }
-                inheritable("Skip AI when another reviewer has weighed in",
-                            \.skipAIIfReviewedByOthers,
-                            inherited: defaults.skipAIIfReviewedByOthers,
-                            describe: onOff) { Toggle("Enabled", isOn: $0) }
+                inheritableToggle("Review draft PRs", \.reviewDrafts,
+                                  inherited: defaults.reviewDrafts)
+                inheritableToggle("Skip AI when another reviewer has weighed in",
+                                  \.skipAIIfReviewedByOthers,
+                                  inherited: defaults.skipAIIfReviewedByOthers)
                 inheritable("Extra title patterns to ignore", \.excludeTitlePatterns,
                             inherited: [],
                             describe: { _ in "none beyond the \(defaults.excludeTitlePatterns.count) global" }) { binding in
@@ -523,6 +520,40 @@ struct RepoConfigEditor: View {
                     set: { config[keyPath: path] = $0 }
                 ))
                 .padding(.leading, 20)
+            }
+        }
+    }
+
+    /// A boolean setting reads badly through `inheritable` — the override
+    /// checkbox and the value checkbox stack into two boxes that look like
+    /// they mean the same thing. Keep the value on the same row as a
+    /// switch instead.
+    @ViewBuilder
+    private func inheritableToggle(
+        _ title: String,
+        _ path: WritableKeyPath<RepoConfig, Bool?>,
+        inherited: Bool
+    ) -> some View {
+        HStack(spacing: 6) {
+            Toggle(isOn: Binding(
+                get: { config[keyPath: path] != nil },
+                set: { on in config[keyPath: path] = on ? inherited : nil }
+            )) {
+                Text(title).font(.callout)
+            }
+            .toggleStyle(.checkbox)
+            Spacer()
+            if config[keyPath: path] != nil {
+                Toggle("", isOn: Binding(
+                    get: { config[keyPath: path] ?? inherited },
+                    set: { config[keyPath: path] = $0 }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+            } else {
+                Text("inherits \(onOff(inherited))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }

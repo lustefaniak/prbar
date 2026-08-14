@@ -82,17 +82,23 @@ enum ReviewSettingControls {
     /// Free-text currency rather than a slider: the old 0.05–3.00 slider
     /// made a large PR or a high-effort model unreviewable at any price,
     /// and slider granularity is the wrong shape for money anyway.
+    ///
+    /// An empty `label` drops the leading text — used where the row above
+    /// already names the setting.
     @ViewBuilder
     static func costCap(_ value: Binding<Double>, label: String = "Max cost / subreview") -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(label)
+                if !label.isEmpty { Text(label) }
                 Spacer()
                 TextField(
                     "3.00",
                     value: Binding(get: { value.wrappedValue }, set: { value.wrappedValue = max(0, $0) }),
                     format: .currency(code: "USD")
                 )
+                // Form would otherwise render the placeholder as a
+                // leading label, printing the amount twice.
+                .labelsHidden()
                 .frame(width: 100)
                 .multilineTextAlignment(.trailing)
                 .textFieldStyle(.roundedBorder)
