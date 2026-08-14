@@ -39,9 +39,11 @@ For long diffs and detailed review reading. Same content as the popover, full si
 
 ### Settings
 
-| General | Repositories | Diagnostics |
-|---|---|---|
-| ![General](docs/screenshots/settings-general.png) | ![Repositories](docs/screenshots/settings-repositories.png) | ![Diagnostics](docs/screenshots/settings-diagnostics.png) |
+| General | Review defaults | Repositories | Diagnostics |
+|---|---|---|---|
+| ![General](docs/screenshots/settings-general.png) | ![Review defaults](docs/screenshots/settings-review-defaults.png) | ![Repositories](docs/screenshots/settings-repositories.png) | ![Diagnostics](docs/screenshots/settings-diagnostics.png) |
+
+Review defaults set the app-level value of every review setting; a repo rule overrides only what it needs and inherits the rest.
 
 ## How it works
 
