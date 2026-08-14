@@ -232,12 +232,15 @@ enum ProcessRunner {
     /// same dirs `ExecutableResolver` searches lets node (and any tools the
     /// CLI shells out to) resolve. Caller-supplied `environment` is augmented
     /// the same way rather than replaced wholesale.
-    static func childEnvironment(_ override: [String: String]?) -> [String: String] {
+    static func childEnvironment(
+        _ override: [String: String]?,
+        prepending searchPaths: [String] = ExecutableResolver.searchPaths
+    ) -> [String: String] {
         var env = override ?? ProcessInfo.processInfo.environment
         let existing = (env["PATH"] ?? "").split(separator: ":").map(String.init)
         var seen = Set<String>()
         var ordered: [String] = []
-        for dir in ExecutableResolver.searchPaths + existing where seen.insert(dir).inserted {
+        for dir in searchPaths + existing where seen.insert(dir).inserted {
             ordered.append(dir)
         }
         env["PATH"] = ordered.joined(separator: ":")

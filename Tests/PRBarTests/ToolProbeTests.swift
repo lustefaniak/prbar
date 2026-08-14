@@ -77,6 +77,8 @@ final class ToolProbeTests: XCTestCase {
 
         XCTAssertTrue(result.available)
         XCTAssertNil(result.version)
+        XCTAssertEqual(result.failure?.exitCode, 127, "should surface the shell's not-found status")
+        XCTAssertNotNil(result.failure?.stderrLine, "env writes the reason to stderr")
     }
 
     func testProbeGitReturnsVersion() {
