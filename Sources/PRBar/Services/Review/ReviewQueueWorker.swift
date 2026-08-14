@@ -543,7 +543,8 @@ final class ReviewQueueWorker {
         if dailyCostCapEnabled && cumulativeSpend() >= dailyCostCap {
             PRBarLog.triage.notice("enqueue blocked reason=daily-cap pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) cap=\(self.fmt(self.dailyCostCap), privacy: .public)")
             let now = Date()
-            let capMessage = "Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."
+            let capMessage = "Daily $\(String(format: "%.2f", dailyCostCap)) cap reached. "
+                + "Raise it in Settings → General."
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
                 providerId: resolvedProviderId,

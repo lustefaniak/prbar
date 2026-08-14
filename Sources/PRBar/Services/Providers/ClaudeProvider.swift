@@ -32,7 +32,11 @@ struct ClaudeProvider: ReviewProvider {
             case .decodeFailed(let msg):
                 return "Could not decode claude's structured_output: \(msg.prefix(400))"
             case .budgetExceeded(let detail):
-                return "claude review exceeded budget: \(detail)"
+                // Names the setting, not just the number: the original
+                // "exceeded budget: $1.0031 spent (cap $1.00)" left people
+                // hunting for a cap that only existed on a repo rule.
+                return "claude review stopped by the per-subreview cost cap — \(detail). "
+                    + "Raise \"Max cost / subreview\" in Settings → Review defaults."
             }
         }
     }

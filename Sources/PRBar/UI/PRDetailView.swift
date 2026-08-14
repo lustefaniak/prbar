@@ -725,6 +725,9 @@ struct PRDetailView: View {
                         .lineLimit(4)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
+                    if let hint = ReviewFailureHint.hint(for: msg) {
+                        failureHintView(hint)
+                    }
                     if let prior = priorReview {
                         priorReviewBanner(prior)
                         completedReviewSection(prior.aggregated)
@@ -742,9 +745,37 @@ struct PRDetailView: View {
                     Text("Press Re-run to triage this PR anyway.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                    Button("Open \(SettingsDestination.reviewDefaults.title)") {
+                        SettingsDestination.open(.reviewDefaults)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption2)
                 }
             }
         }
+    }
+
+    /// Points a failure at the setting behind it. The message alone names
+    /// a number; this names the control and opens the tab holding it.
+    @ViewBuilder
+    private func failureHintView(_ hint: ReviewFailureHint) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "lightbulb")
+                .foregroundStyle(.secondary)
+            Text(hint.explanation)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(hint.actionTitle) {
+                SettingsDestination.open(hint.destination)
+            }
+            .buttonStyle(.link)
+            .font(.caption2)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
     }
 
     /// In-flight review shows: spinner + label + (when this is a
