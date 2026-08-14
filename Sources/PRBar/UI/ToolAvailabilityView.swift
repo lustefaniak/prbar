@@ -50,7 +50,7 @@ struct ToolAvailabilityView: View {
         let names = tools
         Task {
             let next = await Task.detached(priority: .userInitiated) {
-                names.map(ToolProbe.probe)
+                names.map { ToolProbe.probe($0) }
             }.value
             await MainActor.run {
                 self.results = next

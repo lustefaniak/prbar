@@ -10,16 +10,19 @@ struct ToolProbeResult: Identifiable, Hashable, Sendable {
 }
 
 enum ToolProbe {
-    static func probe(_ tool: String) -> ToolProbeResult {
-        guard let path = ExecutableResolver.find(tool) else {
+    /// `searchPaths` is injectable for tests; it selects both where the
+    /// binary is looked up and which directories the child process can
+    /// resolve its own dependencies from.
+    static func probe(_ tool: String, searchPaths: [String] = ExecutableResolver.searchPaths) -> ToolProbeResult {
+        guard let path = ExecutableResolver.find(tool, in: searchPaths) else {
             return ToolProbeResult(tool: tool, path: nil, version: nil)
         }
 
-        let version = runVersion(path: path)
+        let version = runVersion(path: path, searchPaths: searchPaths)
         return ToolProbeResult(tool: tool, path: path, version: version)
     }
 
-    private static func runVersion(path: String) -> String? {
+    private static func runVersion(path: String, searchPaths: [String]) -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: path)
         proc.arguments = ["--version"]

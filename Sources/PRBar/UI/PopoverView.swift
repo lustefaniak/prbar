@@ -359,7 +359,7 @@ struct PopoverView: View {
     private func probeTools() async {
         let names = probedTools
         let probed = await Task.detached(priority: .userInitiated) {
-            names.map(ToolProbe.probe)
+            names.map { ToolProbe.probe($0) }
         }.value
         self.toolResults = probed
     }
