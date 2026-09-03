@@ -1,6 +1,11 @@
 import SwiftUI
 
 struct ToolAvailabilityView: View {
+    @Environment(RepoConfigStore.self) private var repoConfigs
+    @AppStorage("defaultProviderId") private var defaultProviderRaw = ProviderID.claude.rawValue
+    @AppStorage(ProviderRelevance.suppressionStorageKey)
+        private var suppressUnusedProviderWarnings = false
+
     @State private var results: [ToolProbeResult] = []
     @State private var isProbing = false
 
@@ -27,23 +32,60 @@ struct ToolAvailabilityView: View {
             }
 
             ForEach(results) { result in
-                HStack(spacing: 8) {
-                    Image(systemName: result.available ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(result.available ? .green : .red)
-                    Text(result.tool)
-                        .font(.system(.body, design: .monospaced))
-                    Spacer()
-                    Text(result.statusText)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(result.helpText)
-                }
+                row(for: result)
             }
         }
         .task { probe() }
     }
+
+    @ViewBuilder
+    private func row(for result: ToolProbeResult) -> some View {
+        let suppressed = isSuppressed(result)
+        HStack(spacing: 8) {
+            Image(systemName: iconName(available: result.available, suppressed: suppressed))
+                .foregroundStyle(iconStyle(available: result.available, suppressed: suppressed))
+            Text(result.tool)
+                .font(.system(.body, design: .monospaced))
+            Spacer()
+            Text(suppressed ? "not used" : result.statusText)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(suppressed ? Self.suppressedHelp : result.helpText)
+        }
+    }
+
+    /// A missing AI provider the user has configured away from: keep the
+    /// row for completeness but drop the red "not found" warning.
+    private func isSuppressed(_ result: ToolProbeResult) -> Bool {
+        ProviderRelevance.isSuppressed(
+            toolName: result.tool,
+            available: result.available,
+            relevantProviders: relevantProviders
+        )
+    }
+
+    private var relevantProviders: Set<ProviderID> {
+        ProviderRelevance.relevantProviders(
+            suppressionEnabled: suppressUnusedProviderWarnings,
+            defaultProviderRaw: defaultProviderRaw,
+            repoOverrides: repoConfigs.providerOverrides
+        )
+    }
+
+    private func iconName(available: Bool, suppressed: Bool) -> String {
+        if suppressed { return "minus.circle" }
+        return available ? "checkmark.circle.fill" : "xmark.circle.fill"
+    }
+
+    private func iconStyle(available: Bool, suppressed: Bool) -> AnyShapeStyle {
+        if suppressed { return AnyShapeStyle(.secondary) }
+        return AnyShapeStyle(available ? Color.green : Color.red)
+    }
+
+    private static let suppressedHelp =
+        "PRBar isn't configured to use this provider, so its absence isn't flagged."
 
     private func probe() {
         isProbing = true
