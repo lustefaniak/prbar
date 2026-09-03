@@ -11,12 +11,136 @@ final class AutoReviewPolicyTests: XCTestCase {
 
     private func config(
         approve: AutoApproveConfig? = nil,
-        deny: AutoDenyConfig = .off
+        deny: AutoDenyConfig = .off,
+        share: ShareFindingsPolicy = .off
     ) -> RepoConfig {
         var cfg = RepoConfig.default
         cfg.autoApprove = approve ?? onApprove
         cfg.autoDeny = deny
+        cfg.shareFindings = share
         return cfg
+    }
+
+    // MARK: - share side
+
+    private let warning = DiffAnnotation(
+        path: "a", lineStart: 1, lineEnd: 1, severity: .warning,
+        title: "Unchecked nil", body: "this can crash"
+    )
+    private let nit = DiffAnnotation(
+        path: "a", lineStart: 2, lineEnd: 2, severity: .info,
+        title: "Nit", body: "rename this"
+    )
+
+    func testShareOffLeavesTheSkipIntact() {
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            // Above the share floor, so `.off` is provably what skips here
+            // rather than the confidence gate doing it by accident.
+            review: makeReview(verdict: .approve, confidence: 0.70, annotations: [warning]),
+            config: config(share: .off)
+        )
+        guard case .skip = result else { return XCTFail("expected skip, got \(result)") }
+    }
+
+    func testShareFiresWhenBothAutoSidesSkip() {
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            // Below the 0.85 approve floor so the approve side skips, above
+            // the share floor — the case the feature exists for.
+            review: makeReview(verdict: .approve, confidence: 0.70, annotations: [warning]),
+            config: config(share: .warningsAndBlockers)
+        )
+        XCTAssertEqual(result, .share)
+    }
+
+    /// Sharing deliberately sits below the approve floor, so severity is
+    /// the only thing left gating what reaches the author — and severity
+    /// comes from the same run whose confidence is in question. A run the
+    /// model barely believes doesn't get to publish on the author's PR.
+    func testShareRespectsItsOwnConfidenceFloor() {
+        var cfg = config(share: .warningsAndBlockers)
+        cfg.shareMinConfidence = 0.5
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            review: makeReview(verdict: .approve, confidence: 0.10, annotations: [warning]),
+            config: cfg
+        )
+        guard case .skip = result else { return XCTFail("expected skip, got \(result)") }
+    }
+
+    /// The shape that actually dominates in practice: the AI returns
+    /// `.comment` ("approve with notes"), which skips down a *different*
+    /// branch than `.approve` — the `allowApproveWithNotes` guard, before
+    /// any confidence or size gate is consulted. Sharing has to survive
+    /// that branch too, or the common case silently never fires.
+    func testShareFiresOnTheApproveWithNotesSkip() {
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            review: makeReview(verdict: .comment, confidence: 0.75, annotations: [warning]),
+            config: config(share: .warningsAndBlockers)
+        )
+        XCTAssertEqual(result, .share)
+    }
+
+    /// A negative verdict that the deny side declined to act on (deny off)
+    /// still has findings worth sending.
+    func testShareFiresWhenDenyIsOff() {
+        let blocker = DiffAnnotation(
+            path: "a", lineStart: 1, lineEnd: 1, severity: .blocker,
+            title: "Boom", body: "this crashes"
+        )
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            review: makeReview(verdict: .requestChanges, confidence: 0.9, annotations: [blocker]),
+            config: config(deny: .off, share: .warningsAndBlockers)
+        )
+        XCTAssertEqual(result, .share)
+    }
+
+    func testShareRespectsItsSeverityFloor() {
+        let review = makeReview(verdict: .approve, confidence: 0.70, annotations: [nit])
+        guard case .skip = evaluate(
+            pr: makePR(additions: 10), review: review,
+            config: config(share: .warningsAndBlockers)
+        ) else { return XCTFail("an info annotation must not clear the warnings floor") }
+
+        XCTAssertEqual(
+            evaluate(pr: makePR(additions: 10), review: review, config: config(share: .allFindings)),
+            .share
+        )
+    }
+
+    func testShareNeedsSomethingToSay() {
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            review: makeReview(verdict: .approve, confidence: 0.70, annotations: []),
+            config: config(share: .allFindings)
+        )
+        guard case .skip = result else {
+            return XCTFail("a summary with no findings gives the author nothing to act on")
+        }
+    }
+
+    /// Share is a fallback for the skip path only — it must never divert a
+    /// decision the user armed the auto gates to make.
+    func testShareNeverPreemptsAFiringAutoSide() {
+        XCTAssertEqual(
+            evaluate(
+                pr: makePR(additions: 10),
+                review: makeReview(verdict: .approve, confidence: 0.99, annotations: [nit]),
+                config: config(share: .allFindings)
+            ),
+            .approve
+        )
+        XCTAssertEqual(
+            evaluate(
+                pr: makePR(additions: 10),
+                review: makeReview(verdict: .requestChanges, confidence: 0.99, annotations: [warning]),
+                config: config(deny: AutoDenyConfig(action: .requestChanges), share: .allFindings)
+            ),
+            .deny(.requestChanges)
+        )
     }
 
     // MARK: - approve side

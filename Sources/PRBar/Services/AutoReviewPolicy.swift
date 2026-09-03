@@ -14,10 +14,27 @@ enum AutoReviewPolicy {
         /// Negative verdict cleared the deny gates. The payload is never
         /// `.off` — `.flagOnly` means "surface it, post nothing".
         case deny(AutoDenyAction)
+        /// Neither auto side fired, but the review found something the
+        /// author can act on. Posts a verdict-less COMMENT review so the
+        /// author isn't blocked on the human reviewer getting to it.
+        case share
         case skip(reason: String)
     }
 
     static func evaluate(
+        pr: InboxPR,
+        review: AggregatedReview,
+        providerId: ProviderID,
+        config: ResolvedRepoConfig
+    ) -> Decision {
+        let decision = evaluateAutoSides(
+            pr: pr, review: review, providerId: providerId, config: config
+        )
+        guard case .skip = decision else { return decision }
+        return shareFallback(review: review, config: config) ?? decision
+    }
+
+    private static func evaluateAutoSides(
         pr: InboxPR,
         review: AggregatedReview,
         providerId: ProviderID,
@@ -36,6 +53,29 @@ enum AutoReviewPolicy {
         case .abstain:
             return .skip(reason: "AI abstained")
         }
+    }
+
+    // MARK: - share side
+
+    /// `.share` when the repo opted in and the review carries at least one
+    /// annotation the policy considers worth sending, else nil (the caller
+    /// keeps its `.skip`).
+    ///
+    /// The annotation floor is the whole gate: a summary with no
+    /// line-level findings gives the author nothing to act on, and posting
+    /// it anyway makes PRBar a bot that comments on every PR it looks at.
+    private static func shareFallback(
+        review: AggregatedReview,
+        config: ResolvedRepoConfig
+    ) -> Decision? {
+        guard let floor = config.shareFindings.minSeverity else { return nil }
+        // Severity is the model grading its own finding; confidence is the
+        // model grading the whole run. A run that lands under the floor is
+        // one PRBar shouldn't put in front of the author under any
+        // severity — the severities come from the same run.
+        guard review.confidence >= config.shareMinConfidence else { return nil }
+        guard review.annotations.contains(where: { $0.severity >= floor }) else { return nil }
+        return .share
     }
 
     // MARK: - approve side

@@ -216,6 +216,85 @@ enum AutoDenyAction: String, Codable, Sendable, Hashable, CaseIterable {
     }
 }
 
+/// What PRBar sends the PR author when a completed review clears neither
+/// the auto-approve nor the auto-deny gates — the common case, since both
+/// ship off.
+///
+/// Without this the findings sit in PRBar until the user gets around to
+/// the PR, and the author waits on a review that already exists. Sharing
+/// posts a verdict-less GitHub COMMENT review (never APPROVE or
+/// REQUEST_CHANGES), so the human reviewer's own verdict is still the one
+/// that decides the PR — the author just gets to start on the findings.
+///
+/// The case is the severity floor, not a separate knob: "off" and "how
+/// much is worth sending" are the same decision, and a floor of `.info`
+/// with an on/off bool beside it has two ways to spell the same thing.
+enum ShareFindingsPolicy: String, Codable, Sendable, Hashable, CaseIterable {
+    /// Never post; findings stay in PRBar (default).
+    case off
+    /// Share when the review found a warning or a blocker.
+    case warningsAndBlockers = "warnings_and_blockers"
+    /// Share whenever the review produced any annotation at all,
+    /// nitpicks included.
+    case allFindings = "all_findings"
+
+    var displayName: String {
+        switch self {
+        case .off:                 return "Off"
+        case .warningsAndBlockers: return "Warnings and blockers"
+        case .allFindings:         return "Any finding"
+        }
+    }
+
+    /// Lowest annotation severity that triggers a share, or nil when the
+    /// policy is off.
+    var minSeverity: AnnotationSeverity? {
+        switch self {
+        case .off:                 return nil
+        case .warningsAndBlockers: return .warning
+        case .allFindings:         return .info
+        }
+    }
+}
+
+/// When PRBar may close a review thread it opened, once a later triage
+/// no longer reports that finding.
+///
+/// Ships off. Resolving collapses a thread for every human on the PR, and
+/// the evidence it runs on is circumstantial — `isOutdated` fires on any
+/// edit to those lines, and a finding can drop out of a review because the
+/// model got distracted rather than because the code was fixed. That is a
+/// judgement the user opts into, not one they inherit.
+struct ResolveThreadsConfig: Sendable, Hashable, Codable {
+    var enabled: Bool = false
+
+    /// Floor on the *resolving* triage's confidence. The signal that closes
+    /// a thread is a finding's **absence**, and absence is exactly what a
+    /// degraded run produces: the `{"summary":"test"}` reviews this repo
+    /// has already seen carried no annotations at all, which would read as
+    /// "everything was fixed". A run the model doesn't stand behind must
+    /// not be allowed to close anything.
+    var minConfidence: Double = 0.85
+
+    static let off = ResolveThreadsConfig()
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, minConfidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ResolveThreadsConfig()
+        self.enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? d.enabled
+        self.minConfidence = (try? c.decode(Double.self, forKey: .minConfidence)) ?? d.minConfidence
+    }
+
+    init(enabled: Bool = false, minConfidence: Double = 0.85) {
+        self.enabled = enabled
+        self.minConfidence = minConfidence
+    }
+}
+
 /// Per-repo auto-deny policy — the mirror of `AutoApproveConfig` for
 /// negative verdicts. Gates are separate on purpose: the confidence you
 /// need before letting a bot approve is rarely the confidence you need
@@ -429,6 +508,22 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// Negative-verdict counterpart to `autoApprove`.
     var autoDeny: AutoDenyConfig?
 
+    /// What to send the author when neither auto side fires. See
+    /// `ShareFindingsPolicy`.
+    var shareFindings: ShareFindingsPolicy?
+
+    /// Confidence floor a review must clear before its findings are shared.
+    /// See `ReviewDefaults.shareMinConfidence`.
+    var shareMinConfidence: Double?
+
+    /// Cap on inline comments a single share posts. See
+    /// `ReviewDefaults.shareMaxComments`.
+    var shareMaxComments: Int?
+
+    /// Whether PRBar may resolve the review threads it opened. See
+    /// `ResolveThreadsConfig`.
+    var resolveThreads: ResolveThreadsConfig?
+
     // --- Filters ---
 
     /// When false (default), the queue worker skips draft PRs entirely —
@@ -555,7 +650,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case toolModeOverride, customSystemPrompt, replaceBaseSystemPrompt
         case maxToolCallsPerSubreview, maxCostUsdPerSubreview, reviewTimeoutSeconds
         case riskBriefEnabled, churnWindowDays, churnHistoryDepth
-        case autoApprove, autoDeny
+        case autoApprove, autoDeny, shareFindings
+        case shareMinConfidence, shareMaxComments, resolveThreads
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case aiReviewEnabled, providerOverride, notifyPolicy
         case forceFullReview
@@ -594,6 +690,10 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.churnHistoryDepth       = try? c.decodeIfPresent(Int.self, forKey: .churnHistoryDepth)
         self.autoApprove             = try? c.decodeIfPresent(AutoApproveConfig.self, forKey: .autoApprove)
         self.autoDeny                = try? c.decodeIfPresent(AutoDenyConfig.self, forKey: .autoDeny)
+        self.shareFindings           = try? c.decodeIfPresent(ShareFindingsPolicy.self, forKey: .shareFindings)
+        self.shareMinConfidence      = try? c.decodeIfPresent(Double.self, forKey: .shareMinConfidence)
+        self.shareMaxComments        = try? c.decodeIfPresent(Int.self, forKey: .shareMaxComments)
+        self.resolveThreads          = try? c.decodeIfPresent(ResolveThreadsConfig.self, forKey: .resolveThreads)
         self.reviewDrafts            = try? c.decodeIfPresent(Bool.self, forKey: .reviewDrafts)
         self.excludeTitlePatterns    = try? c.decodeIfPresent([String].self, forKey: .excludeTitlePatterns)
         self.skipAIIfReviewedByOthers = try? c.decodeIfPresent(Bool.self, forKey: .skipAIIfReviewedByOthers)
@@ -633,6 +733,10 @@ struct RepoConfig: Sendable, Hashable, Codable {
         churnHistoryDepth: Int? = nil,
         autoApprove: AutoApproveConfig? = nil,
         autoDeny: AutoDenyConfig? = nil,
+        shareFindings: ShareFindingsPolicy? = nil,
+        shareMinConfidence: Double? = nil,
+        shareMaxComments: Int? = nil,
+        resolveThreads: ResolveThreadsConfig? = nil,
         reviewDrafts: Bool? = nil,
         excludeTitlePatterns: [String]? = nil,
         skipAIIfReviewedByOthers: Bool? = nil,
@@ -666,6 +770,10 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.churnHistoryDepth = churnHistoryDepth
         self.autoApprove = autoApprove
         self.autoDeny = autoDeny
+        self.shareFindings = shareFindings
+        self.shareMinConfidence = shareMinConfidence
+        self.shareMaxComments = shareMaxComments
+        self.resolveThreads = resolveThreads
         self.reviewDrafts = reviewDrafts
         self.excludeTitlePatterns = excludeTitlePatterns
         self.skipAIIfReviewedByOthers = skipAIIfReviewedByOthers

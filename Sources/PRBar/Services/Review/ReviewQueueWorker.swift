@@ -281,6 +281,16 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var checkoutManager: RepoCheckoutManager?
 
+    /// Fetches a PR's review threads. Injected so tests don't shell out;
+    /// nil disables the resolve-on-triage path entirely.
+    @ObservationIgnored
+    var reviewThreadFetcher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> ReviewThreadPage)?
+
+    /// Hands a batch of resolvable thread ids to `ActionQueue`. Wired in
+    /// `AppDelegate`; nil in tests that only assert the decision.
+    @ObservationIgnored
+    var enqueueResolveThreads: (@MainActor (_ pr: InboxPR, _ threadIds: [String]) -> Void)?
+
     /// Reads commit history for `RiskBrief`'s churn term. Injected so tests
     /// exercise the brief without a real checkout; returning nil is the
     /// normal degraded path, not an error.
@@ -377,7 +387,8 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var enqueueAutoReview: (@MainActor (
         _ pr: InboxPR, _ kind: ReviewActionKind, _ body: String,
-        _ comments: [GHClient.InlineComment], _ costUsd: Double
+        _ comments: [GHClient.InlineComment], _ costUsd: Double,
+        _ source: ActionSource
     ) -> Void)?
 
     @ObservationIgnored
@@ -421,6 +432,10 @@ final class ReviewQueueWorker {
         let body: String
         let comments: [GHClient.InlineComment]
         let stagedAt: Date
+        /// Distinguishes a share from an auto-approve/deny post. Both post
+        /// the same COMMENT event with the same body shape, so the source
+        /// is the only thing that tells them apart downstream.
+        var source: ActionSource = .automated
     }
 
     init(
@@ -452,7 +467,7 @@ final class ReviewQueueWorker {
     static func live() -> ReviewQueueWorker {
         let client = try? GHClient()
         let checkout = RepoCheckoutManager()
-        return ReviewQueueWorker(
+        let worker = ReviewQueueWorker(
             diffFetcher: { owner, repo, number in
                 let c = try client ?? GHClient()
                 return try await c.fetchDiff(owner: owner, repo: repo, number: number)
@@ -461,6 +476,11 @@ final class ReviewQueueWorker {
             cache: ReviewCache.live(),
             failureLogStore: FailureLogStore.live()
         )
+        worker.reviewThreadFetcher = { owner, repo, number in
+            let c = try client ?? GHClient()
+            return try await c.fetchReviewThreads(owner: owner, repo: repo, number: number)
+        }
+        return worker
         // reviewLog is wired separately by AppDelegate so all stores
         // share one ModelContainer (sharing the container keeps SwiftData
         // notifications consistent across @Query consumers).
@@ -923,6 +943,7 @@ final class ReviewQueueWorker {
                 pr: pr, review: aggregated, config: config,
                 providerId: chosenProviderId, diffText: diffText
             )
+            await resolveAddressedThreads(pr: pr, review: aggregated, config: config)
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
@@ -975,6 +996,63 @@ final class ReviewQueueWorker {
         return tmp
     }
 
+    /// Close the review threads this triage considers dealt with.
+    ///
+    /// Runs after every completed triage, not just after a share: threads
+    /// PRBar opened via auto-deny inline comments deserve the same
+    /// treatment, and the gate in `ReviewThreadResolver` is what decides
+    /// eligibility, not the caller.
+    ///
+    /// Three things have to line up before anything is queued, and each
+    /// guards a different way this can be wrong:
+    ///
+    /// - **Opt-in.** Resolving collapses a thread for every human on the
+    ///   PR, so it is never inherited silently. `ResolveThreadsConfig`
+    ///   ships off.
+    /// - **Confidence.** The signal that closes a thread is a finding's
+    ///   *absence*, which is also what a degraded run produces. A run
+    ///   under the floor closes nothing.
+    /// - **Head SHA.** Threads are read live but the annotations come from
+    ///   the commit this triage ran on. If the author pushed while the
+    ///   review was running, GitHub's `isOutdated` reflects *their* push
+    ///   while our findings describe the previous head — stale findings
+    ///   would close threads on code nobody has reviewed yet.
+    ///
+    /// The resolve itself goes through `ActionQueue` like every other
+    /// GitHub write, so it is serialized against this PR's other writes,
+    /// retryable, and visible in History.
+    private func resolveAddressedThreads(
+        pr: InboxPR,
+        review: AggregatedReview,
+        config: ResolvedRepoConfig
+    ) async {
+        let policy = config.resolveThreads
+        guard policy.enabled else { return }
+        guard let fetcher = reviewThreadFetcher else { return }
+        guard review.confidence >= policy.minConfidence else {
+            PRBarLog.triage.notice("thread resolve skipped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=low-confidence conf=\(self.fmt(review.confidence), privacy: .public)")
+            return
+        }
+        do {
+            let page = try await fetcher(pr.owner, pr.repo, pr.number)
+            guard page.headRefOid == pr.headSha else {
+                PRBarLog.triage.notice("thread resolve skipped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=head-moved reviewed=\(self.short(pr.headSha), privacy: .public) now=\(self.short(page.headRefOid), privacy: .public)")
+                return
+            }
+            let targets = ReviewThreadResolver.resolvable(
+                threads: page.threads,
+                annotations: review.annotations,
+                viewerLogin: page.viewerLogin,
+                prAuthor: pr.author
+            )
+            guard !targets.isEmpty else { return }
+            PRBarLog.triage.notice("thread resolve queued pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) count=\(targets.count, privacy: .public)")
+            enqueueResolveThreads?(pr, targets.map(\.id))
+        } catch {
+            PRBarLog.triage.error("thread fetch failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     // MARK: - auto-review batching
 
     /// Evaluate both auto-review sides and stage whatever clears. Called
@@ -1024,6 +1102,34 @@ final class ReviewQueueWorker {
             pendingAutoActions[pr.nodeId] = staged
             PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=approve comments=\(staged.comments.count, privacy: .public)")
             scheduleBatchIfSettled()
+        case .share:
+            // Only the annotations the policy actually asked for — sharing
+            // "warnings and blockers" while posting every nitpick inline
+            // would contradict the setting the user chose.
+            let floor = config.shareFindings.minSeverity ?? .info
+            // Severity first, then the cap — so a truncated share keeps the
+            // findings that matter most rather than whichever the model
+            // happened to emit first.
+            var shared = review.annotations
+                .filter { $0.severity >= floor }
+                .sorted { $0.severity > $1.severity }
+            let cap = config.shareMaxComments
+            if cap > 0 && shared.count > cap {
+                PRBarLog.triage.notice("share capped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) found=\(shared.count, privacy: .public) cap=\(cap, privacy: .public)")
+                shared = Array(shared.prefix(cap))
+            }
+            let staged = StagedAutoReview(
+                pr: pr,
+                review: review,
+                action: .comment,
+                body: shareBody(review),
+                comments: inlineComments(annotations: shared, diffText: diffText),
+                stagedAt: Date(),
+                source: .sharedFindings
+            )
+            pendingAutoActions[pr.nodeId] = staged
+            PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=share comments=\(staged.comments.count, privacy: .public)")
+            scheduleBatchIfSettled()
         case .deny(let denyAction):
             let cfg = config.autoDeny
             let comments = cfg.postInlineAnnotations
@@ -1054,9 +1160,16 @@ final class ReviewQueueWorker {
     }
 
     private func inlineComments(review: AggregatedReview, diffText: String) -> [GHClient.InlineComment] {
-        guard !review.annotations.isEmpty else { return [] }
+        inlineComments(annotations: review.annotations, diffText: diffText)
+    }
+
+    private func inlineComments(
+        annotations: [DiffAnnotation],
+        diffText: String
+    ) -> [GHClient.InlineComment] {
+        guard !annotations.isEmpty else { return [] }
         return InlineCommentMapper.map(
-            annotations: review.annotations,
+            annotations: annotations,
             hunks: DiffParser.parse(diffText)
         )
     }
@@ -1118,7 +1231,10 @@ final class ReviewQueueWorker {
             // PR refresh via onActionCompleted, so we don't duplicate that
             // here.
             if let enqueueAutoReview {
-                enqueueAutoReview(entry.pr, action, entry.body, entry.comments, entry.review.costUsd)
+                enqueueAutoReview(
+                    entry.pr, action, entry.body, entry.comments,
+                    entry.review.costUsd, entry.source
+                )
                 continue
             }
             // Fallback (tests / no queue wired): post inline.
@@ -1127,7 +1243,7 @@ final class ReviewQueueWorker {
                     try await poster(entry.pr, action, entry.body, entry.comments)
                     await MainActor.run {
                         self?.actionLog?.record(
-                            kind: action.autoActionLogKind, outcome: .success, pr: entry.pr,
+                            kind: Self.autoLogKind(action, entry.source), outcome: .success, pr: entry.pr,
                             detail: entry.body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
                         )
@@ -1136,7 +1252,7 @@ final class ReviewQueueWorker {
                 } catch {
                     await MainActor.run {
                         self?.actionLog?.record(
-                            kind: action.autoActionLogKind, outcome: .failure, pr: entry.pr,
+                            kind: Self.autoLogKind(action, entry.source), outcome: .failure, pr: entry.pr,
                             errorMessage: error.localizedDescription,
                             detail: entry.body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
@@ -1145,6 +1261,29 @@ final class ReviewQueueWorker {
                 }
             }
         }
+    }
+
+    /// Body for a `.share` post: the AI summary verbatim, exactly like the
+    /// auto-deny comment path. No banner or disclaimer — a shared review
+    /// should be indistinguishable from any other review PRBar posts.
+    /// GitHub rejects an empty body on COMMENT, hence the fallback.
+    private func shareBody(_ review: AggregatedReview) -> String {
+        let summary = review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? shareFallbackBody(review) : summary
+    }
+
+    private func shareFallbackBody(_ review: AggregatedReview) -> String {
+        "PRBar's AI review flagged the findings below (\(formatConfidence(review.confidence)) confidence) but returned no summary."
+    }
+
+    /// Log kind for the fallback (no `ActionQueue` wired) post path.
+    /// `ActionQueue.logKindAndDetail` is the production equivalent; both
+    /// have to agree or a share reads as a plain auto-comment in History.
+    private nonisolated static func autoLogKind(
+        _ action: ReviewActionKind,
+        _ source: ActionSource
+    ) -> ActionLogKind {
+        source == .sharedFindings ? .autoShare : action.autoActionLogKind
     }
 
     private func attributionBody(_ review: AggregatedReview) -> String {

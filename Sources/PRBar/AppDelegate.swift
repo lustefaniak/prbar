@@ -141,13 +141,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Auto-review posts route through the ActionQueue so they share
         // the one serialized + dedup'd + retryable + logged write path.
-        q.enqueueAutoReview = { [weak a] pr, kind, body, comments, cost in
+        q.enqueueAutoReview = { [weak a] pr, kind, body, comments, cost, source in
             a?.enqueue(
                 pr,
                 kind: .review(kind: kind, body: body, comments: comments),
-                source: .automated,
+                source: source,
                 costUsd: cost
             )
+        }
+        // Thread resolution is a GitHub write like any other, so it takes
+        // the same queued path rather than firing from the worker.
+        q.enqueueResolveThreads = { [weak a] pr, threadIds in
+            a?.enqueue(pr, kind: .resolveThreads(ids: threadIds), source: .automated)
         }
         q.configResolver = rc.makeResolver()
         // Resolve the persisted default provider. Stored value can be

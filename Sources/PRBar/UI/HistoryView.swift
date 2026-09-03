@@ -162,6 +162,9 @@ private struct HistoryRow: View {
         case .merge:          .purple
         case .approve, .autoApprove: .green
         case .comment, .autoComment: .blue
+        case .autoShare:      .teal
+        case .autoResolveThreads: .teal
+        case .reviewReRequested: .indigo
         case .requestChanges, .autoRequestChanges: .orange
         case .autoMergeEnable: .blue
         case .autoMergeDisable: .secondary

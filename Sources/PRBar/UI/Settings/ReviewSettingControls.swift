@@ -152,6 +152,48 @@ enum ReviewSettingControls {
         }
     }
 
+    static func shareFindings(_ value: Binding<ShareFindingsPolicy>) -> some View {
+        Picker("Post findings to the PR", selection: value) {
+            ForEach(ShareFindingsPolicy.allCases, id: \.self) { policy in
+                Text(policy.displayName).tag(policy)
+            }
+        }
+        .help("Posts a comment review — never an approval or a request for changes — when a completed review clears neither auto-approve nor auto-deny.")
+    }
+
+    @ViewBuilder
+    static func shareMinConfidence(_ value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Min confidence to share: \(String(format: "%.2f", value.wrappedValue))")
+            Slider(value: value, in: 0.0...1.0, step: 0.05)
+        }
+        .help("Sharing exists for the reviews that miss the auto-approve floor, so this sits well below it. It only keeps a run the model itself barely believes off the author's PR.")
+    }
+
+    @ViewBuilder
+    static func shareMaxComments(_ value: Binding<Int>) -> some View {
+        Stepper(
+            "Max inline comments: \(value.wrappedValue == 0 ? "unlimited" : "\(value.wrappedValue)")",
+            value: value,
+            in: 0...200,
+            step: 5
+        )
+        .help("Findings past the cap stay in the summary instead of posting inline. The highest severities are kept.")
+    }
+
+    @ViewBuilder
+    static func resolveThreads(_ config: Binding<ResolveThreadsConfig>) -> some View {
+        Toggle("Resolve threads the author addressed", isOn: config.enabled)
+            .help("Closes a review thread PRBar opened once the anchored code changed, the PR author replied, and a later review no longer reports that finding.")
+        if config.wrappedValue.enabled {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Min confidence to resolve: \(String(format: "%.2f", config.wrappedValue.minConfidence))")
+                Slider(value: config.minConfidence, in: 0.5...1.0, step: 0.01)
+            }
+            .help("A thread closes because a finding vanished — and a degraded run produces no findings at all. This floor is what stops one from closing everything.")
+        }
+    }
+
     // MARK: - Patterns
 
     /// Newline-separated pattern editor. Holds its text in local `@State`

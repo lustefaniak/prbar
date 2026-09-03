@@ -118,8 +118,14 @@ struct RepositoriesSettings: View {
                 } else if config.excluded {
                     Text("excluded").font(.caption2).foregroundStyle(.orange)
                 } else if let label = autoReviewLabel(config) {
+                    // Wraps rather than truncates: with three policies armed
+                    // the label outgrows the sidebar, and an ellipsis here
+                    // hides the very thing the label exists to say — that
+                    // this rule will post to GitHub on its own.
                     Text(label)
                         .font(.caption2)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .foregroundStyle(config.resolved(with: store.defaults).autoApprove.enabled ? .green : .orange)
                 }
             }
@@ -127,19 +133,24 @@ struct RepositoriesSettings: View {
         }
     }
 
+    /// Every policy that can post to GitHub on the user's behalf, so a
+    /// rule that will speak on a PR is never a blank row — sharing counts
+    /// even though it casts no verdict.
     private func autoReviewLabel(_ config: RepoConfig) -> String? {
         let effective = config.resolved(with: store.defaults)
-        let approves = effective.autoApprove.enabled
-        let denies = effective.autoDeny.action != .off
+        var parts: [String] = []
+        if effective.autoApprove.enabled { parts.append("auto-approve") }
+        if effective.autoDeny.action != .off { parts.append("auto-deny") }
+        if effective.shareFindings != .off { parts.append("share findings") }
+        if effective.resolveThreads.enabled { parts.append("resolve threads") }
+        guard !parts.isEmpty else { return nil }
         // Say where it comes from: an inherited policy is easy to miss
         // when the rule itself looks empty.
-        let suffix = (config.autoApprove == nil && config.autoDeny == nil) ? " (inherited)" : ""
-        switch (approves, denies) {
-        case (true, true):  return "auto-approve + deny" + suffix
-        case (true, false): return "auto-approve" + suffix
-        case (false, true): return "auto-deny" + suffix
-        case (false, false): return nil
-        }
+        let inherited = config.autoApprove == nil
+            && config.autoDeny == nil
+            && config.shareFindings == nil
+            && config.resolveThreads == nil
+        return parts.joined(separator: " + ") + (inherited ? " (inherited)" : "")
     }
 
     // MARK: - detail
@@ -462,6 +473,32 @@ struct RepoConfigEditor: View {
                             inherited: defaults.autoDeny,
                             describe: { $0.action.displayName.lowercased() }) { binding in
                     AutoDenyEditor(config: binding)
+                }
+            }
+
+            section("Share findings with the author") {
+                inheritable("Share findings policy", \.shareFindings,
+                            inherited: defaults.shareFindings,
+                            describe: { $0.displayName.lowercased() }) { binding in
+                    ReviewSettingControls.shareFindings(binding)
+                }
+                inheritable("Share confidence floor", \.shareMinConfidence,
+                            inherited: defaults.shareMinConfidence,
+                            describe: { String(format: "%.2f", $0) }) { binding in
+                    ReviewSettingControls.shareMinConfidence(binding)
+                }
+                inheritable("Share inline comment cap", \.shareMaxComments,
+                            inherited: defaults.shareMaxComments,
+                            describe: { $0 == 0 ? "unlimited" : "\($0)" }) { binding in
+                    ReviewSettingControls.shareMaxComments(binding)
+                }
+            }
+
+            section("Resolve addressed threads") {
+                inheritable("Thread resolution policy", \.resolveThreads,
+                            inherited: defaults.resolveThreads,
+                            describe: { $0.enabled ? "enabled" : "off" }) { binding in
+                    ReviewSettingControls.resolveThreads(binding)
                 }
             }
         }
