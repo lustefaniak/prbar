@@ -1024,6 +1024,23 @@ final class ReviewQueueWorker {
             pendingAutoActions[pr.nodeId] = staged
             PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=approve comments=\(staged.comments.count, privacy: .public)")
             scheduleBatchIfSettled()
+        case .share:
+            // Only the annotations the policy actually asked for — sharing
+            // "warnings and blockers" while posting every nitpick inline
+            // would contradict the setting the user chose.
+            let floor = config.shareFindings.minSeverity ?? .info
+            let shared = review.annotations.filter { $0.severity >= floor }
+            let staged = StagedAutoReview(
+                pr: pr,
+                review: review,
+                action: .comment,
+                body: shareBody(review, annotationCount: shared.count),
+                comments: inlineComments(annotations: shared, diffText: diffText),
+                stagedAt: Date()
+            )
+            pendingAutoActions[pr.nodeId] = staged
+            PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=share comments=\(staged.comments.count, privacy: .public)")
+            scheduleBatchIfSettled()
         case .deny(let denyAction):
             let cfg = config.autoDeny
             let comments = cfg.postInlineAnnotations
@@ -1054,9 +1071,16 @@ final class ReviewQueueWorker {
     }
 
     private func inlineComments(review: AggregatedReview, diffText: String) -> [GHClient.InlineComment] {
-        guard !review.annotations.isEmpty else { return [] }
+        inlineComments(annotations: review.annotations, diffText: diffText)
+    }
+
+    private func inlineComments(
+        annotations: [DiffAnnotation],
+        diffText: String
+    ) -> [GHClient.InlineComment] {
+        guard !annotations.isEmpty else { return [] }
         return InlineCommentMapper.map(
-            annotations: review.annotations,
+            annotations: annotations,
             hunks: DiffParser.parse(diffText)
         )
     }
@@ -1145,6 +1169,19 @@ final class ReviewQueueWorker {
                 }
             }
         }
+    }
+
+    /// Body for a `.share` post. The disclaimer is the load-bearing part:
+    /// this lands as a COMMENT review while the human's verdict is still
+    /// outstanding, and an author who reads it as "I've been reviewed"
+    /// will sit waiting on a merge that nobody has approved.
+    private func shareBody(_ review: AggregatedReview, annotationCount: Int) -> String {
+        let noun = annotationCount == 1 ? "finding" : "findings"
+        let header = "**Automated pre-review from PRBar** — \(annotationCount) \(noun) "
+            + "posted ahead of the human review so you can start on them. "
+            + "This is not a review verdict; the requested review is still pending."
+        let summary = review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? header : header + "\n\n---\n\n" + summary
     }
 
     private func attributionBody(_ review: AggregatedReview) -> String {

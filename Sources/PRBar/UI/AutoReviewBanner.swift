@@ -34,14 +34,15 @@ struct AutoReviewBanner: View {
     private func stagedRow(_ staged: [ReviewQueueWorker.StagedAutoReview]) -> some View {
         let secondsLeft = max(0, Int((queue.batchUndoDeadline ?? now).timeIntervalSince(now)))
         let approving = staged.filter { $0.action == .approve }.count
-        let pushingBack = staged.count - approving
+        let commenting = staged.filter { $0.action == .comment }.count
+        let pushingBack = staged.filter { $0.action == .requestChanges }.count
 
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: pushingBack > 0 ? "exclamationmark.bubble.fill" : "checkmark.seal.fill")
                 .foregroundStyle(pushingBack > 0 ? .orange : .green)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(headline(approving: approving, pushingBack: pushingBack)) in \(secondsLeft)s")
+                Text("\(headline(approving: approving, commenting: commenting, pushingBack: pushingBack)) in \(secondsLeft)s")
                     .font(.caption.bold())
                 Text(summary(staged))
                     .font(.caption2)
@@ -64,14 +65,17 @@ struct AutoReviewBanner: View {
         )
     }
 
-    private func headline(approving: Int, pushingBack: Int) -> String {
-        if pushingBack == 0 {
-            return "Auto-approving \(approving) PR\(approving == 1 ? "" : "s")"
-        }
-        if approving == 0 {
-            return "Posting changes requested on \(pushingBack) PR\(pushingBack == 1 ? "" : "s")"
-        }
-        return "Auto-approving \(approving), pushing back on \(pushingBack)"
+    /// A comment post carries no verdict, so it can't be folded in with
+    /// "changes requested" — most of them are shared findings sent ahead
+    /// of a human review that hasn't happened yet.
+    private func headline(approving: Int, commenting: Int, pushingBack: Int) -> String {
+        var parts: [String] = []
+        if approving > 0 { parts.append("approving \(approving)") }
+        if commenting > 0 { parts.append("commenting on \(commenting)") }
+        if pushingBack > 0 { parts.append("requesting changes on \(pushingBack)") }
+        let total = approving + commenting + pushingBack
+        guard !parts.isEmpty else { return "Posting \(total) review\(total == 1 ? "" : "s")" }
+        return "Auto-" + parts.joined(separator: ", ")
     }
 
     // MARK: - flag-only denials

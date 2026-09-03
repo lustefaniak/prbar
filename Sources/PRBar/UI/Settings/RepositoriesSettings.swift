@@ -464,6 +464,14 @@ struct RepoConfigEditor: View {
                     AutoDenyEditor(config: binding)
                 }
             }
+
+            section("Share findings with the author") {
+                inheritable("Share findings policy", \.shareFindings,
+                            inherited: defaults.shareFindings,
+                            describe: { $0.displayName.lowercased() }) { binding in
+                    ReviewSettingControls.shareFindings(binding)
+                }
+            }
         }
     }
 

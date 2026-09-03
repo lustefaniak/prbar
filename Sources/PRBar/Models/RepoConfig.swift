@@ -216,6 +216,47 @@ enum AutoDenyAction: String, Codable, Sendable, Hashable, CaseIterable {
     }
 }
 
+/// What PRBar sends the PR author when a completed review clears neither
+/// the auto-approve nor the auto-deny gates — the common case, since both
+/// ship off.
+///
+/// Without this the findings sit in PRBar until the user gets around to
+/// the PR, and the author waits on a review that already exists. Sharing
+/// posts a verdict-less GitHub COMMENT review (never APPROVE or
+/// REQUEST_CHANGES), so the human reviewer's own verdict is still the one
+/// that decides the PR — the author just gets to start on the findings.
+///
+/// The case is the severity floor, not a separate knob: "off" and "how
+/// much is worth sending" are the same decision, and a floor of `.info`
+/// with an on/off bool beside it has two ways to spell the same thing.
+enum ShareFindingsPolicy: String, Codable, Sendable, Hashable, CaseIterable {
+    /// Never post; findings stay in PRBar (default).
+    case off
+    /// Share when the review found a warning or a blocker.
+    case warningsAndBlockers = "warnings_and_blockers"
+    /// Share whenever the review produced any annotation at all,
+    /// nitpicks included.
+    case allFindings = "all_findings"
+
+    var displayName: String {
+        switch self {
+        case .off:                 return "Off"
+        case .warningsAndBlockers: return "Warnings and blockers"
+        case .allFindings:         return "Any finding"
+        }
+    }
+
+    /// Lowest annotation severity that triggers a share, or nil when the
+    /// policy is off.
+    var minSeverity: AnnotationSeverity? {
+        switch self {
+        case .off:                 return nil
+        case .warningsAndBlockers: return .warning
+        case .allFindings:         return .info
+        }
+    }
+}
+
 /// Per-repo auto-deny policy — the mirror of `AutoApproveConfig` for
 /// negative verdicts. Gates are separate on purpose: the confidence you
 /// need before letting a bot approve is rarely the confidence you need
@@ -429,6 +470,10 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// Negative-verdict counterpart to `autoApprove`.
     var autoDeny: AutoDenyConfig?
 
+    /// What to send the author when neither auto side fires. See
+    /// `ShareFindingsPolicy`.
+    var shareFindings: ShareFindingsPolicy?
+
     // --- Filters ---
 
     /// When false (default), the queue worker skips draft PRs entirely —
@@ -555,7 +600,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case toolModeOverride, customSystemPrompt, replaceBaseSystemPrompt
         case maxToolCallsPerSubreview, maxCostUsdPerSubreview, reviewTimeoutSeconds
         case riskBriefEnabled, churnWindowDays, churnHistoryDepth
-        case autoApprove, autoDeny
+        case autoApprove, autoDeny, shareFindings
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case aiReviewEnabled, providerOverride, notifyPolicy
         case forceFullReview
@@ -594,6 +639,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.churnHistoryDepth       = try? c.decodeIfPresent(Int.self, forKey: .churnHistoryDepth)
         self.autoApprove             = try? c.decodeIfPresent(AutoApproveConfig.self, forKey: .autoApprove)
         self.autoDeny                = try? c.decodeIfPresent(AutoDenyConfig.self, forKey: .autoDeny)
+        self.shareFindings           = try? c.decodeIfPresent(ShareFindingsPolicy.self, forKey: .shareFindings)
         self.reviewDrafts            = try? c.decodeIfPresent(Bool.self, forKey: .reviewDrafts)
         self.excludeTitlePatterns    = try? c.decodeIfPresent([String].self, forKey: .excludeTitlePatterns)
         self.skipAIIfReviewedByOthers = try? c.decodeIfPresent(Bool.self, forKey: .skipAIIfReviewedByOthers)
@@ -633,6 +679,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         churnHistoryDepth: Int? = nil,
         autoApprove: AutoApproveConfig? = nil,
         autoDeny: AutoDenyConfig? = nil,
+        shareFindings: ShareFindingsPolicy? = nil,
         reviewDrafts: Bool? = nil,
         excludeTitlePatterns: [String]? = nil,
         skipAIIfReviewedByOthers: Bool? = nil,
@@ -666,6 +713,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.churnHistoryDepth = churnHistoryDepth
         self.autoApprove = autoApprove
         self.autoDeny = autoDeny
+        self.shareFindings = shareFindings
         self.reviewDrafts = reviewDrafts
         self.excludeTitlePatterns = excludeTitlePatterns
         self.skipAIIfReviewedByOthers = skipAIIfReviewedByOthers

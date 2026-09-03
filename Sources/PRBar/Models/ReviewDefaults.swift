@@ -80,6 +80,12 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
     var autoApprove: AutoApproveConfig = .off
     var autoDeny: AutoDenyConfig = .off
 
+    /// Also ships off. Sharing posts nothing a human vouched for, so like
+    /// the two gates above it stays an explicit act — but unlike them it
+    /// never casts a verdict, which is what makes it the safe one to turn
+    /// on broadly.
+    var shareFindings: ShareFindingsPolicy = .off
+
     static let storageKey = "reviewDefaults"
 
     init() {}
@@ -95,7 +101,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         case riskBriefEnabled, churnWindowDays, churnHistoryDepth
         case reviewDrafts, skipAIIfReviewedByOthers, excludeTitlePatterns
         case notifyPolicy
-        case autoApprove, autoDeny
+        case autoApprove, autoDeny, shareFindings
     }
 
     init(from decoder: Decoder) throws {
@@ -123,6 +129,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         self.notifyPolicy = (try? c.decode(NotifyPolicy.self, forKey: .notifyPolicy)) ?? d.notifyPolicy
         self.autoApprove = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
         self.autoDeny = (try? c.decode(AutoDenyConfig.self, forKey: .autoDeny)) ?? d.autoDeny
+        self.shareFindings = (try? c.decode(ShareFindingsPolicy.self, forKey: .shareFindings)) ?? d.shareFindings
     }
 }
 
@@ -210,6 +217,7 @@ struct ResolvedRepoConfig: Sendable, Hashable {
 
     var autoApprove: AutoApproveConfig { rule.autoApprove ?? defaults.autoApprove }
     var autoDeny: AutoDenyConfig { rule.autoDeny ?? defaults.autoDeny }
+    var shareFindings: ShareFindingsPolicy { rule.shareFindings ?? defaults.shareFindings }
 
     func matches(nameWithOwner: String) -> Bool { rule.matches(nameWithOwner: nameWithOwner) }
 }

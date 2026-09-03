@@ -152,6 +152,15 @@ enum ReviewSettingControls {
         }
     }
 
+    static func shareFindings(_ value: Binding<ShareFindingsPolicy>) -> some View {
+        Picker("Post findings to the PR", selection: value) {
+            ForEach(ShareFindingsPolicy.allCases, id: \.self) { policy in
+                Text(policy.displayName).tag(policy)
+            }
+        }
+        .help("Posts a comment review — never an approval or a request for changes — when a completed review clears neither auto-approve nor auto-deny.")
+    }
+
     // MARK: - Patterns
 
     /// Newline-separated pattern editor. Holds its text in local `@State`

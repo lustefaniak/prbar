@@ -121,6 +121,16 @@ struct ReviewDefaultsSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                ReviewSettingControls.shareFindings($store.defaults.shareFindings)
+            } header: {
+                Text("Share findings with the author")
+            } footer: {
+                Text("When a completed review clears neither gate above, post its findings to the PR as a comment so the author can start on them instead of waiting for you. It never approves or requests changes, so your own review still decides the PR. Rides the same undo window as the other two.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

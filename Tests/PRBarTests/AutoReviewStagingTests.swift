@@ -180,17 +180,74 @@ final class AutoReviewStagingTests: XCTestCase {
 
     // MARK: - helpers
 
+    // MARK: - share
+
+    /// The whole point of the feature: with both gates off, a completed
+    /// review still reaches the author — as a comment, never a verdict.
+    func testShareStagesACommentWithTheFindingsInline() async throws {
+        let warning = DiffAnnotation(
+            path: "a", lineStart: 1, lineEnd: 1, severity: .warning,
+            title: "Unchecked nil", body: "this can crash"
+        )
+        let worker = makeWorker(
+            provider: StubProvider(
+                verdict: .approve, summary: "one thing to fix", cost: 0.02,
+                annotations: [warning]
+            ),
+            config: config(share: .warningsAndBlockers)
+        )
+        worker.enqueue(makePR())
+        try await waitForStaged(worker)
+
+        let staged = try XCTUnwrap(worker.pendingAutoActions["PR_1"])
+        XCTAssertEqual(staged.action, .comment, "sharing must never cast a verdict")
+        XCTAssertTrue(
+            staged.body.contains("not a review verdict"),
+            "the author has to know a human review is still pending — got: \(staged.body)"
+        )
+        XCTAssertTrue(staged.body.contains("one thing to fix"), "got body: \(staged.body)")
+        XCTAssertEqual(staged.comments.count, 1)
+    }
+
+    /// A policy of "warnings and blockers" that still posts every nitpick
+    /// inline would contradict the setting the user picked.
+    func testShareDropsAnnotationsBelowTheFloor() async throws {
+        let warning = DiffAnnotation(
+            path: "a", lineStart: 1, lineEnd: 1, severity: .warning,
+            title: "Unchecked nil", body: "this can crash"
+        )
+        let nit = DiffAnnotation(
+            path: "a", lineStart: 1, lineEnd: 1, severity: .info,
+            title: "Nit", body: "rename this"
+        )
+        let worker = makeWorker(
+            provider: StubProvider(
+                verdict: .approve, summary: "s", cost: 0.02,
+                annotations: [warning, nit]
+            ),
+            config: config(share: .warningsAndBlockers)
+        )
+        worker.enqueue(makePR())
+        try await waitForStaged(worker)
+
+        let staged = try XCTUnwrap(worker.pendingAutoActions["PR_1"])
+        XCTAssertEqual(staged.comments.count, 1, "the info annotation is below the floor")
+        XCTAssertTrue(staged.body.contains("1 finding"), "got body: \(staged.body)")
+    }
+
     private func enabledApprove() -> AutoApproveConfig {
         AutoApproveConfig(enabled: true, minConfidence: 0.85, maxAdditions: 0)
     }
 
     private func config(
         approve: AutoApproveConfig = .off,
-        deny: AutoDenyConfig = .off
+        deny: AutoDenyConfig = .off,
+        share: ShareFindingsPolicy = .off
     ) -> RepoConfig {
         var cfg = RepoConfig.default
         cfg.autoApprove = approve
         cfg.autoDeny = deny
+        cfg.shareFindings = share
         return cfg
     }
 
