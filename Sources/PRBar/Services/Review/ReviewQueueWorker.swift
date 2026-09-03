@@ -1034,7 +1034,7 @@ final class ReviewQueueWorker {
                 pr: pr,
                 review: review,
                 action: .comment,
-                body: shareBody(review, annotationCount: shared.count),
+                body: shareBody(review),
                 comments: inlineComments(annotations: shared, diffText: diffText),
                 stagedAt: Date()
             )
@@ -1175,11 +1175,15 @@ final class ReviewQueueWorker {
     /// this lands as a COMMENT review while the human's verdict is still
     /// outstanding, and an author who reads it as "I've been reviewed"
     /// will sit waiting on a merge that nobody has approved.
-    private func shareBody(_ review: AggregatedReview, annotationCount: Int) -> String {
-        let noun = annotationCount == 1 ? "finding" : "findings"
-        let header = "**Automated pre-review from PRBar** — \(annotationCount) \(noun) "
-            + "posted ahead of the human review so you can start on them. "
-            + "This is not a review verdict; the requested review is still pending."
+    ///
+    /// No finding count in the header on purpose: `InlineCommentMapper`
+    /// drops annotations it can't anchor to a line on the new side of the
+    /// diff, so any count stated here can disagree with what the author
+    /// actually sees.
+    private func shareBody(_ review: AggregatedReview) -> String {
+        let header = "**Automated pre-review from PRBar**, posted ahead of the human "
+            + "review so you can get a head start. This is not a review verdict — "
+            + "the requested review is still pending."
         let summary = review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? header : header + "\n\n---\n\n" + summary
     }

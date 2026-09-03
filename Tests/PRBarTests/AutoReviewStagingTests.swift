@@ -232,7 +232,6 @@ final class AutoReviewStagingTests: XCTestCase {
 
         let staged = try XCTUnwrap(worker.pendingAutoActions["PR_1"])
         XCTAssertEqual(staged.comments.count, 1, "the info annotation is below the floor")
-        XCTAssertTrue(staged.body.contains("1 finding"), "got body: \(staged.body)")
     }
 
     private func enabledApprove() -> AutoApproveConfig {

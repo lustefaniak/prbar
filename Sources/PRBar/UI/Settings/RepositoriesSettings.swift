@@ -127,19 +127,22 @@ struct RepositoriesSettings: View {
         }
     }
 
+    /// Every policy that can post to GitHub on the user's behalf, so a
+    /// rule that will speak on a PR is never a blank row — sharing counts
+    /// even though it casts no verdict.
     private func autoReviewLabel(_ config: RepoConfig) -> String? {
         let effective = config.resolved(with: store.defaults)
-        let approves = effective.autoApprove.enabled
-        let denies = effective.autoDeny.action != .off
+        var parts: [String] = []
+        if effective.autoApprove.enabled { parts.append("auto-approve") }
+        if effective.autoDeny.action != .off { parts.append("auto-deny") }
+        if effective.shareFindings != .off { parts.append("share findings") }
+        guard !parts.isEmpty else { return nil }
         // Say where it comes from: an inherited policy is easy to miss
         // when the rule itself looks empty.
-        let suffix = (config.autoApprove == nil && config.autoDeny == nil) ? " (inherited)" : ""
-        switch (approves, denies) {
-        case (true, true):  return "auto-approve + deny" + suffix
-        case (true, false): return "auto-approve" + suffix
-        case (false, true): return "auto-deny" + suffix
-        case (false, false): return nil
-        }
+        let inherited = config.autoApprove == nil
+            && config.autoDeny == nil
+            && config.shareFindings == nil
+        return parts.joined(separator: " + ") + (inherited ? " (inherited)" : "")
     }
 
     // MARK: - detail

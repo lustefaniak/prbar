@@ -147,6 +147,23 @@ final class ReviewDefaultsTests: XCTestCase {
         let defaults = ReviewDefaults()
         XCTAssertFalse(defaults.autoApprove.enabled)
         XCTAssertEqual(defaults.autoDeny.action, .off)
+        XCTAssertEqual(defaults.shareFindings, .off,
+                       "sharing posts to GitHub too — it stays opt-in like the gates")
+    }
+
+    func testShareFindingsInherits() {
+        var defaults = ReviewDefaults()
+        defaults.shareFindings = .warningsAndBlockers
+
+        XCTAssertEqual(
+            RepoConfig(repoGlobs: ["acme/x"]).resolved(with: defaults).shareFindings,
+            .warningsAndBlockers
+        )
+
+        var opted = RepoConfig(repoGlobs: ["acme/y"])
+        opted.shareFindings = .off
+        XCTAssertEqual(opted.resolved(with: defaults).shareFindings, .off,
+                       "an explicit .off must not fall back to an armed global policy")
     }
 
     // MARK: - Codable
@@ -169,6 +186,7 @@ final class ReviewDefaultsTests: XCTestCase {
         defaults.toolMode = .minimal
         defaults.excludeTitlePatterns = ["release/*"]
         defaults.autoDeny = AutoDenyConfig(action: .flagOnly, minConfidence: 0.7)
+        defaults.shareFindings = .allFindings
 
         let data = try JSONEncoder().encode(defaults)
         XCTAssertEqual(try JSONDecoder().decode(ReviewDefaults.self, from: data), defaults)
