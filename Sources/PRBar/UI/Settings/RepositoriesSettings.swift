@@ -118,8 +118,14 @@ struct RepositoriesSettings: View {
                 } else if config.excluded {
                     Text("excluded").font(.caption2).foregroundStyle(.orange)
                 } else if let label = autoReviewLabel(config) {
+                    // Wraps rather than truncates: with three policies armed
+                    // the label outgrows the sidebar, and an ellipsis here
+                    // hides the very thing the label exists to say — that
+                    // this rule will post to GitHub on its own.
                     Text(label)
                         .font(.caption2)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                         .foregroundStyle(config.resolved(with: store.defaults).autoApprove.enabled ? .green : .orange)
                 }
             }
