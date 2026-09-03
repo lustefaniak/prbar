@@ -59,17 +59,18 @@ struct ToolAvailabilityView: View {
     /// A missing AI provider the user has configured away from: keep the
     /// row for completeness but drop the red "not found" warning.
     private func isSuppressed(_ result: ToolProbeResult) -> Bool {
-        guard !result.available, let provider = ProviderID(rawValue: result.tool) else {
-            return false
-        }
-        return !relevantProviders.contains(provider)
+        ProviderRelevance.isSuppressed(
+            toolName: result.tool,
+            available: result.available,
+            relevantProviders: relevantProviders
+        )
     }
 
     private var relevantProviders: Set<ProviderID> {
         ProviderRelevance.relevantProviders(
             suppressionEnabled: suppressUnusedProviderWarnings,
             defaultProviderRaw: defaultProviderRaw,
-            repoOverrides: repoConfigs.userConfigs.compactMap(\.providerOverride)
+            repoOverrides: repoConfigs.providerOverrides
         )
     }
 
