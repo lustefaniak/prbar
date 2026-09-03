@@ -51,6 +51,35 @@ final class AutoReviewPolicyTests: XCTestCase {
         XCTAssertEqual(result, .share)
     }
 
+    /// The shape that actually dominates in practice: the AI returns
+    /// `.comment` ("approve with notes"), which skips down a *different*
+    /// branch than `.approve` — the `allowApproveWithNotes` guard, before
+    /// any confidence or size gate is consulted. Sharing has to survive
+    /// that branch too, or the common case silently never fires.
+    func testShareFiresOnTheApproveWithNotesSkip() {
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            review: makeReview(verdict: .comment, confidence: 0.75, annotations: [warning]),
+            config: config(share: .warningsAndBlockers)
+        )
+        XCTAssertEqual(result, .share)
+    }
+
+    /// A negative verdict that the deny side declined to act on (deny off)
+    /// still has findings worth sending.
+    func testShareFiresWhenDenyIsOff() {
+        let blocker = DiffAnnotation(
+            path: "a", lineStart: 1, lineEnd: 1, severity: .blocker,
+            title: "Boom", body: "this crashes"
+        )
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            review: makeReview(verdict: .requestChanges, confidence: 0.9, annotations: [blocker]),
+            config: config(deny: .off, share: .warningsAndBlockers)
+        )
+        XCTAssertEqual(result, .share)
+    }
+
     func testShareRespectsItsSeverityFloor() {
         let review = makeReview(verdict: .approve, confidence: 0.10, annotations: [nit])
         guard case .skip = evaluate(
