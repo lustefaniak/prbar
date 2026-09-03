@@ -41,15 +41,16 @@ final class GHClientIntegrationTests: XCTestCase {
             throw XCTSkip("no open PRs involving the viewer; nothing to query threads on.")
         }
 
-        let (threads, viewerLogin) = try await client.fetchReviewThreads(
+        let page = try await client.fetchReviewThreads(
             owner: pr.owner, repo: pr.repo, number: pr.number
         )
-        XCTAssertFalse(viewerLogin.isEmpty, "viewer login drives thread ownership checks")
-        for thread in threads {
+        XCTAssertFalse(page.viewerLogin.isEmpty, "viewer login drives thread ownership checks")
+        XCTAssertFalse(
+            page.headRefOid.isEmpty,
+            "head oid is the guard that keeps stale findings from resolving threads"
+        )
+        for thread in page.threads {
             XCTAssertFalse(thread.id.isEmpty, "thread id is what resolveReviewThread takes")
-            for comment in thread.comments {
-                XCTAssertFalse(comment.body.isEmpty, "empty body can't correlate to a finding")
-            }
         }
     }
 

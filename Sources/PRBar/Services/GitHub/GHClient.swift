@@ -157,50 +157,65 @@ actor GHClient {
         }
     }
 
-    /// Every review thread on a PR, plus the viewer's login (needed to tell
-    /// PRBar's own threads from everyone else's).
+    /// Every review thread on a PR, plus the viewer's login and the head
+    /// commit the threads were read against.
     ///
     /// Fetched on demand rather than folded into the inbox query — see
-    /// `GraphQLQueries.reviewThreads`.
+    /// `GraphQLQueries.reviewThreads`. Pages until GitHub stops handing
+    /// back a cursor: a truncated list would silently leave threads
+    /// unconsidered on exactly the long-running PRs that accumulate them.
     func fetchReviewThreads(
         owner: String,
         repo: String,
         number: Int
-    ) async throws -> (threads: [ReviewThread], viewerLogin: String) {
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: [
+    ) async throws -> ReviewThreadPage {
+        var threads: [ReviewThread] = []
+        var viewerLogin = ""
+        var headRefOid = ""
+        var cursor: String?
+        // Bounded so a cursor GitHub never terminates can't spin forever.
+        for _ in 0..<20 {
+            var args = [
                 "api", "graphql",
                 "-F", "owner=\(owner)",
                 "-F", "name=\(repo)",
                 "-F", "number=\(number)",
-                "-f", "query=\(GraphQLQueries.reviewThreads)",
             ]
-        )
-        guard result.succeeded else {
-            throw GHError.execFailed(
-                stderr: result.stderrString ?? "",
-                exitCode: result.exitCode
-            )
+            if let cursor { args += ["-F", "after=\(cursor)"] }
+            args += ["-f", "query=\(GraphQLQueries.reviewThreads)"]
+            let result = try await ProcessRunner.run(executable: executablePath, args: args)
+            guard result.succeeded else {
+                throw GHError.execFailed(
+                    stderr: result.stderrString ?? "",
+                    exitCode: result.exitCode
+                )
+            }
+            let response: ReviewThreadsResponse
+            do {
+                response = try JSONDecoder().decode(ReviewThreadsResponse.self, from: result.stdout)
+            } catch {
+                throw GHError.decodingFailed(String(describing: error))
+            }
+            let pr = response.data.repository.pullRequest
+            viewerLogin = response.data.viewer.login
+            headRefOid = pr.headRefOid
+            threads += pr.reviewThreads.nodes.map { node in
+                ReviewThread(
+                    id: node.id,
+                    isResolved: node.isResolved,
+                    isOutdated: node.isOutdated,
+                    path: node.path ?? "",
+                    comments: node.comments.nodes.map {
+                        ReviewThread.Comment(authorLogin: $0.author?.login ?? "", body: $0.body)
+                    }
+                )
+            }
+            guard pr.reviewThreads.pageInfo.hasNextPage,
+                  let next = pr.reviewThreads.pageInfo.endCursor
+            else { break }
+            cursor = next
         }
-        let response: ReviewThreadsResponse
-        do {
-            response = try JSONDecoder().decode(ReviewThreadsResponse.self, from: result.stdout)
-        } catch {
-            throw GHError.decodingFailed(String(describing: error))
-        }
-        let threads = response.data.repository.pullRequest.reviewThreads.nodes.map { node in
-            ReviewThread(
-                id: node.id,
-                isResolved: node.isResolved,
-                isOutdated: node.isOutdated,
-                path: node.path ?? "",
-                comments: node.comments.nodes.map {
-                    ReviewThread.Comment(authorLogin: $0.author?.login ?? "", body: $0.body)
-                }
-            )
-        }
-        return (threads, response.data.viewer.login)
+        return ReviewThreadPage(threads: threads, viewerLogin: viewerLogin, headRefOid: headRefOid)
     }
 
     /// Mark a review thread resolved. Idempotent on GitHub's side —
@@ -231,8 +246,18 @@ actor GHClient {
         }
         struct Viewer: Decodable { let login: String }
         struct Repository: Decodable { let pullRequest: PullRequest }
-        struct PullRequest: Decodable { let reviewThreads: ThreadList }
-        struct ThreadList: Decodable { let nodes: [ThreadNode] }
+        struct PullRequest: Decodable {
+            let headRefOid: String
+            let reviewThreads: ThreadList
+        }
+        struct ThreadList: Decodable {
+            let pageInfo: PageInfo
+            let nodes: [ThreadNode]
+        }
+        struct PageInfo: Decodable {
+            let hasNextPage: Bool
+            let endCursor: String?
+        }
         struct ThreadNode: Decodable {
             let id: String
             let isResolved: Bool
