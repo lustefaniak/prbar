@@ -224,6 +224,73 @@ final class ActionQueueTests: XCTestCase {
 
     // MARK: - helpers
 
+    // MARK: - share re-request
+
+    /// GitHub drops the viewer from `reviewRequests` on *any* submitted
+    /// review, COMMENT included. Without restoring it, a share silently
+    /// ends the PR's life in PRBar: role flips to `.other`, it leaves the
+    /// inbox, and no push from the author ever triggers a retriage.
+    func testShareReRequestsTheReviewItJustConsumed() async throws {
+        var pr = makePR(nodeId: "PR_a", number: 7, title: "shared")
+        pr.viewerLogin = "octocat"
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.reRequestReviewerExecutor = { pr, login in
+            await rec.record("\(pr.owner)/\(pr.repo)#\(pr.number) -> \(login)")
+        }
+
+        q.enqueue(
+            pr, kind: .review(kind: .comment, body: "findings", comments: []),
+            source: .sharedFindings
+        )
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["o/r#7 -> octocat"])
+    }
+
+    /// An auto-approve or auto-deny *is* the user's verdict, so GitHub
+    /// clearing the request is the correct outcome there — re-requesting
+    /// would put the PR back in the inbox after it was deliberately decided.
+    func testNonShareReviewsDoNotReRequest() async throws {
+        var pr = makePR(nodeId: "PR_a", number: 7, title: "approved")
+        pr.viewerLogin = "octocat"
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.reRequestReviewerExecutor = { pr, login in
+            await rec.record("\(pr.owner)/\(pr.repo)#\(pr.number) -> \(login)")
+        }
+
+        q.enqueue(
+            pr, kind: .review(kind: .approve, body: "", comments: []),
+            source: .automated
+        )
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let calls = await rec.calls
+        XCTAssertTrue(calls.isEmpty, "got: \(calls)")
+    }
+
+    /// The findings already reached the author; a re-request that fails is
+    /// a lost retriage, not a lost review. It must not fail the action.
+    func testShareSucceedsEvenIfReRequestFails() async throws {
+        var pr = makePR(nodeId: "PR_a", number: 7, title: "shared")
+        pr.viewerLogin = "octocat"
+
+        let q = ActionQueue()
+        q.reRequestReviewerExecutor = { _, _ in throw TestError.boom }
+
+        q.enqueue(
+            pr, kind: .review(kind: .comment, body: "findings", comments: []),
+            source: .sharedFindings
+        )
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        XCTAssertNil(q.state(for: "PR_a"), "the share itself succeeded")
+    }
+
     private func makePR(
         nodeId: String,
         number: Int,

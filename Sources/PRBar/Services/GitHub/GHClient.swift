@@ -157,6 +157,42 @@ actor GHClient {
         }
     }
 
+    /// Re-add `login` to a PR's requested reviewers.
+    ///
+    /// Exists because GitHub silently drops you from `reviewRequests` the
+    /// moment you submit *any* review — COMMENT included, and with no
+    /// `review_request_removed` timeline event to show for it. A shared-
+    /// findings post is therefore indistinguishable, to GitHub, from you
+    /// having reviewed the PR: it leaves your requested-reviewer list, drops
+    /// out of PRBar's inbox (role flips to `.other`), and never gets
+    /// retriaged when the author pushes a fix. Re-requesting immediately
+    /// after the post restores the state the user actually intended.
+    ///
+    /// Self-re-request is permitted by the API after a COMMENT review
+    /// (verified against a live PR).
+    func requestReviewer(
+        owner: String,
+        repo: String,
+        number: Int,
+        login: String
+    ) async throws {
+        guard !login.isEmpty else { return }
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: [
+                "api", "--method", "POST",
+                "repos/\(owner)/\(repo)/pulls/\(number)/requested_reviewers",
+                "-f", "reviewers[]=\(login)",
+            ]
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+    }
+
     /// One inline review comment, anchored to a span in the PR's diff
     /// against the PR's head commit. `line` is the last line of the span
     /// (the GitHub API places the comment there); `startLine` is set for

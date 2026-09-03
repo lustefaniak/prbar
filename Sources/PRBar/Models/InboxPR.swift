@@ -123,6 +123,13 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     /// no discussion. Defaulted for the same reasons as `humanReviews`.
     var issueComments: [PRCommentSummary] = []
 
+    /// Login of the authenticated user this PR was fetched for. Carried on
+    /// the PR because a write may need it long after the fetch — notably
+    /// re-requesting review after a share post, which has to name the very
+    /// reviewer GitHub just dropped. Defaulted so old cached payloads and
+    /// the test `makePR` helpers don't have to supply it.
+    var viewerLogin: String = ""
+
     /// Merge methods the repo allows (driven by repo settings + branch
     /// protection's requiresLinearHistory, both applied server-side by
     /// GitHub). Use this to filter the merge menu so we don't offer
@@ -238,7 +245,7 @@ extension InboxPR {
         case totalAdditions, totalDeletions, changedFiles
         case hasAutoMerge, autoMergeEnabledBy, autoMergeMethod, allCheckSummaries
         case allowedMergeMethods, autoMergeAllowed, deleteBranchOnMerge
-        case humanReviews, issueComments
+        case humanReviews, issueComments, viewerLogin
     }
 
     /// Explicit decode so payloads cached before `humanReviews` /
@@ -279,9 +286,11 @@ extension InboxPR {
         self.deleteBranchOnMerge = try c.decode(Bool.self, forKey: .deleteBranchOnMerge)
         self.humanReviews = try c.decodeIfPresent([PRReviewSummary].self, forKey: .humanReviews) ?? []
         self.issueComments = try c.decodeIfPresent([PRCommentSummary].self, forKey: .issueComments) ?? []
+        self.viewerLogin = try c.decodeIfPresent(String.self, forKey: .viewerLogin) ?? ""
     }
 
     init(node: InboxResponse.PullRequestNode, viewerLogin: String) {
+        self.viewerLogin = viewerLogin
         self.nodeId = node.id
 
         let parts = node.repository.nameWithOwner.split(separator: "/", maxSplits: 1)

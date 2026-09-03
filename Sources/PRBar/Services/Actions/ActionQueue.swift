@@ -151,6 +151,11 @@ final class ActionQueue {
     @ObservationIgnored
     var disableAutoMergeExecutor: @Sendable (_ pr: InboxPR) async throws -> Void = { _ in }
 
+    /// Re-adds a login to a PR's requested reviewers. Injected so tests
+    /// don't shell out. Only invoked on the `.sharedFindings` path.
+    @ObservationIgnored
+    var reRequestReviewerExecutor: @Sendable (_ pr: InboxPR, _ login: String) async throws -> Void = { _, _ in }
+
     /// Action history sink — one entry per attempt (success and failure).
     @ObservationIgnored
     weak var actionLog: ActionLogStore?
@@ -200,6 +205,12 @@ final class ActionQueue {
             let c = try client ?? GHClient()
             try await c.disableAutoMerge(
                 owner: pr.owner, repo: pr.repo, number: pr.number
+            )
+        }
+        q.reRequestReviewerExecutor = { pr, login in
+            let c = try client ?? GHClient()
+            try await c.requestReviewer(
+                owner: pr.owner, repo: pr.repo, number: pr.number, login: login
             )
         }
         return q
@@ -295,6 +306,7 @@ final class ActionQueue {
             case .review(let kind, let body, let comments):
                 try await reviewExecutor(pr, kind, body, comments)
                 recordSuccess(action)
+                await reRequestReviewAfterShare(action)
             case .merge(let method):
                 try await mergeExecutor(pr, method)
                 recordSuccess(action)
@@ -315,6 +327,32 @@ final class ActionQueue {
             entries[nodeId]?.state = .failed(msg)
             recordFailure(action, message: msg)
             PRBarLog.actions.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(msg, privacy: .public)")
+        }
+    }
+
+    /// Restore the review request that the share post just consumed.
+    ///
+    /// Only for `.sharedFindings`: an auto-approve or auto-deny *is* the
+    /// user's verdict, so GitHub clearing the request is correct there. A
+    /// share deliberately casts no verdict, so leaving the request cleared
+    /// would drop the PR out of the inbox and silently end retriage — the
+    /// opposite of the feature's intent.
+    ///
+    /// Best-effort: a failure here is logged, never surfaced as a failed
+    /// action. The findings did reach the author, which is the part the
+    /// user cares about; a missing re-request costs a retriage, not data.
+    private func reRequestReviewAfterShare(_ action: GHAction) async {
+        guard action.source == .sharedFindings else { return }
+        let pr = action.pr
+        guard !pr.viewerLogin.isEmpty else {
+            PRBarLog.actions.error("re-request skipped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=no-viewer-login")
+            return
+        }
+        do {
+            try await reRequestReviewerExecutor(pr, pr.viewerLogin)
+            PRBarLog.actions.notice("re-requested review pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) login=\(pr.viewerLogin, privacy: .public)")
+        } catch {
+            PRBarLog.actions.error("re-request failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
     }
 
