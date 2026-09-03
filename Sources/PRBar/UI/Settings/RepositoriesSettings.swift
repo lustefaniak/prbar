@@ -136,12 +136,14 @@ struct RepositoriesSettings: View {
         if effective.autoApprove.enabled { parts.append("auto-approve") }
         if effective.autoDeny.action != .off { parts.append("auto-deny") }
         if effective.shareFindings != .off { parts.append("share findings") }
+        if effective.resolveThreads.enabled { parts.append("resolve threads") }
         guard !parts.isEmpty else { return nil }
         // Say where it comes from: an inherited policy is easy to miss
         // when the rule itself looks empty.
         let inherited = config.autoApprove == nil
             && config.autoDeny == nil
             && config.shareFindings == nil
+            && config.resolveThreads == nil
         return parts.joined(separator: " + ") + (inherited ? " (inherited)" : "")
     }
 
@@ -473,6 +475,24 @@ struct RepoConfigEditor: View {
                             inherited: defaults.shareFindings,
                             describe: { $0.displayName.lowercased() }) { binding in
                     ReviewSettingControls.shareFindings(binding)
+                }
+                inheritable("Share confidence floor", \.shareMinConfidence,
+                            inherited: defaults.shareMinConfidence,
+                            describe: { String(format: "%.2f", $0) }) { binding in
+                    ReviewSettingControls.shareMinConfidence(binding)
+                }
+                inheritable("Share inline comment cap", \.shareMaxComments,
+                            inherited: defaults.shareMaxComments,
+                            describe: { $0 == 0 ? "unlimited" : "\($0)" }) { binding in
+                    ReviewSettingControls.shareMaxComments(binding)
+                }
+            }
+
+            section("Resolve addressed threads") {
+                inheritable("Thread resolution policy", \.resolveThreads,
+                            inherited: defaults.resolveThreads,
+                            describe: { $0.enabled ? "enabled" : "off" }) { binding in
+                    ReviewSettingControls.resolveThreads(binding)
                 }
             }
         }

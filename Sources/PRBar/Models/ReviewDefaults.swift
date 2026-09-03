@@ -86,6 +86,26 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
     /// on broadly.
     var shareFindings: ShareFindingsPolicy = .off
 
+    /// Confidence floor for a share. Deliberately far below the 0.85 the
+    /// two gates use: sharing exists *for* the reviews that miss the
+    /// auto-approve floor, so reusing that number would switch the feature
+    /// off. 0.5 draws the line at "the model is more confident than not" —
+    /// enough to keep a run the model itself barely believes from landing
+    /// on the author's PR, without gating the case the feature is for.
+    var shareMinConfidence: Double = 0.5
+
+    /// Cap on inline comments one share posts. 0 = unlimited. Neither the
+    /// severity floor nor any diff-size cap bounds this: a large PR that
+    /// legitimately earns 200 findings would post 200 inline comments in a
+    /// single review, which reads as a bot flooding the PR no matter how
+    /// good each individual comment is. The summary still carries the rest.
+    var shareMaxComments: Int = 20
+
+    /// Whether PRBar may close the review threads it opened once a later
+    /// triage stops reporting the finding. Ships off — see
+    /// `ResolveThreadsConfig`.
+    var resolveThreads: ResolveThreadsConfig = .off
+
     static let storageKey = "reviewDefaults"
 
     init() {}
@@ -102,6 +122,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         case reviewDrafts, skipAIIfReviewedByOthers, excludeTitlePatterns
         case notifyPolicy
         case autoApprove, autoDeny, shareFindings
+        case shareMinConfidence, shareMaxComments, resolveThreads
     }
 
     init(from decoder: Decoder) throws {
@@ -130,6 +151,9 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         self.autoApprove = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
         self.autoDeny = (try? c.decode(AutoDenyConfig.self, forKey: .autoDeny)) ?? d.autoDeny
         self.shareFindings = (try? c.decode(ShareFindingsPolicy.self, forKey: .shareFindings)) ?? d.shareFindings
+        self.shareMinConfidence = (try? c.decode(Double.self, forKey: .shareMinConfidence)) ?? d.shareMinConfidence
+        self.shareMaxComments = (try? c.decode(Int.self, forKey: .shareMaxComments)) ?? d.shareMaxComments
+        self.resolveThreads = (try? c.decode(ResolveThreadsConfig.self, forKey: .resolveThreads)) ?? d.resolveThreads
     }
 }
 
@@ -218,6 +242,9 @@ struct ResolvedRepoConfig: Sendable, Hashable {
     var autoApprove: AutoApproveConfig { rule.autoApprove ?? defaults.autoApprove }
     var autoDeny: AutoDenyConfig { rule.autoDeny ?? defaults.autoDeny }
     var shareFindings: ShareFindingsPolicy { rule.shareFindings ?? defaults.shareFindings }
+    var shareMinConfidence: Double { rule.shareMinConfidence ?? defaults.shareMinConfidence }
+    var shareMaxComments: Int { rule.shareMaxComments ?? defaults.shareMaxComments }
+    var resolveThreads: ResolveThreadsConfig { rule.resolveThreads ?? defaults.resolveThreads }
 
     func matches(nameWithOwner: String) -> Bool { rule.matches(nameWithOwner: nameWithOwner) }
 }

@@ -149,6 +149,8 @@ final class ReviewDefaultsTests: XCTestCase {
         XCTAssertEqual(defaults.autoDeny.action, .off)
         XCTAssertEqual(defaults.shareFindings, .off,
                        "sharing posts to GitHub too — it stays opt-in like the gates")
+        XCTAssertFalse(defaults.resolveThreads.enabled,
+                       "resolving collapses a thread for everyone on the PR — never inherited silently")
     }
 
     func testShareFindingsInherits() {
@@ -187,6 +189,9 @@ final class ReviewDefaultsTests: XCTestCase {
         defaults.excludeTitlePatterns = ["release/*"]
         defaults.autoDeny = AutoDenyConfig(action: .flagOnly, minConfidence: 0.7)
         defaults.shareFindings = .allFindings
+        defaults.shareMinConfidence = 0.65
+        defaults.shareMaxComments = 7
+        defaults.resolveThreads = ResolveThreadsConfig(enabled: true, minConfidence: 0.9)
 
         let data = try JSONEncoder().encode(defaults)
         XCTAssertEqual(try JSONDecoder().decode(ReviewDefaults.self, from: data), defaults)
