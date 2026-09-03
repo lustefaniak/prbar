@@ -1118,12 +1118,19 @@ final class ReviewQueueWorker {
                 PRBarLog.triage.notice("share capped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) found=\(shared.count, privacy: .public) cap=\(cap, privacy: .public)")
                 shared = Array(shared.prefix(cap))
             }
+            let comments = inlineComments(annotations: shared, diffText: diffText)
             let staged = StagedAutoReview(
                 pr: pr,
                 review: review,
                 action: .comment,
-                body: shareBody(review),
-                comments: inlineComments(annotations: shared, diffText: diffText),
+                // Findings that landed inline are the whole review — a body
+                // on top of them can only restate the diff back to the
+                // author. GitHub accepts an empty body on a COMMENT review
+                // that carries inline comments; it rejects one that carries
+                // none, so the summary stays as the body in that case, where
+                // dropping it would post nothing at all.
+                body: comments.isEmpty ? shareBody(review) : "",
+                comments: comments,
                 stagedAt: Date(),
                 source: .sharedFindings
             )
