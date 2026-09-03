@@ -202,14 +202,37 @@ final class AutoReviewStagingTests: XCTestCase {
         let staged = try XCTUnwrap(worker.pendingAutoActions["PR_1"])
         XCTAssertEqual(staged.action, .comment, "sharing must never cast a verdict")
         XCTAssertEqual(
-            staged.body, "one thing to fix",
-            "a shared review reads like any other PRBar review — no banner, no disclaimer"
+            staged.body, "",
+            "the inline findings are the review — a body on top only restates the diff"
         )
         XCTAssertEqual(staged.comments.count, 1)
         XCTAssertEqual(
             staged.source, .sharedFindings,
             "the source is the only thing distinguishing this from an auto-deny comment"
         )
+    }
+
+    /// A share whose findings all fail to anchor would post nothing at
+    /// all if the body were dropped too — GitHub rejects a COMMENT review
+    /// with an empty body and no comments.
+    func testShareKeepsTheSummaryAsBodyWhenNothingAnchors() async throws {
+        let warning = DiffAnnotation(
+            path: "not-in-the-diff", lineStart: 1, lineEnd: 1, severity: .warning,
+            title: "Unchecked nil", body: "this can crash"
+        )
+        let worker = makeWorker(
+            provider: StubProvider(
+                verdict: .approve, summary: "one thing to fix", cost: 0.02,
+                annotations: [warning]
+            ),
+            config: config(share: .warningsAndBlockers)
+        )
+        worker.enqueue(makePR())
+        try await waitForStaged(worker)
+
+        let staged = try XCTUnwrap(worker.pendingAutoActions["PR_1"])
+        XCTAssertTrue(staged.comments.isEmpty)
+        XCTAssertEqual(staged.body, "one thing to fix")
     }
 
     /// A share and an auto-deny comment post the identical GitHub event

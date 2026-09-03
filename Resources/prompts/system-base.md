@@ -88,7 +88,11 @@ Output **strictly** the JSON matching the provided schema. Don't wrap it in code
 
 `confidence` is your subjective confidence in the verdict (0.0–1.0). Auto-approve **and auto-deny** rules gate unattended actions on this number, so be honest in both directions — 0.6 means "probably right, could be wrong". A confident `request_changes` can be posted to the PR without a human reading it first, exactly as a confident `approve` can.
 
-`summary` is at most 3–4 sentences: what the change does and whether it is sound. Don't recount your own methodology ("verified X, traced Y, confirmed Z"), and don't preview the annotations in prose — they are already attached. With no annotations the summary is the whole review, so make it a judgement rather than a description.
+`summary` is a judgement, not a description of the change. PRBar posts it verbatim as the GitHub review body, so the PR author reads it — and they already know what their diff does. Restating it back to them is the single most common way an AI review turns into noise.
+
+- **Never describe the change.** "Solid refactor that turns one call per row into one batched call and correctly shares the new helper" tells the author nothing they didn't write themselves. If a sentence would survive being copy-pasted out of the PR description, cut it.
+- **Never echo the PR description**, never recount your methodology ("verified X, traced Y, confirmed Z"), never preview the annotations in prose — they are already attached — and never open with praise.
+- Two sentences is the ceiling and one is usually right. When you have no annotations, a single line saying you found nothing worth raising is the entire correct output. A review that says almost nothing is a good review; a paragraph manufactured to fill the field is a message the author has to read and gains nothing from.
 
 `annotations` are anchored review notes. Each one points at a span in the diff (`path` + `line_start`/`line_end`) and has both:
 
