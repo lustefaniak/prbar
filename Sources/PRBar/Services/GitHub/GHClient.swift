@@ -157,6 +157,98 @@ actor GHClient {
         }
     }
 
+    /// Every review thread on a PR, plus the viewer's login (needed to tell
+    /// PRBar's own threads from everyone else's).
+    ///
+    /// Fetched on demand rather than folded into the inbox query — see
+    /// `GraphQLQueries.reviewThreads`.
+    func fetchReviewThreads(
+        owner: String,
+        repo: String,
+        number: Int
+    ) async throws -> (threads: [ReviewThread], viewerLogin: String) {
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: [
+                "api", "graphql",
+                "-F", "owner=\(owner)",
+                "-F", "name=\(repo)",
+                "-F", "number=\(number)",
+                "-f", "query=\(GraphQLQueries.reviewThreads)",
+            ]
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+        let response: ReviewThreadsResponse
+        do {
+            response = try JSONDecoder().decode(ReviewThreadsResponse.self, from: result.stdout)
+        } catch {
+            throw GHError.decodingFailed(String(describing: error))
+        }
+        let threads = response.data.repository.pullRequest.reviewThreads.nodes.map { node in
+            ReviewThread(
+                id: node.id,
+                isResolved: node.isResolved,
+                isOutdated: node.isOutdated,
+                path: node.path ?? "",
+                comments: node.comments.nodes.map {
+                    ReviewThread.Comment(authorLogin: $0.author?.login ?? "", body: $0.body)
+                }
+            )
+        }
+        return (threads, response.data.viewer.login)
+    }
+
+    /// Mark a review thread resolved. Idempotent on GitHub's side —
+    /// resolving an already-resolved thread is not an error.
+    func resolveReviewThread(threadId: String) async throws {
+        let mutation = """
+        mutation Resolve($id: ID!) {
+          resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
+        }
+        """
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: ["api", "graphql", "-F", "id=\(threadId)", "-f", "query=\(mutation)"]
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+    }
+
+    private struct ReviewThreadsResponse: Decodable {
+        let data: DataField
+        struct DataField: Decodable {
+            let viewer: Viewer
+            let repository: Repository
+        }
+        struct Viewer: Decodable { let login: String }
+        struct Repository: Decodable { let pullRequest: PullRequest }
+        struct PullRequest: Decodable { let reviewThreads: ThreadList }
+        struct ThreadList: Decodable { let nodes: [ThreadNode] }
+        struct ThreadNode: Decodable {
+            let id: String
+            let isResolved: Bool
+            let isOutdated: Bool
+            /// Null when the viewer can't see the file the thread anchors to.
+            let path: String?
+            let comments: CommentList
+        }
+        struct CommentList: Decodable { let nodes: [CommentNode] }
+        struct CommentNode: Decodable {
+            let author: Author?
+            let body: String
+        }
+        struct Author: Decodable { let login: String }
+    }
+
     /// Re-add `login` to a PR's requested reviewers.
     ///
     /// Exists because GitHub silently drops you from `reviewRequests` the

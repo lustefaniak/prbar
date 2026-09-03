@@ -281,6 +281,15 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var checkoutManager: RepoCheckoutManager?
 
+    /// Fetches a PR's review threads. Injected so tests don't shell out;
+    /// nil disables the resolve-on-triage path entirely.
+    @ObservationIgnored
+    var reviewThreadFetcher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> (threads: [ReviewThread], viewerLogin: String))?
+
+    /// Marks one review thread resolved. Paired with `reviewThreadFetcher`.
+    @ObservationIgnored
+    var reviewThreadResolver: (@Sendable (_ threadId: String) async throws -> Void)?
+
     /// Reads commit history for `RiskBrief`'s churn term. Injected so tests
     /// exercise the brief without a real checkout; returning nil is the
     /// normal degraded path, not an error.
@@ -457,7 +466,7 @@ final class ReviewQueueWorker {
     static func live() -> ReviewQueueWorker {
         let client = try? GHClient()
         let checkout = RepoCheckoutManager()
-        return ReviewQueueWorker(
+        let worker = ReviewQueueWorker(
             diffFetcher: { owner, repo, number in
                 let c = try client ?? GHClient()
                 return try await c.fetchDiff(owner: owner, repo: repo, number: number)
@@ -466,6 +475,15 @@ final class ReviewQueueWorker {
             cache: ReviewCache.live(),
             failureLogStore: FailureLogStore.live()
         )
+        worker.reviewThreadFetcher = { owner, repo, number in
+            let c = try client ?? GHClient()
+            return try await c.fetchReviewThreads(owner: owner, repo: repo, number: number)
+        }
+        worker.reviewThreadResolver = { threadId in
+            let c = try client ?? GHClient()
+            try await c.resolveReviewThread(threadId: threadId)
+        }
+        return worker
         // reviewLog is wired separately by AppDelegate so all stores
         // share one ModelContainer (sharing the container keeps SwiftData
         // notifications consistent across @Query consumers).
@@ -928,6 +946,7 @@ final class ReviewQueueWorker {
                 pr: pr, review: aggregated, config: config,
                 providerId: chosenProviderId, diffText: diffText
             )
+            await resolveAddressedThreads(pr: pr, review: aggregated)
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
@@ -978,6 +997,39 @@ final class ReviewQueueWorker {
             .appendingPathComponent("prbar-review-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         return tmp
+    }
+
+    /// Close the review threads this triage considers dealt with.
+    ///
+    /// Runs after every completed triage, not just after a share: threads
+    /// PRBar opened via auto-deny inline comments deserve the same
+    /// treatment, and the gate in `ReviewThreadResolver` is what decides
+    /// eligibility, not the caller.
+    ///
+    /// Best-effort throughout. Failing to resolve a thread leaves a stale
+    /// open conversation, which is the status quo without this path — it
+    /// must never mark the triage itself failed.
+    private func resolveAddressedThreads(pr: InboxPR, review: AggregatedReview) async {
+        guard let fetcher = reviewThreadFetcher, let resolver = reviewThreadResolver else { return }
+        do {
+            let (threads, viewerLogin) = try await fetcher(pr.owner, pr.repo, pr.number)
+            let targets = ReviewThreadResolver.resolvable(
+                threads: threads,
+                annotations: review.annotations,
+                viewerLogin: viewerLogin
+            )
+            guard !targets.isEmpty else { return }
+            for thread in targets {
+                do {
+                    try await resolver(thread.id)
+                    PRBarLog.triage.notice("thread resolved pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) path=\(thread.path, privacy: .public)")
+                } catch {
+                    PRBarLog.triage.error("thread resolve failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) path=\(thread.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                }
+            }
+        } catch {
+            PRBarLog.triage.error("thread fetch failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - auto-review batching
