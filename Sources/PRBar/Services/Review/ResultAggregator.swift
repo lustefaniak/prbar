@@ -133,11 +133,19 @@ enum ResultAggregator {
                 } else {
                     path = "\(outcome.subpath)/\(ann.path)"
                 }
+                // `title` has to survive the rewrite. It is what
+                // `InlineCommentMapper` renders as the comment's bolded
+                // first line, and what `ReviewThreadResolver` reads back to
+                // match a thread to the finding that opened it — dropping
+                // it here silently unheaders every posted comment and makes
+                // thread correlation impossible. `displayTitle` falls back
+                // to the body, which is why the UI never showed the gap.
                 out.append(DiffAnnotation(
                     path: path,
                     lineStart: ann.lineStart,
                     lineEnd: ann.lineEnd,
                     severity: ann.severity,
+                    title: ann.title,
                     body: ann.body
                 ))
             }

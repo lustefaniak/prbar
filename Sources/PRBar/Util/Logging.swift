@@ -41,4 +41,9 @@ enum PRBarLog {
     /// GitHub write queue: enqueue / dedup-skip / retry / run failure for
     /// post-review / merge / auto-approve actions.
     nonisolated(unsafe) static let actions = Logger(subsystem: subsystem, category: "actions")
+
+    /// App lifecycle: status-item install, single-instance handoff, and
+    /// the re-launch "surface a window" recovery path. The place to look
+    /// when the menu-bar icon went missing and the app seemed unreachable.
+    nonisolated(unsafe) static let lifecycle = Logger(subsystem: subsystem, category: "lifecycle")
 }

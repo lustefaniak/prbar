@@ -161,8 +161,11 @@ private struct HistoryRow: View {
         switch entry.kind {
         case .merge:          .purple
         case .approve, .autoApprove: .green
-        case .comment:        .blue
-        case .requestChanges: .orange
+        case .comment, .autoComment: .blue
+        case .autoShare:      .teal
+        case .autoResolveThreads: .teal
+        case .reviewReRequested: .indigo
+        case .requestChanges, .autoRequestChanges: .orange
         case .autoMergeEnable: .blue
         case .autoMergeDisable: .secondary
         case .other:          .secondary

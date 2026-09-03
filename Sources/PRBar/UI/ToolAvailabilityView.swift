@@ -91,7 +91,7 @@ struct ToolAvailabilityView: View {
         let names = tools
         Task {
             let next = await Task.detached(priority: .userInitiated) {
-                names.map(ToolProbe.probe)
+                names.map { ToolProbe.probe($0) }
             }.value
             await MainActor.run {
                 self.results = next
@@ -104,12 +104,16 @@ struct ToolAvailabilityView: View {
 private extension ToolProbeResult {
     var statusText: String {
         if let v = version { return v }
-        if path != nil { return "(no --version)" }
+        if let f = failure { return "--version exited \(f.exitCode)" }
+        if path != nil { return "no --version output" }
         return "not found"
     }
 
     var helpText: String {
-        if let p = path { return p }
-        return "Searched: /opt/homebrew/bin, /usr/local/bin, ~/.local/bin, ~/.claude/local/bin, /usr/bin"
+        guard let p = path else {
+            return "Searched: /opt/homebrew/bin, /usr/local/bin, ~/.local/bin, ~/.claude/local/bin, /usr/bin"
+        }
+        guard let f = failure else { return p }
+        return [p, f.stderrLine].compactMap { $0 }.joined(separator: "\n")
     }
 }

@@ -34,18 +34,43 @@ enum ReviewVerdict: String, Codable, Sendable, Hashable, CaseIterable {
     }
 }
 
-enum AnnotationSeverity: String, Codable, Sendable, Hashable, CaseIterable {
+enum AnnotationSeverity: String, Codable, Sendable, Hashable, CaseIterable, Comparable {
     case info
     case suggestion
     case warning
     case blocker
 
-    /// Whether an annotation at this severity blocks auto-approval.
+    /// Whether an annotation at this severity blocks auto-approval under
+    /// the legacy boolean gate. Retained for the prompt-side "prior
+    /// blockers" summary; the auto-review gates compare `rank` instead so
+    /// the threshold is user-configurable.
     var isBlocking: Bool {
         switch self {
         case .info, .suggestion: return false
         case .warning, .blocker: return true
         }
+    }
+
+    var rank: Int {
+        switch self {
+        case .info:       return 0
+        case .suggestion: return 1
+        case .warning:    return 2
+        case .blocker:    return 3
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .info:       return "Info"
+        case .suggestion: return "Suggestion"
+        case .warning:    return "Warning"
+        case .blocker:    return "Blocker"
+        }
+    }
+
+    static func < (lhs: AnnotationSeverity, rhs: AnnotationSeverity) -> Bool {
+        lhs.rank < rhs.rank
     }
 }
 

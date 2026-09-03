@@ -20,10 +20,27 @@ struct GeneralSettings: View {
     @AppStorage("dailyCostCapEnabled")      private var costCapEnabled       = true
     @AppStorage("dailyCostCapUsd")          private var costCapUsd: Double   = 5.0
     @AppStorage("skipMergeConfirmation")    private var skipMergeConfirmation = false
+    @AppStorage("defaultClaudeModel")       private var defaultClaudeModel    = "sonnet"
+    @AppStorage("defaultClaudeEffort")      private var defaultClaudeEffort   = ""
+    @AppStorage("defaultCodexModel")        private var defaultCodexModel     = ""
+    @AppStorage("defaultCodexEffort")       private var defaultCodexEffort    = ""
 
     /// Probed at view-load. Drives "(not installed)" annotations in the
     /// provider picker so users don't pick a backend they don't have.
     @State private var providerAvailability: [ProviderID: Bool] = [:]
+
+    /// True once the user has explicitly chosen "Custom…" for the claude
+    /// model picker (or the stored value doesn't match a known preset).
+    /// Seeded from the stored value on appear — see `claudeModelPresets`.
+    @State private var claudeModelCustomMode = false
+
+    private static let claudeModelPresets: [(tag: String, label: String, value: String)] = [
+        ("auto", "Auto (claude's default)", ""),
+        ("sonnet", "Sonnet", "sonnet"),
+        ("opus", "Opus", "opus"),
+        ("haiku", "Haiku", "haiku"),
+        ("fable", "Fable", "fable"),
+    ]
 
     var body: some View {
         Form {
@@ -85,6 +102,57 @@ struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
             }
             .task { await probeProviderAvailability() }
+
+            Section {
+                Picker("Model", selection: claudeModelPickerBinding) {
+                    ForEach(Self.claudeModelPresets, id: \.tag) { preset in
+                        Text(preset.label).tag(preset.tag)
+                    }
+                    Text("Custom…").tag("custom")
+                }
+                if claudeModelCustomMode {
+                    TextField("Model id (e.g. claude-sonnet-5)", text: claudeModelTextBinding)
+                }
+                Picker("Effort", selection: claudeEffortBinding) {
+                    Text("Auto (claude's default)").tag("")
+                    Text("Low").tag("low")
+                    Text("Medium").tag("medium")
+                    Text("High").tag("high")
+                    Text("XHigh").tag("xhigh")
+                    Text("Max").tag("max")
+                }
+            } header: {
+                Text("Claude model & effort")
+            } footer: {
+                Text("Applies to reviews that run on the claude provider. Defaults to \"sonnet\" so PRBar never inherits whatever model you last picked in an interactive claude session — that's what silently burns extra quota. A repo's override (Settings → Repositories) wins over this.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .onAppear {
+                claudeModelCustomMode = !Self.claudeModelPresets.contains { $0.value == defaultClaudeModel }
+            }
+
+            Section {
+                TextField("Model id (blank = codex's own default)", text: $defaultCodexModel)
+                    .onChange(of: defaultCodexModel) { _, newValue in
+                        queue.defaultCodexModel = newValue
+                    }
+                Picker("Effort", selection: codexEffortBinding) {
+                    Text("Auto (codex's default)").tag("")
+                    Text("None").tag("none")
+                    Text("Minimal").tag("minimal")
+                    Text("Low").tag("low")
+                    Text("Medium").tag("medium")
+                    Text("High").tag("high")
+                    Text("XHigh").tag("xhigh")
+                }
+            } header: {
+                Text("Codex model & effort")
+            } footer: {
+                Text("Codex has no stable short model aliases the way claude does (sonnet/opus/haiku/fable) — this is a literal model id passed straight to --model. Leave blank to use whatever's in ~/.codex/config.toml. A repo's override (Settings → Repositories) wins over this.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Section {
                 Toggle("Enforce daily cost cap", isOn: capEnabledBinding)
@@ -246,6 +314,59 @@ struct GeneralSettings: View {
                 } else {
                     queue.defaultProviderId = ProviderID(rawValue: newValue) ?? .claude
                 }
+            }
+        )
+    }
+
+    /// Picker selection for the claude model preset row. "custom" is a
+    /// pure UI sentinel (never persisted) — it just flips
+    /// `claudeModelCustomMode` to reveal the free-text field; the actual
+    /// stored value only ever changes via a real preset or the text field.
+    private var claudeModelPickerBinding: Binding<String> {
+        Binding(
+            get: {
+                if claudeModelCustomMode { return "custom" }
+                return Self.claudeModelPresets.first { $0.value == defaultClaudeModel }?.tag ?? "auto"
+            },
+            set: { tag in
+                if tag == "custom" {
+                    claudeModelCustomMode = true
+                    return
+                }
+                claudeModelCustomMode = false
+                let value = Self.claudeModelPresets.first { $0.tag == tag }?.value ?? ""
+                defaultClaudeModel = value
+                queue.defaultClaudeModel = value
+            }
+        )
+    }
+
+    private var claudeModelTextBinding: Binding<String> {
+        Binding(
+            get: { defaultClaudeModel },
+            set: { newValue in
+                defaultClaudeModel = newValue
+                queue.defaultClaudeModel = newValue
+            }
+        )
+    }
+
+    private var claudeEffortBinding: Binding<String> {
+        Binding(
+            get: { defaultClaudeEffort },
+            set: { newValue in
+                defaultClaudeEffort = newValue
+                queue.defaultClaudeEffort = newValue
+            }
+        )
+    }
+
+    private var codexEffortBinding: Binding<String> {
+        Binding(
+            get: { defaultCodexEffort },
+            set: { newValue in
+                defaultCodexEffort = newValue
+                queue.defaultCodexEffort = newValue
             }
         )
     }

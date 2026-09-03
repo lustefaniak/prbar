@@ -96,6 +96,31 @@ final class CodexProviderTests: XCTestCase {
         XCTAssertEqual(args[modelIdx + 1], "gpt-5")
     }
 
+    func testBuildArgsAddsReasoningEffortConfigWhenSet() {
+        var opts = makeOptions(model: nil)
+        opts.effort = "high"
+        let args = CodexProvider.buildArgs(
+            options: opts,
+            schemaPath: "/tmp/schema.json",
+            lastMessagePath: "/tmp/last.txt",
+            workdir: URL(fileURLWithPath: "/tmp/wd")
+        )
+        guard let cIdx = args.firstIndex(of: "-c") else {
+            return XCTFail("-c flag not present")
+        }
+        XCTAssertEqual(args[cIdx + 1], "model_reasoning_effort=high")
+    }
+
+    func testBuildArgsOmitsReasoningEffortConfigWhenNil() {
+        let args = CodexProvider.buildArgs(
+            options: makeOptions(model: nil),
+            schemaPath: "/tmp/schema.json",
+            lastMessagePath: "/tmp/last.txt",
+            workdir: URL(fileURLWithPath: "/tmp/wd")
+        )
+        XCTAssertFalse(args.contains("-c"))
+    }
+
     func testBuildPromptJoinsSystemAndUser() {
         let bundle = PromptBundle(
             systemPrompt: "You are a senior reviewer.",
@@ -117,6 +142,29 @@ final class CodexProviderTests: XCTestCase {
             maxToolCalls: 10, maxCostUsd: 0.30,
             timeout: .seconds(120), schema: Data("{}".utf8)
         )
+    }
+
+    func testDiagnosticSlicePrefersJSONErrorLineOverBanner() {
+        let banner = String(repeating: "x", count: 450)
+        let stderr = """
+        OpenAI Codex v0.142.5
+        --------
+        workdir: /tmp/wd
+        model: gpt-5.3-codex
+        provider: openai
+        \(banner)
+        deprecated: some feature warning
+        ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account."}}
+        """
+        let slice = CodexProvider.diagnosticSlice(fromStderr: stderr)
+        XCTAssertTrue(slice.contains("not supported when using Codex with a ChatGPT account"))
+    }
+
+    func testDiagnosticSliceFallsBackToTailWhenNoJSONErrorLine() {
+        let stderr = "line one\nline two\nthe actual failure reason is here"
+        let slice = CodexProvider.diagnosticSlice(fromStderr: stderr, limit: 20)
+        XCTAssertEqual(slice, String(stderr.suffix(20)))
+        XCTAssertTrue(slice.hasSuffix("reason is here"))
     }
 
     func testExtractFirstJSONObjectHandlesPlainJSON() {
@@ -197,6 +245,48 @@ final class CodexProviderTests: XCTestCase {
         let item = annotations?["items"] as? [String: Any]
         XCTAssertEqual(item?["additionalProperties"] as? Bool, false,
             "nested array-item objects must get the marker too")
+    }
+
+    func testAddStrictAdditionalPropertiesForcesAllPropertiesRequired() throws {
+        // The shared review.json drops `annotations` from `required` (to keep
+        // claude out of a rejection loop), but OpenAI strict mode demands
+        // every declared property appear in `required`. The transform must
+        // restore the full list for codex, at every object level.
+        let original = """
+        {
+          "type": "object",
+          "required": ["verdict"],
+          "properties": {
+            "verdict": { "type": "string" },
+            "confidence": { "type": "number" },
+            "summary": { "type": "string" },
+            "annotations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "body": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+        """
+        guard let out = CodexProvider.addStrictAdditionalProperties(Data(original.utf8)),
+              let json = try JSONSerialization.jsonObject(with: out) as? [String: Any]
+        else {
+            return XCTFail("transform returned nil")
+        }
+        let topRequired = (json["required"] as? [String])?.sorted()
+        XCTAssertEqual(topRequired, ["annotations", "confidence", "summary", "verdict"],
+            "every top-level property must be required for codex strict mode")
+        let annotations = (json["properties"] as? [String: Any])?["annotations"] as? [String: Any]
+        let item = annotations?["items"] as? [String: Any]
+        let itemRequired = (item?["required"] as? [String])?.sorted()
+        XCTAssertEqual(itemRequired, ["body", "path"],
+            "nested annotation-item properties must all be required too")
     }
 
     func testAddStrictAdditionalPropertiesPreservesExistingValue() throws {

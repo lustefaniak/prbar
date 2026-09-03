@@ -100,6 +100,17 @@ enum ReviewActionKind: String, Codable, Sendable, Hashable, CaseIterable {
         }
     }
 
+    /// History-tab kind for the same action posted by the auto-review
+    /// path. Distinct rows so "PRBar decided this" is never mistaken for
+    /// "I decided this" when scrolling back through the log.
+    var autoActionLogKind: ActionLogKind {
+        switch self {
+        case .approve:        return .autoApprove
+        case .comment:        return .autoComment
+        case .requestChanges: return .autoRequestChanges
+        }
+    }
+
     /// Event string accepted by the GitHub REST endpoint
     /// `POST /repos/{o}/{r}/pulls/{n}/reviews`. Used by the inline-
     /// comments path; `gh pr review` (which takes flags, not events)

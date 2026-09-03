@@ -2,20 +2,39 @@ import Foundation
 import Observation
 import SwiftData
 
-/// SwiftData-backed persistence for user-edited `RepoConfig`s.
+/// SwiftData-backed persistence for user-edited `RepoConfig`s, plus the
+/// app-level `ReviewDefaults` those rules override.
 ///
 /// Resolution order when looking up a config for a PR:
-///   1. user-defined configs (most-specific match wins, in list order)
+///   1. user-defined rules (most-specific match wins, in list order)
 ///   2. built-ins (`RepoConfig.builtins`)
-///   3. `RepoConfig.default`
+///   3. `RepoConfig.default` (a rule that overrides nothing)
+///
+/// …then every field the winning rule left `nil` resolves from
+/// `defaults`. `resolve` and `makeResolver` are the only two places a
+/// `ResolvedRepoConfig` is minted, so no caller can accidentally read a
+/// rule's raw `nil` as a value.
 ///
 /// Loaded eagerly on init; saves are write-through. The `RepoConfig`
 /// struct is stored as a JSON blob in `RepoConfigEntry.payload` so its
 /// shape can evolve without a SwiftData migration each time.
+/// `ReviewDefaults` is a single JSON blob in `UserDefaults` — one row's
+/// worth of data, and it needs to be readable before the model container
+/// is up.
 @MainActor
 @Observable
 final class RepoConfigStore {
     private(set) var userConfigs: [RepoConfig]
+
+    /// App-level values every rule inherits from. Edited in Settings →
+    /// Review defaults.
+    var defaults: ReviewDefaults {
+        didSet {
+            guard defaults != oldValue else { return }
+            saveDefaults()
+            onChange?()
+        }
+    }
 
     @ObservationIgnored
     private let container: ModelContainer
@@ -23,15 +42,30 @@ final class RepoConfigStore {
     @ObservationIgnored
     private let context: ModelContext
 
-    init(container: ModelContainer = PRBarModelContainer.live()) {
+    @ObservationIgnored
+    private let userDefaults: UserDefaults
+
+    init(
+        container: ModelContainer = PRBarModelContainer.live(),
+        userDefaults: UserDefaults = .standard
+    ) {
         self.container = container
         self.context = ModelContext(container)
+        self.userDefaults = userDefaults
         self.userConfigs = Self.loadFromContext(context)
+        self.defaults = Self.loadDefaults(from: userDefaults)
     }
 
-    /// Resolve the config for a given owner/repo. User configs win over
-    /// built-ins; `RepoConfig.default` is the final fallback.
-    func resolve(owner: String, repo: String) -> RepoConfig {
+    /// Resolve the effective config for a given owner/repo. User rules win
+    /// over built-ins; `RepoConfig.default` is the final fallback, and the
+    /// app defaults fill in whatever the winning rule doesn't override.
+    func resolve(owner: String, repo: String) -> ResolvedRepoConfig {
+        rule(owner: owner, repo: repo).resolved(with: defaults)
+    }
+
+    /// The matching rule *without* defaults folded in — for the Settings
+    /// UI, which needs to show whether a field is overridden or inherited.
+    func rule(owner: String, repo: String) -> RepoConfig {
         let nameWithOwner = "\(owner)/\(repo)"
         if let user = userConfigs.first(where: { $0.matches(nameWithOwner: nameWithOwner) }) {
             return user
@@ -74,18 +108,33 @@ final class RepoConfigStore {
     }
 
     /// Closure form for injection into `ReviewQueueWorker.configResolver`.
-    nonisolated func makeResolver() -> @Sendable (String, String) -> RepoConfig {
-        let snapshot = MainActor.assumeIsolated { userConfigs }
+    /// Snapshots both the rules and the defaults, so a resolver handed out
+    /// before an edit keeps resolving against the state it was made with —
+    /// `onChange` hands out a fresh one.
+    nonisolated func makeResolver() -> @Sendable (String, String) -> ResolvedRepoConfig {
+        let (snapshot, defaults) = MainActor.assumeIsolated { (userConfigs, self.defaults) }
         return { owner, repo in
             let nameWithOwner = "\(owner)/\(repo)"
             if let user = snapshot.first(where: { $0.matches(nameWithOwner: nameWithOwner) }) {
-                return user
+                return user.resolved(with: defaults)
             }
-            return RepoConfig.match(owner: owner, repo: repo)
+            return RepoConfig.match(owner: owner, repo: repo).resolved(with: defaults)
         }
     }
 
     // MARK: - persistence
+
+    private static func loadDefaults(from userDefaults: UserDefaults) -> ReviewDefaults {
+        guard let data = userDefaults.data(forKey: ReviewDefaults.storageKey),
+              let decoded = try? JSONDecoder().decode(ReviewDefaults.self, from: data)
+        else { return ReviewDefaults() }
+        return decoded
+    }
+
+    private func saveDefaults() {
+        guard let data = try? JSONEncoder().encode(defaults) else { return }
+        userDefaults.set(data, forKey: ReviewDefaults.storageKey)
+    }
 
     private static func loadFromContext(_ context: ModelContext) -> [RepoConfig] {
         var descriptor = FetchDescriptor<RepoConfigEntry>(

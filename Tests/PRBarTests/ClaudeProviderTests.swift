@@ -63,6 +63,19 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertEqual(pairs?.1, "haiku")
     }
 
+    func testEffortFlagAppendedWhenSet() {
+        var opts = makeOptions()
+        opts.effort = "high"
+        let args = ClaudeProvider.buildArgs(bundle: makeBundle(), options: opts)
+        let pairs = zip(args, args.dropFirst()).first { $0.0 == "--effort" }
+        XCTAssertEqual(pairs?.1, "high")
+    }
+
+    func testEffortFlagOmittedWhenNil() {
+        let args = ClaudeProvider.buildArgs(bundle: makeBundle(), options: makeOptions())
+        XCTAssertFalse(args.contains("--effort"))
+    }
+
     func testNoneModeCwdIsTempDirectory() {
         let bundle = makeBundle(toolMode: .none, workdir: URL(fileURLWithPath: "/never/used"))
         let opts = makeOptions(toolMode: .none)
@@ -87,12 +100,28 @@ final class ClaudeProviderTests: XCTestCase {
         XCTAssertTrue(s.contains("--settings"))
         XCTAssertTrue(s.contains("\"sandbox\""))
         XCTAssertTrue(s.contains("\"enabled\":true"))
-        XCTAssertTrue(s.contains("--allowedTools Bash,Read,Glob,Grep"))
+        XCTAssertTrue(s.contains("--allowedTools Bash,Read,Glob,Grep,StructuredOutput"))
         XCTAssertTrue(s.contains("--disallowedTools Edit,Write,Task,Agent,NotebookEdit,TodoWrite"))
         XCTAssertTrue(s.contains("--add-dir /wt/sub"))
         XCTAssertTrue(s.contains("--add-dir /bare/repo.git"))
         // Plan mode still applies (verified safe alongside the sandbox).
         XCTAssertTrue(args.contains("plan"))
+    }
+
+    func testBuildArgsPassesSessionNameWhenLabelSet() {
+        var bundle = makeBundle(toolMode: .none)
+        bundle.sessionLabel = "prbar: acme/widgets#42 (root)"
+        let args = ClaudeProvider.buildArgs(bundle: bundle, options: makeOptions(toolMode: .none))
+        guard let idx = args.firstIndex(of: "--name") else {
+            return XCTFail("expected --name flag")
+        }
+        XCTAssertEqual(args[idx + 1], "prbar: acme/widgets#42 (root)")
+    }
+
+    func testBuildArgsOmitsSessionNameWhenLabelEmpty() {
+        let bundle = makeBundle(toolMode: .none)
+        let args = ClaudeProvider.buildArgs(bundle: bundle, options: makeOptions(toolMode: .none))
+        XCTAssertFalse(args.contains("--name"))
     }
 
     func testSandboxedModeCwdIsWorkdir() {

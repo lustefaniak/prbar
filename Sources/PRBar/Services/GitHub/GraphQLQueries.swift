@@ -65,6 +65,39 @@ enum GraphQLQueries {
     \(prFieldsFragment)
     """
 
+    /// Review threads for one PR, for the resolve-on-retriage path.
+    ///
+    /// Deliberately *not* folded into `prFieldsFragment`: the inbox query
+    /// already returns ~110 KB across 50 PRs, and threads are only needed
+    /// for the handful of PRs actually being retriaged. Fetched on demand
+    /// instead, once per retriage.
+    /// `headRefOid` rides along because resolution must be checked against
+    /// the commit the triage actually reviewed. Threads are read live, so
+    /// a push landing mid-review would otherwise let stale findings close
+    /// threads on code nobody has looked at yet.
+    static let reviewThreads: String = """
+    query ReviewThreads($owner: String!, $name: String!, $number: Int!, $after: String) {
+      viewer { login }
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $number) {
+          headRefOid
+          reviewThreads(first: 100, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              isResolved
+              isOutdated
+              path
+              comments(first: 100) {
+                nodes { author { login } body }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
     /// Refresh a single PR in place. Cheaper than re-running `inbox` (cost ≈ 1).
     static let singlePR: String = """
     query SinglePR($owner: String!, $name: String!, $number: Int!) {

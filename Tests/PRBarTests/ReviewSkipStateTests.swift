@@ -18,12 +18,12 @@ final class ReviewSkipStateTests: XCTestCase {
         aiReviewEnabled: Bool = true,
         reviewDrafts: Bool = false,
         skipAIIfReviewedByOthers: Bool = true
-    ) -> RepoConfig {
+    ) -> ResolvedRepoConfig {
         var c = RepoConfig.default
         c.aiReviewEnabled = aiReviewEnabled
         c.reviewDrafts = reviewDrafts
         c.skipAIIfReviewedByOthers = skipAIIfReviewedByOthers
-        return c
+        return c.resolved()
     }
 
     // MARK: each repo-config reason is recorded

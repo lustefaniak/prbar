@@ -224,6 +224,100 @@ final class ActionQueueTests: XCTestCase {
 
     // MARK: - helpers
 
+    // MARK: - share re-request
+
+    /// GitHub drops the viewer from `reviewRequests` on *any* submitted
+    /// review, COMMENT included. Without restoring it, a share silently
+    /// ends the PR's life in PRBar: role flips to `.other`, it leaves the
+    /// inbox, and no push from the author ever triggers a retriage.
+    func testShareReRequestsTheReviewItJustConsumed() async throws {
+        var pr = makePR(nodeId: "PR_a", number: 7, title: "shared")
+        pr.viewerLogin = "octocat"
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.reRequestReviewerExecutor = { pr, login in
+            await rec.record("\(pr.owner)/\(pr.repo)#\(pr.number) -> \(login)")
+        }
+
+        q.enqueue(
+            pr, kind: .review(kind: .comment, body: "findings", comments: []),
+            source: .sharedFindings
+        )
+        try await waitUntil { await rec.calls.count == 1 }
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["o/r#7 -> octocat"])
+    }
+
+    /// An auto-approve or auto-deny *is* the user's verdict, so GitHub
+    /// clearing the request is the correct outcome there — re-requesting
+    /// would put the PR back in the inbox after it was deliberately decided.
+    func testNonShareReviewsDoNotReRequest() async throws {
+        var pr = makePR(nodeId: "PR_a", number: 7, title: "approved")
+        pr.viewerLogin = "octocat"
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.reRequestReviewerExecutor = { pr, login in
+            await rec.record("\(pr.owner)/\(pr.repo)#\(pr.number) -> \(login)")
+        }
+
+        q.enqueue(
+            pr, kind: .review(kind: .approve, body: "", comments: []),
+            source: .automated
+        )
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let calls = await rec.calls
+        XCTAssertTrue(calls.isEmpty, "got: \(calls)")
+    }
+
+    /// The comment has already landed on the PR, so a failed re-request
+    /// must not re-run the post. It gets its own queue entry, which means
+    /// the failure is visible and `retry` re-sends only the re-request.
+    func testFailedReRequestSurfacesWithoutResendingTheComment() async throws {
+        var pr = makePR(nodeId: "PR_a", number: 7, title: "shared")
+        pr.viewerLogin = "octocat"
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.reviewExecutor = { _, _, body, _ in await rec.record("review:\(body)") }
+        q.reRequestReviewerExecutor = { _, _ in throw TestError.boom }
+
+        q.enqueue(
+            pr, kind: .review(kind: .comment, body: "findings", comments: []),
+            source: .sharedFindings
+        )
+        try await waitUntil {
+            if case .failed = q.state(for: "PR_a") { return true }
+            return false
+        }
+
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["review:findings"], "the comment must be posted exactly once")
+        guard case .failed = q.state(for: "PR_a") else {
+            return XCTFail("a failed re-request has to be visible, not swallowed")
+        }
+    }
+
+    /// Resolving is a GitHub write like any other and goes through the
+    /// queue, so it is serialized, logged, and retryable.
+    func testResolveThreadsRunsEveryThreadInTheBatch() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "threads")
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.resolveThreadExecutor = { id in await rec.record(id) }
+
+        q.enqueue(pr, kind: .resolveThreads(ids: ["T1", "T2"]), source: .automated)
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["T1", "T2"])
+    }
+
     private func makePR(
         nodeId: String,
         number: Int,

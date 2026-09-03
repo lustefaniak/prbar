@@ -157,6 +157,159 @@ actor GHClient {
         }
     }
 
+    /// Every review thread on a PR, plus the viewer's login and the head
+    /// commit the threads were read against.
+    ///
+    /// Fetched on demand rather than folded into the inbox query — see
+    /// `GraphQLQueries.reviewThreads`. Pages until GitHub stops handing
+    /// back a cursor: a truncated list would silently leave threads
+    /// unconsidered on exactly the long-running PRs that accumulate them.
+    func fetchReviewThreads(
+        owner: String,
+        repo: String,
+        number: Int
+    ) async throws -> ReviewThreadPage {
+        var threads: [ReviewThread] = []
+        var viewerLogin = ""
+        var headRefOid = ""
+        var cursor: String?
+        // Bounded so a cursor GitHub never terminates can't spin forever.
+        for _ in 0..<20 {
+            var args = [
+                "api", "graphql",
+                "-F", "owner=\(owner)",
+                "-F", "name=\(repo)",
+                "-F", "number=\(number)",
+            ]
+            if let cursor { args += ["-F", "after=\(cursor)"] }
+            args += ["-f", "query=\(GraphQLQueries.reviewThreads)"]
+            let result = try await ProcessRunner.run(executable: executablePath, args: args)
+            guard result.succeeded else {
+                throw GHError.execFailed(
+                    stderr: result.stderrString ?? "",
+                    exitCode: result.exitCode
+                )
+            }
+            let response: ReviewThreadsResponse
+            do {
+                response = try JSONDecoder().decode(ReviewThreadsResponse.self, from: result.stdout)
+            } catch {
+                throw GHError.decodingFailed(String(describing: error))
+            }
+            let pr = response.data.repository.pullRequest
+            viewerLogin = response.data.viewer.login
+            headRefOid = pr.headRefOid
+            threads += pr.reviewThreads.nodes.map { node in
+                ReviewThread(
+                    id: node.id,
+                    isResolved: node.isResolved,
+                    isOutdated: node.isOutdated,
+                    path: node.path ?? "",
+                    comments: node.comments.nodes.map {
+                        ReviewThread.Comment(authorLogin: $0.author?.login ?? "", body: $0.body)
+                    }
+                )
+            }
+            guard pr.reviewThreads.pageInfo.hasNextPage,
+                  let next = pr.reviewThreads.pageInfo.endCursor
+            else { break }
+            cursor = next
+        }
+        return ReviewThreadPage(threads: threads, viewerLogin: viewerLogin, headRefOid: headRefOid)
+    }
+
+    /// Mark a review thread resolved. Idempotent on GitHub's side —
+    /// resolving an already-resolved thread is not an error.
+    func resolveReviewThread(threadId: String) async throws {
+        let mutation = """
+        mutation Resolve($id: ID!) {
+          resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
+        }
+        """
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: ["api", "graphql", "-F", "id=\(threadId)", "-f", "query=\(mutation)"]
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+    }
+
+    private struct ReviewThreadsResponse: Decodable {
+        let data: DataField
+        struct DataField: Decodable {
+            let viewer: Viewer
+            let repository: Repository
+        }
+        struct Viewer: Decodable { let login: String }
+        struct Repository: Decodable { let pullRequest: PullRequest }
+        struct PullRequest: Decodable {
+            let headRefOid: String
+            let reviewThreads: ThreadList
+        }
+        struct ThreadList: Decodable {
+            let pageInfo: PageInfo
+            let nodes: [ThreadNode]
+        }
+        struct PageInfo: Decodable {
+            let hasNextPage: Bool
+            let endCursor: String?
+        }
+        struct ThreadNode: Decodable {
+            let id: String
+            let isResolved: Bool
+            let isOutdated: Bool
+            /// Null when the viewer can't see the file the thread anchors to.
+            let path: String?
+            let comments: CommentList
+        }
+        struct CommentList: Decodable { let nodes: [CommentNode] }
+        struct CommentNode: Decodable {
+            let author: Author?
+            let body: String
+        }
+        struct Author: Decodable { let login: String }
+    }
+
+    /// Re-add `login` to a PR's requested reviewers.
+    ///
+    /// Exists because GitHub silently drops you from `reviewRequests` the
+    /// moment you submit *any* review — COMMENT included, and with no
+    /// `review_request_removed` timeline event to show for it. A shared-
+    /// findings post is therefore indistinguishable, to GitHub, from you
+    /// having reviewed the PR: it leaves your requested-reviewer list, drops
+    /// out of PRBar's inbox (role flips to `.other`), and never gets
+    /// retriaged when the author pushes a fix. Re-requesting immediately
+    /// after the post restores the state the user actually intended.
+    ///
+    /// Self-re-request is permitted by the API after a COMMENT review
+    /// (verified against a live PR).
+    func requestReviewer(
+        owner: String,
+        repo: String,
+        number: Int,
+        login: String
+    ) async throws {
+        guard !login.isEmpty else { return }
+        let result = try await ProcessRunner.run(
+            executable: executablePath,
+            args: [
+                "api", "--method", "POST",
+                "repos/\(owner)/\(repo)/pulls/\(number)/requested_reviewers",
+                "-f", "reviewers[]=\(login)",
+            ]
+        )
+        guard result.succeeded else {
+            throw GHError.execFailed(
+                stderr: result.stderrString ?? "",
+                exitCode: result.exitCode
+            )
+        }
+    }
+
     /// One inline review comment, anchored to a span in the PR's diff
     /// against the PR's head commit. `line` is the last line of the span
     /// (the GitHub API places the comment there); `startLine` is set for

@@ -23,6 +23,37 @@ final class GHClientIntegrationTests: XCTestCase {
         }
     }
 
+    /// Submits the production review-threads query and decodes it.
+    ///
+    /// Worth its own integration test because the failure mode is silent:
+    /// `resolveAddressedThreads` catches everything and logs, so a typo in
+    /// the query or a decoder mismatch doesn't surface as an error — thread
+    /// resolution just quietly stops happening.
+    ///
+    /// Picks a PR from the viewer's own inbox so there's nothing
+    /// repo-specific hardcoded in this public repo; skips when the inbox
+    /// happens to be empty.
+    func testReviewThreadsQueryParsesAgainstRealAPI() async throws {
+        try await skipIfGHUnavailable()
+
+        let client = try GHClient()
+        guard let pr = try await client.fetchInbox().first else {
+            throw XCTSkip("no open PRs involving the viewer; nothing to query threads on.")
+        }
+
+        let page = try await client.fetchReviewThreads(
+            owner: pr.owner, repo: pr.repo, number: pr.number
+        )
+        XCTAssertFalse(page.viewerLogin.isEmpty, "viewer login drives thread ownership checks")
+        XCTAssertFalse(
+            page.headRefOid.isEmpty,
+            "head oid is the guard that keeps stale findings from resolving threads"
+        )
+        for thread in page.threads {
+            XCTAssertFalse(thread.id.isEmpty, "thread id is what resolveReviewThread takes")
+        }
+    }
+
     /// Submits the production inbox query and decodes the response.
     /// Catches the "Field 'X' doesn't exist on type 'Y'" class of bug at
     /// test time instead of at user-clicks-fetch time.

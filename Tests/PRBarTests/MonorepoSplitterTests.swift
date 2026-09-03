@@ -79,7 +79,7 @@ final class MonorepoSplitterTests: XCTestCase {
         -a
         +b
         """
-        let subs = MonorepoSplitter.split(diffText: diff, config: kernelLibConfig)
+        let subs = MonorepoSplitter.split(diffText: diff, config: kernelLibConfig.resolved())
 
         let bySubpath = Dictionary(uniqueKeysWithValues: subs.map { ($0.subpath, $0) })
         XCTAssertNotNil(bySubpath["kernel-billing"], "kernel-* should resolve to kernel-billing")
@@ -94,7 +94,7 @@ final class MonorepoSplitterTests: XCTestCase {
         let diff = makeMultiKernelDiff(filesPerKernel: [
             "kernel-a": 3, "kernel-b": 3, "kernel-c": 3, "kernel-d": 1, "kernel-e": 2,
         ])
-        let subs = MonorepoSplitter.split(diffText: diff, config: kernelLibConfig)
+        let subs = MonorepoSplitter.split(diffText: diff, config: kernelLibConfig.resolved())
         let names = subs.map(\.subpath).filter { !$0.isEmpty }.sorted()
         XCTAssertFalse(names.contains("kernel-d"), "smallest bucket should be tail-merged out")
         XCTAssertLessThanOrEqual(subs.count, 4, "fanout cap is 4")
@@ -113,7 +113,7 @@ final class MonorepoSplitterTests: XCTestCase {
         cfg.rootPatterns = ["kernel-*"]
         cfg.unmatchedStrategy = .skipReview
         cfg.maxParallelSubreviews = 4
-        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg.resolved())
         XCTAssertTrue(subs.isEmpty)
     }
 
@@ -130,7 +130,7 @@ final class MonorepoSplitterTests: XCTestCase {
         cfg.rootPatterns = ["kernel-*"]
         cfg.unmatchedStrategy = .groupAsOther
         cfg.maxParallelSubreviews = 4
-        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg.resolved())
         XCTAssertEqual(subs.map(\.subpath), ["<other>"])
     }
 
@@ -145,7 +145,7 @@ final class MonorepoSplitterTests: XCTestCase {
         """
         var cfg = RepoConfig.default
         cfg.excluded = true
-        XCTAssertTrue(MonorepoSplitter.split(diffText: diff, config: cfg).isEmpty)
+        XCTAssertTrue(MonorepoSplitter.split(diffText: diff, config: cfg.resolved()).isEmpty)
     }
 
     func testSplitModeSingleIgnoresRootPatterns() {
@@ -166,7 +166,7 @@ final class MonorepoSplitterTests: XCTestCase {
         """
         var cfg = kernelLibConfig
         cfg.splitMode = .single
-        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg.resolved())
         XCTAssertEqual(subs.count, 1)
         XCTAssertEqual(subs[0].subpath, "")
     }
@@ -179,7 +179,7 @@ final class MonorepoSplitterTests: XCTestCase {
         var cfg = kernelLibConfig
         cfg.collapseAboveSubreviewCount = 2
         cfg.maxParallelSubreviews = 8
-        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg.resolved())
         XCTAssertEqual(subs.count, 1)
         XCTAssertEqual(subs[0].subpath, "")
     }
@@ -194,7 +194,7 @@ final class MonorepoSplitterTests: XCTestCase {
         var cfg = kernelLibConfig
         cfg.collapseAboveSubreviewCount = 2
         cfg.maxParallelSubreviews = 8
-        let subs = MonorepoSplitter.split(diffText: diff, config: cfg, toolMode: .sandboxed)
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg.resolved(), toolMode: .sandboxed)
         XCTAssertGreaterThanOrEqual(subs.count, 3)
     }
 
@@ -204,7 +204,7 @@ final class MonorepoSplitterTests: XCTestCase {
         ])
         var cfg = kernelLibConfig
         cfg.collapseAboveSubreviewCount = 5
-        let subs = MonorepoSplitter.split(diffText: diff, config: cfg)
+        let subs = MonorepoSplitter.split(diffText: diff, config: cfg.resolved())
         XCTAssertGreaterThanOrEqual(subs.count, 2)
     }
 

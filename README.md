@@ -19,7 +19,7 @@ Both belong on a glance, not a tab. PRBar puts them on a glance.
 
 - **One badge in the menu bar** that summarises everything — `2 ready · 5 review · 1 ⚠`.
 - **AI review queue, scoped to one monorepo subfolder**, with read-only access (Read / Glob / Grep + WebFetch + per-subfolder MCP tools). The AI is a judge, not a fixer — it can't run code, edit files, or spawn subagents. Hard caps on tool-call count and dollar cost per review.
-- **Per-repo configuration**: which subfolders count as roots, exclude patterns, tool-mode override, optional auto-approve rules with a 30-second undo window.
+- **Per-repo configuration**: which subfolders count as roots, exclude patterns, tool-mode override, optional auto-approve and auto-deny rules with a 30-second undo window.
 - **Coalesced notifications** with action buttons (Merge all / Open) — never one ping per state transition.
 - **Pop a PR out** into a full-size window when the popover is too cramped for a big diff.
 
@@ -39,9 +39,11 @@ For long diffs and detailed review reading. Same content as the popover, full si
 
 ### Settings
 
-| General | Repositories | Diagnostics |
-|---|---|---|
-| ![General](docs/screenshots/settings-general.png) | ![Repositories](docs/screenshots/settings-repositories.png) | ![Diagnostics](docs/screenshots/settings-diagnostics.png) |
+| General | Review defaults | Repositories | Diagnostics |
+|---|---|---|---|
+| ![General](docs/screenshots/settings-general.png) | ![Review defaults](docs/screenshots/settings-review-defaults.png) | ![Repositories](docs/screenshots/settings-repositories.png) | ![Diagnostics](docs/screenshots/settings-diagnostics.png) |
+
+Review defaults set the app-level value of every review setting; a repo rule overrides only what it needs and inherits the rest.
 
 ## How it works
 

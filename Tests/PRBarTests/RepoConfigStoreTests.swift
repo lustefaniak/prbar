@@ -128,4 +128,73 @@ final class RepoConfigStoreTests: XCTestCase {
         let reloaded = RepoConfigStore(container: container)
         XCTAssertEqual(reloaded.userConfigs.map(\.repoGlobs), [["acme/c"], ["acme/a"], ["acme/b"]])
     }
+
+    // MARK: - review defaults
+
+    /// A suite of its own so these never touch the real app's settings.
+    private func isolatedDefaults() -> UserDefaults {
+        let suite = "prbar.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
+        return defaults
+    }
+
+    func testReviewDefaultsPersistAcrossInstances() {
+        let container = PRBarModelContainer.inMemory()
+        let userDefaults = isolatedDefaults()
+
+        let store = RepoConfigStore(container: container, userDefaults: userDefaults)
+        store.defaults.maxCostUsdPerSubreview = 8.0
+        store.defaults.toolMode = .minimal
+
+        let reloaded = RepoConfigStore(container: container, userDefaults: userDefaults)
+        XCTAssertEqual(reloaded.defaults.maxCostUsdPerSubreview, 8.0)
+        XCTAssertEqual(reloaded.defaults.toolMode, .minimal)
+    }
+
+    func testResolveFoldsDefaultsIntoTheMatchingRule() {
+        let store = RepoConfigStore(container: PRBarModelContainer.inMemory(), userDefaults: isolatedDefaults())
+        store.defaults.maxCostUsdPerSubreview = 6.0
+        store.defaults.reviewTimeoutSeconds = 1200
+
+        var rule = RepoConfig.default
+        rule.repoGlobs = ["acme/infra"]
+        rule.reviewTimeoutSeconds = 120
+        store.upsert(rule)
+
+        let matched = store.resolve(owner: "acme", repo: "infra")
+        XCTAssertEqual(matched.reviewTimeoutSeconds, 120, "rule overrides")
+        XCTAssertEqual(matched.maxCostUsdPerSubreview, 6.0, "rest inherits")
+
+        let unmatched = store.resolve(owner: "other", repo: "thing")
+        XCTAssertEqual(unmatched.reviewTimeoutSeconds, 1200)
+        XCTAssertEqual(unmatched.maxCostUsdPerSubreview, 6.0)
+    }
+
+    func testEditingDefaultsFiresOnChange() {
+        let store = RepoConfigStore(container: PRBarModelContainer.inMemory(), userDefaults: isolatedDefaults())
+        var fired = 0
+        store.onChange = { fired += 1 }
+
+        store.defaults.maxCostUsdPerSubreview = 2.0
+        XCTAssertEqual(fired, 1)
+
+        // Re-assigning the same value shouldn't churn the resolvers or
+        // trigger a re-poll — SwiftUI writes bindings back on every edit.
+        store.defaults.maxCostUsdPerSubreview = 2.0
+        XCTAssertEqual(fired, 1)
+    }
+
+    /// The resolver is a snapshot: a stale one must not observe later
+    /// edits, and `onChange` is what hands out a fresh one.
+    func testMakeResolverSnapshotsDefaults() {
+        let store = RepoConfigStore(container: PRBarModelContainer.inMemory(), userDefaults: isolatedDefaults())
+        store.defaults.maxCostUsdPerSubreview = 1.0
+        let resolver = store.makeResolver()
+
+        store.defaults.maxCostUsdPerSubreview = 9.0
+
+        XCTAssertEqual(resolver("acme", "x").maxCostUsdPerSubreview, 1.0)
+        XCTAssertEqual(store.makeResolver()("acme", "x").maxCostUsdPerSubreview, 9.0)
+    }
 }

@@ -86,6 +86,25 @@ final class ResultAggregatorTests: XCTestCase {
         XCTAssertEqual(agg.toolNamesUsed, ["Read", "Grep", "WebFetch"])
     }
 
+    /// The path rewrite rebuilds each annotation field by field, so a
+    /// field left off the initializer is dropped in silence. `title` is
+    /// the one with teeth: `InlineCommentMapper` renders it as the posted
+    /// comment's bolded first line, and `ReviewThreadResolver` reads that
+    /// line back to match a thread to the finding that opened it. Losing
+    /// it unheaders every comment PRBar posts and makes thread resolution
+    /// match nothing — and `displayTitle`'s body fallback hides it in the UI.
+    func testAggregationPreservesAnnotationTitles() {
+        let ann = DiffAnnotation(
+            path: "x.swift", lineStart: 3, lineEnd: 3, severity: .warning,
+            title: "Unchecked nil", body: "this can crash"
+        )
+        let agg = ResultAggregator.aggregate([
+            SubreviewOutcome(subpath: "pkg", result: makeResult(annotations: [ann]))
+        ])!
+        XCTAssertEqual(agg.annotations.first?.title, "Unchecked nil")
+        XCTAssertEqual(agg.annotations.first?.path, "pkg/x.swift", "the rewrite still has to happen")
+    }
+
     // MARK: helpers
 
     private func makeResult(

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Mutex-guarded line buffer for `runStreaming`. The readability handler
@@ -50,6 +51,25 @@ private final class LineBox: @unchecked Sendable {
     }
 }
 
+/// Mutex-guarded holder so the termination handler (fires on an arbitrary
+/// thread) can cancel the timeout watchdog task without a data race.
+private final class TaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+
+    func set(_ task: Task<Void, Never>) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.task = task
+    }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        task?.cancel()
+    }
+}
+
 private final class DataBox: @unchecked Sendable {
     private let lock = NSLock()
     private(set) var data = Data()
@@ -90,6 +110,7 @@ enum ProcessRunner {
         cwd: URL? = nil,
         environment: [String: String]? = nil,
         stdin: Data? = nil,
+        timeout: Duration? = nil,
         onStdoutLine: @escaping @Sendable (String) -> KillDecision
     ) async throws -> ProcessResult {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ProcessResult, Error>) in
@@ -98,6 +119,23 @@ enum ProcessRunner {
             proc.arguments = args
             if let cwd { proc.currentDirectoryURL = cwd }
             proc.environment = childEnvironment(environment)
+
+            // Hard wall-clock ceiling — without this a hung child (e.g. a
+            // model stuck in a tool-enforcement retry loop) never resumes
+            // the continuation. SIGTERM first, SIGKILL after a 5s grace
+            // period if it didn't exit (Process has no native SIGKILL).
+            let timeoutTaskBox = TaskBox()
+            if let timeout {
+                let task = Task.detached {
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled else { return }
+                    proc.terminate()
+                    try? await Task.sleep(for: .seconds(5))
+                    guard !Task.isCancelled, proc.isRunning else { return }
+                    kill(proc.processIdentifier, SIGKILL)
+                }
+                timeoutTaskBox.set(task)
+            }
 
             let outPipe = Pipe()
             let errPipe = Pipe()
@@ -133,6 +171,7 @@ enum ProcessRunner {
             }
 
             proc.terminationHandler = { p in
+                timeoutTaskBox.cancel()
                 // Drain anything still buffered. If the child wrote in
                 // one big chunk *after* we'd registered the readability
                 // handler but before we got to fire it (or wrote without
@@ -193,12 +232,15 @@ enum ProcessRunner {
     /// same dirs `ExecutableResolver` searches lets node (and any tools the
     /// CLI shells out to) resolve. Caller-supplied `environment` is augmented
     /// the same way rather than replaced wholesale.
-    static func childEnvironment(_ override: [String: String]?) -> [String: String] {
+    static func childEnvironment(
+        _ override: [String: String]?,
+        prepending searchPaths: [String] = ExecutableResolver.searchPaths
+    ) -> [String: String] {
         var env = override ?? ProcessInfo.processInfo.environment
         let existing = (env["PATH"] ?? "").split(separator: ":").map(String.init)
         var seen = Set<String>()
         var ordered: [String] = []
-        for dir in ExecutableResolver.searchPaths + existing where seen.insert(dir).inserted {
+        for dir in searchPaths + existing where seen.insert(dir).inserted {
             ordered.append(dir)
         }
         env["PATH"] = ordered.joined(separator: ":")

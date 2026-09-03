@@ -104,7 +104,7 @@ final class ReviewQueueWorkerTests: XCTestCase {
         worker.configResolver = { _, _ in
             var c = RepoConfig.default
             c.forceFullReview = true
-            return c
+            return c.resolved()
         }
 
         let oldPR = makePR(nodeId: "PR_F", number: 7, headSha: "oldShaA")
@@ -140,7 +140,7 @@ final class ReviewQueueWorkerTests: XCTestCase {
         worker.defaultProviderId = .claude
 
         // 1. No overrides → app default (claude).
-        worker.configResolver = { _, _ in RepoConfig.default }
+        worker.configResolver = { _, _ in RepoConfig.default.resolved() }
         worker.enqueue(makePR(nodeId: "P1", number: 1))
         try await waitUntil { self.isCompleted(worker.reviews["P1"]?.status) }
         XCTAssertEqual(recorder.lastUsed, .claude)
@@ -150,7 +150,7 @@ final class ReviewQueueWorkerTests: XCTestCase {
         worker.configResolver = { _, _ in
             var c = RepoConfig.default
             c.providerOverride = .codex
-            return c
+            return c.resolved()
         }
         worker.enqueue(makePR(nodeId: "P2", number: 2))
         try await waitUntil { self.isCompleted(worker.reviews["P2"]?.status) }
@@ -163,6 +163,32 @@ final class ReviewQueueWorkerTests: XCTestCase {
         XCTAssertEqual(recorder.lastUsed, .claude,
             "per-run override should beat repo override")
         XCTAssertEqual(worker.reviews["P3"]?.providerId, .claude)
+    }
+
+    func testResolveModelAndEffortPrecedence() {
+        let worker = makeWorker(provider: StubProvider(verdict: .approve, summary: "s", cost: 0), diffText: "")
+        worker.defaultClaudeModel = "sonnet"
+        worker.defaultClaudeEffort = ""
+        worker.defaultCodexModel = ""
+        worker.defaultCodexEffort = "medium"
+
+        // App default only.
+        let noOverrides = RepoConfig.default.resolved()
+        XCTAssertEqual(worker.resolveModel(providerId: .claude, config: noOverrides), "sonnet")
+        XCTAssertNil(worker.resolveEffort(providerId: .claude, config: noOverrides))
+        XCTAssertNil(worker.resolveModel(providerId: .codex, config: noOverrides))
+        XCTAssertEqual(worker.resolveEffort(providerId: .codex, config: noOverrides), "medium")
+
+        // Repo override wins over app default.
+        var cfg = RepoConfig.default
+        cfg.claudeModelOverride = "opus"
+        cfg.claudeEffortOverride = "high"
+        cfg.codexModelOverride = "gpt-5.5"
+        cfg.codexEffortOverride = "low"
+        XCTAssertEqual(worker.resolveModel(providerId: .claude, config: cfg.resolved()), "opus")
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: cfg.resolved()), "high")
+        XCTAssertEqual(worker.resolveModel(providerId: .codex, config: cfg.resolved()), "gpt-5.5")
+        XCTAssertEqual(worker.resolveEffort(providerId: .codex, config: cfg.resolved()), "low")
     }
 
     func testForceReRunReevaluatesCompletedPR() async throws {
@@ -328,12 +354,24 @@ final class StubProvider: ReviewProvider, @unchecked Sendable {
     var verdict: ReviewVerdict
     var summary: String
     var cost: Double
+    /// Defaulted so the ~dozen existing call sites compile unchanged;
+    /// the auto-review staging tests need a provider that emits them.
+    var annotations: [DiffAnnotation]
+    var confidence: Double
     private(set) var callCount: Int = 0
 
-    init(verdict: ReviewVerdict, summary: String, cost: Double) {
+    init(
+        verdict: ReviewVerdict,
+        summary: String,
+        cost: Double,
+        annotations: [DiffAnnotation] = [],
+        confidence: Double = 0.9
+    ) {
         self.verdict = verdict
         self.summary = summary
         self.cost = cost
+        self.annotations = annotations
+        self.confidence = confidence
     }
 
     func availability() async -> ProviderAvailability { .ready }
@@ -345,8 +383,8 @@ final class StubProvider: ReviewProvider, @unchecked Sendable {
     ) async throws -> ProviderResult {
         callCount += 1
         return ProviderResult(
-            verdict: verdict, confidence: 0.9, summaryMarkdown: summary,
-            annotations: [], costUsd: cost, toolCallCount: 0, toolNamesUsed: [],
+            verdict: verdict, confidence: confidence, summaryMarkdown: summary,
+            annotations: annotations, costUsd: cost, toolCallCount: 0, toolNamesUsed: [],
             rawJson: Data()
         )
     }

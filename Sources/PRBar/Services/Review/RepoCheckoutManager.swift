@@ -83,6 +83,11 @@ actor RepoCheckoutManager {
         try? FileManager.default.createDirectory(at: bareReposDir, withIntermediateDirectories: true)
     }
 
+    /// Commit depth fetched for a review. 50 is plenty to diff a PR against
+    /// its base; `RiskBrief`'s churn term wants far more, since on a busy
+    /// monorepo 50 commits span only a couple of days.
+    static let defaultHistoryDepth = 50
+
     /// Provision a worktree at `headSha`. The returned `Handle.workdir` is
     /// the path the review should `cd` into — either the worktree root
     /// (when `subpath = ""`) or `<worktree>/<subpath>` for monorepo
@@ -91,21 +96,30 @@ actor RepoCheckoutManager {
     /// First call for a given (owner, repo) does a bare clone (slow,
     /// ~MB-scale). Subsequent calls reuse the bare clone and only fetch
     /// the new SHA.
+    ///
+    /// Every fetch here uses the same `depth`. They must agree: base and head
+    /// share ancestry, so a shallower base fetch re-truncates what the head
+    /// fetch just deepened.
     func provision(
         owner: String,
         repo: String,
         headSha: String,
         subpath: String,
-        baseRef: String = ""
+        baseRef: String = "",
+        historyDepth: Int = RepoCheckoutManager.defaultHistoryDepth
     ) async throws -> Handle {
+        let depth = max(historyDepth, Self.defaultHistoryDepth)
         try await ensureBareClone(owner: owner, repo: repo)
-        try await fetchSha(owner: owner, repo: repo, headSha: headSha)
+        try await fetchSha(owner: owner, repo: repo, headSha: headSha, depth: depth)
         // `.sandboxed` reviews diff against the base offline, so fetch the
         // base branch tip and resolve it to a SHA. Best-effort: an empty
         // result just means the prompt falls back to `git diff HEAD~1 HEAD`.
         let baseSha = baseRef.isEmpty
             ? ""
-            : await fetchBaseRef(owner: owner, repo: repo, baseRef: baseRef, headSha: headSha)
+            : await fetchBaseRef(
+                owner: owner, repo: repo, baseRef: baseRef,
+                headSha: headSha, depth: depth
+            )
         let worktree = try await addWorktree(
             owner: owner, repo: repo, headSha: headSha
         )
@@ -201,12 +215,25 @@ actor RepoCheckoutManager {
         }
     }
 
-    private func fetchSha(owner: String, repo: String, headSha: String) async throws {
+    /// Fetch `headSha` with `depth` commits of ancestry.
+    ///
+    /// Deepening is nearly free because the clone is `--filter=blob:none`:
+    /// the fetch carries commits and trees but never blobs, so file *size*
+    /// (binaries, vendored assets) does not enter into it. Measured on a
+    /// ~160 MB blobless monorepo clone, going from 10 to 1000 commits cost
+    /// 6.9 s and 1.8 MiB of pack. That buys `RiskBrief` a churn window
+    /// measured in months instead of days.
+    private func fetchSha(
+        owner: String,
+        repo: String,
+        headSha: String,
+        depth: Int
+    ) async throws {
         let bare = barePath(owner: owner, repo: repo)
         let result = try await runGit(args: [
             "--git-dir", bare.path,
             "fetch", "origin", headSha,
-            "--depth=50", "--filter=blob:none",
+            "--depth=\(depth)", "--filter=blob:none",
         ])
         // Already-have-the-SHA isn't a failure — git reports "fatal:
         // remote error" for unreachable SHAs but exits 0 when no fetch is
@@ -216,7 +243,7 @@ actor RepoCheckoutManager {
             // is off. Fall back to a default fetch — slower but always works.
             let fallback = try await runGit(args: [
                 "--git-dir", bare.path,
-                "fetch", "origin", "--depth=50", "--filter=blob:none",
+                "fetch", "origin", "--depth=\(depth)", "--filter=blob:none",
             ])
             guard fallback.succeeded else {
                 throw CheckoutError.execFailed(
@@ -261,14 +288,20 @@ actor RepoCheckoutManager {
     /// Fetch the base branch tip into a per-headSha private ref and resolve
     /// it to a commit SHA. Returns "" on any failure (caller proceeds
     /// without a base — the prompt degrades to `git diff HEAD~1 HEAD`).
+    /// `depth` must match the head fetch's. A shallower fetch here would
+    /// re-truncate the ancestry the head fetch just deepened — base and head
+    /// share history, so `--depth=50` on the base silently undid a
+    /// `--depth=1000` head fetch and left `RiskBrief`'s churn window at ~50
+    /// commits. Caught by running the live harness after wiring the deepen:
+    /// churn read 51 commits from a clone that had 868.
     private func fetchBaseRef(
-        owner: String, repo: String, baseRef: String, headSha: String
+        owner: String, repo: String, baseRef: String, headSha: String, depth: Int
     ) async -> String {
         let bare = barePath(owner: owner, repo: repo)
         let localRef = "refs/prbar/base-\(headSha.prefix(12))"
         let fetch = try? await runGit(args: [
             "--git-dir", bare.path, "fetch", "origin",
-            "+\(baseRef):\(localRef)", "--depth=50", "--filter=blob:none",
+            "+\(baseRef):\(localRef)", "--depth=\(depth)", "--filter=blob:none",
         ])
         guard fetch?.succeeded == true else { return "" }
         let rev = try? await runGit(args: ["--git-dir", bare.path, "rev-parse", localRef])

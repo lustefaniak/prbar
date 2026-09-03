@@ -725,6 +725,9 @@ struct PRDetailView: View {
                         .lineLimit(4)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
+                    if let hint = ReviewFailureHint.hint(for: msg) {
+                        failureHintView(hint)
+                    }
                     if let prior = priorReview {
                         priorReviewBanner(prior)
                         completedReviewSection(prior.aggregated)
@@ -742,9 +745,37 @@ struct PRDetailView: View {
                     Text("Press Re-run to triage this PR anyway.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                    Button("Open \(SettingsDestination.reviewDefaults.title)") {
+                        SettingsDestination.open(.reviewDefaults)
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption2)
                 }
             }
         }
+    }
+
+    /// Points a failure at the setting behind it. The message alone names
+    /// a number; this names the control and opens the tab holding it.
+    @ViewBuilder
+    private func failureHintView(_ hint: ReviewFailureHint) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "lightbulb")
+                .foregroundStyle(.secondary)
+            Text(hint.explanation)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(hint.actionTitle) {
+                SettingsDestination.open(hint.destination)
+            }
+            .buttonStyle(.link)
+            .font(.caption2)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
     }
 
     /// In-flight review shows: spinner + label + (when this is a
@@ -1079,7 +1110,7 @@ struct PRDetailView: View {
         case .merge(let m): return "Merged (\(m.shortDisplayName))"
         case .enableAutoMerge(let m): return "Auto-merge (\(m.shortDisplayName)) enabled"
         case .disableAutoMerge: return "Auto-merge disabled"
-        case .review: return nil
+        case .review, .resolveThreads, .requestReviewer: return nil
         }
     }
 
@@ -1585,49 +1616,7 @@ struct PRDetailView: View {
     private var postableInlineComments: [GHClient.InlineComment] {
         guard let annotations = review?.annotations, !annotations.isEmpty else { return [] }
         guard case .loaded(let hunks) = diffStore.status(for: pr) else { return [] }
-        return Self.inlineComments(from: annotations, hunks: hunks)
-    }
-
-    /// Map annotations whose `(path, lineEnd)` lands on an added or
-    /// context line in the new file to a GHClient.InlineComment. Body
-    /// is the annotation's body (full text); the title isn't included
-    /// because GitHub renders the comment as plain Markdown.
-    static func inlineComments(
-        from annotations: [DiffAnnotation],
-        hunks: [Hunk]
-    ) -> [GHClient.InlineComment] {
-        // Build per-path map of valid new-file line numbers.
-        var validByPath: [String: Set<Int>] = [:]
-        for h in hunks {
-            var newLine = h.newStart
-            var valid: Set<Int> = []
-            for line in h.lines {
-                switch line {
-                case .added, .context:
-                    valid.insert(newLine)
-                    newLine += 1
-                case .removed:
-                    break
-                }
-            }
-            validByPath[h.filePath, default: []].formUnion(valid)
-        }
-        return annotations.compactMap { ann in
-            guard let valid = validByPath[ann.path] else { return nil }
-            guard valid.contains(ann.lineEnd) else { return nil }
-            let startLine = ann.lineStart < ann.lineEnd && valid.contains(ann.lineStart)
-                ? ann.lineStart : nil
-            let header: String = {
-                if let t = ann.title, !t.isEmpty { return "**\(t)**\n\n" }
-                return ""
-            }()
-            return GHClient.InlineComment(
-                path: ann.path,
-                line: ann.lineEnd,
-                startLine: startLine,
-                body: header + ann.body
-            )
-        }
+        return InlineCommentMapper.map(annotations: annotations, hunks: hunks)
     }
 
     /// Informational verdict pill. Posting now happens through the

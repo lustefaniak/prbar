@@ -20,6 +20,11 @@ struct PromptBundle: Sendable {
     let prNodeId: String
     let subpath: String          // empty string = "repo root"
 
+    /// Human-readable session label (e.g. "prbar: getsynq/cloud#23364
+    /// (root)") so provider sessions are identifiable in `claude --resume`
+    /// / session pickers instead of showing up unlabeled.
+    var sessionLabel: String = ""
+
     /// `.sandboxed` mode only: the PR base commit SHA, so the prompt can
     /// tell the agent the range to explore (`git diff <baseSha> HEAD`).
     /// Empty when not applicable.
@@ -27,9 +32,20 @@ struct PromptBundle: Sendable {
 }
 
 struct ProviderOptions: Sendable {
-    /// Optional model override; nil = let the CLI pick its default
-    /// (typically "sonnet" for `claude`).
+    /// Optional model override; nil = let the CLI pick its own default
+    /// (whatever's configured outside PRBar — e.g. a user's `claude`
+    /// default model, which need not be "sonnet"). Callers resolve this
+    /// from `ReviewQueueWorker.defaultClaudeModel` /
+    /// `defaultCodexModel` + `RepoConfig` overrides before building
+    /// options — see `ReviewQueueWorker.resolveModel(providerId:config:)`.
     var model: String?
+
+    /// Optional reasoning-effort override; nil = let the CLI pick its
+    /// own default. Claude's `--effort` accepts low/medium/high/xhigh/max;
+    /// codex's `model_reasoning_effort` accepts
+    /// none/minimal/low/medium/high/xhigh. Neither CLI has a native
+    /// "auto" value — nil (no flag) is the closest equivalent.
+    var effort: String?
 
     var toolMode: ToolMode = .minimal
 
@@ -49,8 +65,12 @@ struct ProviderOptions: Sendable {
 
     /// Hard ceiling for the whole `claude -p` call. SIGTERM-then-SIGKILL on
     /// timeout. Default is generous because tool-mode reviews can take a
-    /// while; pure-prompt mode finishes much faster.
-    var timeout: Duration = .seconds(120)
+    /// while — `.sandboxed` explores a worktree over multiple turns and
+    /// legitimately runs minutes on a large PR; pure-prompt mode finishes
+    /// much faster. The live worker resolves this per-repo from
+    /// `RepoConfig.reviewTimeoutSeconds`; this default only applies to
+    /// direct constructions (tests, non-worker callers).
+    var timeout: Duration = .seconds(600)
 
     /// JSON Schema bytes for `--json-schema`. Always required so the
     /// provider doesn't have to load it itself.

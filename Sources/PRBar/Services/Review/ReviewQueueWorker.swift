@@ -203,12 +203,55 @@ final class ReviewQueueWorker {
     /// wins over this; per-run override (set on enqueue) wins over both.
     var defaultProviderId: ProviderID = .claude
 
-    /// What tool-access mode the provider runs in. Defaults to
-    /// `.sandboxed`: claude reviews against a real OS-sandboxed worktree
-    /// and explores the change with git rather than reading an inlined
-    /// diff. Falls back to `.none` (inline diff) when no checkout can be
-    /// provisioned or for non-claude providers.
-    var toolMode: ToolMode = .sandboxed
+    /// App-level default `--model` for the claude provider. Defaults to
+    /// the "sonnet" alias so a user's own `claude` CLI default (e.g. a
+    /// non-default model picked in an interactive session) never leaks
+    /// into unattended PRBar reviews and silently burns their quota.
+    /// Empty string = no override (claude's own default applies).
+    /// `RepoConfig.claudeModelOverride` wins over this.
+    var defaultClaudeModel: String = "sonnet"
+
+    /// App-level default `--effort` for the claude provider. Empty =
+    /// no flag passed (claude's own default effort applies — there is
+    /// no native "auto" value, this is the closest equivalent).
+    /// `RepoConfig.claudeEffortOverride` wins over this.
+    var defaultClaudeEffort: String = ""
+
+    /// App-level default `--model` for the codex provider. Empty = no
+    /// override (codex's own configured default applies). Unlike
+    /// claude, codex has no stable short aliases, so there's no safe
+    /// non-empty default to hardcode here.
+    /// `RepoConfig.codexModelOverride` wins over this.
+    var defaultCodexModel: String = ""
+
+    /// App-level default `model_reasoning_effort` for the codex
+    /// provider. Empty = no override (codex's own configured default
+    /// applies). `RepoConfig.codexEffortOverride` wins over this.
+    var defaultCodexEffort: String = ""
+
+    /// Resolve the `--model` to pass for a run: repo override wins over
+    /// the app-level default; empty strings (unset fields) mean "no
+    /// override" and resolve to nil (no `--model` flag).
+    func resolveModel(providerId: ProviderID, config: ResolvedRepoConfig) -> String? {
+        switch providerId {
+        case .claude: return Self.nonEmpty(config.claudeModelOverride) ?? Self.nonEmpty(defaultClaudeModel)
+        case .codex:  return Self.nonEmpty(config.codexModelOverride) ?? Self.nonEmpty(defaultCodexModel)
+        }
+    }
+
+    /// Resolve the reasoning-effort override to pass for a run. Same
+    /// repo-override-wins-over-app-default precedence as `resolveModel`.
+    func resolveEffort(providerId: ProviderID, config: ResolvedRepoConfig) -> String? {
+        switch providerId {
+        case .claude: return Self.nonEmpty(config.claudeEffortOverride) ?? Self.nonEmpty(defaultClaudeEffort)
+        case .codex:  return Self.nonEmpty(config.codexEffortOverride) ?? Self.nonEmpty(defaultCodexEffort)
+        }
+    }
+
+    private static func nonEmpty(_ s: String?) -> String? {
+        guard let s, !s.isEmpty else { return nil }
+        return s
+    }
 
     /// Closure that fetches the unified diff for a PR. Injected so tests
     /// don't need a real `gh` install.
@@ -223,12 +266,13 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var failureLogStore: FailureLogStore?
 
-    /// Resolves the per-repo config used when reviewing a PR. Pluggable so
+    /// Resolves the effective config used when reviewing a PR — the
+    /// matching repo rule with `ReviewDefaults` folded in. Pluggable so
     /// tests can stub it and runtime can swap the live `RepoConfigStore`.
-    /// Default uses the built-in registry only.
+    /// Default uses the built-in registry and the shipped defaults.
     @ObservationIgnored
-    var configResolver: @Sendable (_ owner: String, _ repo: String) -> RepoConfig = { owner, repo in
-        RepoConfig.match(owner: owner, repo: repo)
+    var configResolver: @Sendable (_ owner: String, _ repo: String) -> ResolvedRepoConfig = { owner, repo in
+        RepoConfig.match(owner: owner, repo: repo).resolved()
     }
 
     /// On-disk checkout manager. Used in `.minimal` tool mode to give the
@@ -236,6 +280,31 @@ final class ReviewQueueWorker {
     /// dirs (which only makes sense in `.none` mode anyway).
     @ObservationIgnored
     var checkoutManager: RepoCheckoutManager?
+
+    /// Fetches a PR's review threads. Injected so tests don't shell out;
+    /// nil disables the resolve-on-triage path entirely.
+    @ObservationIgnored
+    var reviewThreadFetcher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> ReviewThreadPage)?
+
+    /// Hands a batch of resolvable thread ids to `ActionQueue`. Wired in
+    /// `AppDelegate`; nil in tests that only assert the decision.
+    @ObservationIgnored
+    var enqueueResolveThreads: (@MainActor (_ pr: InboxPR, _ threadIds: [String]) -> Void)?
+
+    /// Reads commit history for `RiskBrief`'s churn term. Injected so tests
+    /// exercise the brief without a real checkout; returning nil is the
+    /// normal degraded path, not an error.
+    @ObservationIgnored
+    var churnFetcher: @Sendable (_ worktree: URL, _ windowDays: Int) async -> ChurnWindow? = { worktree, days in
+        await GitChurn.fetch(worktree: worktree, windowDays: days)
+    }
+
+    /// Finds changed files carrying a generated-code marker, for
+    /// `RiskBrief`. Injected so tests don't need files on disk.
+    @ObservationIgnored
+    var generatedScanner: @Sendable (_ paths: [String], _ worktree: URL) async -> Set<String> = { paths, worktree in
+        await GeneratedCodeScanner.scan(paths: paths, in: worktree)
+    }
 
     @ObservationIgnored
     private var inFlight: Int = 0
@@ -256,19 +325,29 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var cache: ReviewCache?
 
-    // MARK: - Auto-approve batch state
+    // MARK: - Auto-review batch state
     //
-    // Approvals stage here when `AutoApprovePolicy` says yes. The undo
-    // banner only appears once *all* enqueued reviews have settled
+    // Approvals and denials stage here when `AutoReviewPolicy` says yes.
+    // The undo banner only appears once *all* enqueued reviews have settled
     // (no .queued / .running). Design goal: one context switch per cycle,
     // not one per PR.
 
-    /// PRs the worker would auto-approve, keyed by node ID. Population
-    /// happens at completion time; presentation is gated by `batchReady`.
-    private(set) var pendingAutoApprovals: [String: PendingAutoApprove] = [:]
+    /// PRs with a staged post (approve / comment / request-changes), keyed
+    /// by node ID. Population happens at completion time; presentation is
+    /// gated by `batchUndoActive`.
+    private(set) var pendingAutoActions: [String: StagedAutoReview] = [:]
+
+    /// PRs whose negative verdict cleared the deny gates under
+    /// `AutoDenyAction.flagOnly`. Nothing is ever posted for these — they
+    /// exist so the banner can surface "the AI wants changes here" without
+    /// PRBar speaking on the user's behalf. In-memory only: the verdict
+    /// itself persists in `reviews`, so a relaunch loses the nudge, not the
+    /// finding.
+    private(set) var flaggedDenials: [String: StagedAutoReview] = [:]
 
     /// True when a batch undo banner is currently counting down (visible
-    /// in `PopoverView`). Set by `commitBatch()`, cleared on undo / fire.
+    /// in `PopoverView`). Set by `scheduleBatchIfSettled()`, cleared on
+    /// undo / fire.
     private(set) var batchUndoActive: Bool = false
 
     /// Wall-clock deadline at which the batch fires. Nil unless the
@@ -278,26 +357,39 @@ final class ReviewQueueWorker {
     /// How long the user has to undo the staged batch. 30 s per PLAN.
     var undoWindow: TimeInterval = 30
 
-    /// Closure that posts the actual `gh pr review --approve`. Injected
-    /// so tests don't shell out. Default uses the shared `GHClient`.
-    /// Only used by the fallback path when `enqueueAutoApprove` is nil
-    /// (i.e. in tests); production routes through `ActionQueue` instead.
+    /// Closure that posts a staged auto-review. Injected so tests don't
+    /// shell out. Only used by the fallback path when `enqueueAutoReview`
+    /// is nil (i.e. in tests); production routes through `ActionQueue`.
     @ObservationIgnored
-    var approvePoster: @Sendable (_ pr: InboxPR, _ body: String) async throws -> Void = { pr, body in
+    var autoReviewPoster: @Sendable (
+        _ pr: InboxPR, _ kind: ReviewActionKind, _ body: String,
+        _ comments: [GHClient.InlineComment]
+    ) async throws -> Void = { pr, kind, body, comments in
         let c = try GHClient()
-        try await c.postReview(
-            owner: pr.owner, repo: pr.repo, number: pr.number,
-            kind: .approve, body: body
-        )
+        if comments.isEmpty {
+            try await c.postReview(
+                owner: pr.owner, repo: pr.repo, number: pr.number,
+                kind: kind, body: body
+            )
+        } else {
+            try await c.postReviewWithComments(
+                owner: pr.owner, repo: pr.repo, number: pr.number,
+                event: kind.apiEvent, body: body, comments: comments
+            )
+        }
     }
 
-    /// When set, `fireBatch` hands each staged approval to the shared
-    /// `ActionQueue` instead of posting it inline — so auto-approve shares
+    /// When set, `fireBatch` hands each staged post to the shared
+    /// `ActionQueue` instead of posting it inline — so auto-review shares
     /// the same serialization, dedup, retry, and action-log path as manual
-    /// writes. Nil keeps the legacy `approvePoster` path (tests). Wired by
-    /// `AppDelegate`.
+    /// writes. Nil keeps the legacy `autoReviewPoster` path (tests). Wired
+    /// by `AppDelegate`.
     @ObservationIgnored
-    var enqueueAutoApprove: (@MainActor (_ pr: InboxPR, _ body: String, _ costUsd: Double) -> Void)?
+    var enqueueAutoReview: (@MainActor (
+        _ pr: InboxPR, _ kind: ReviewActionKind, _ body: String,
+        _ comments: [GHClient.InlineComment], _ costUsd: Double,
+        _ source: ActionSource
+    ) -> Void)?
 
     @ObservationIgnored
     private var batchTimer: Task<Void, Never>?
@@ -321,16 +413,29 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     weak var reviewLog: ReviewLogStore?
 
-    /// Hook fired after a successful auto-approve post so the inbox row
+    /// Hook fired after a successful auto-review post so the inbox row
     /// reflects the new reviewDecision without waiting for the next 60s
     /// poll. Wired to `PRPoller.refreshPR` from `AppDelegate`.
     @ObservationIgnored
-    var onAutoApproved: (@MainActor (_ pr: InboxPR) -> Void)?
+    var onAutoReviewPosted: (@MainActor (_ pr: InboxPR) -> Void)?
 
-    struct PendingAutoApprove: Sendable, Hashable {
+    /// One decided-but-not-yet-posted auto review. Body and inline
+    /// comments are resolved at staging time, while the run's diff is
+    /// still in hand — `fireBatch` runs minutes later and has no diff.
+    struct StagedAutoReview: Sendable, Hashable, Identifiable {
+        var id: String { pr.nodeId }
         let pr: InboxPR
         let review: AggregatedReview
+        /// The GitHub review action to post. Nil for `.flagOnly` denials,
+        /// which never reach `fireBatch`.
+        let action: ReviewActionKind?
+        let body: String
+        let comments: [GHClient.InlineComment]
         let stagedAt: Date
+        /// Distinguishes a share from an auto-approve/deny post. Both post
+        /// the same COMMENT event with the same body shape, so the source
+        /// is the only thing that tells them apart downstream.
+        var source: ActionSource = .automated
     }
 
     init(
@@ -362,7 +467,7 @@ final class ReviewQueueWorker {
     static func live() -> ReviewQueueWorker {
         let client = try? GHClient()
         let checkout = RepoCheckoutManager()
-        return ReviewQueueWorker(
+        let worker = ReviewQueueWorker(
             diffFetcher: { owner, repo, number in
                 let c = try client ?? GHClient()
                 return try await c.fetchDiff(owner: owner, repo: repo, number: number)
@@ -371,6 +476,11 @@ final class ReviewQueueWorker {
             cache: ReviewCache.live(),
             failureLogStore: FailureLogStore.live()
         )
+        worker.reviewThreadFetcher = { owner, repo, number in
+            let c = try client ?? GHClient()
+            return try await c.fetchReviewThreads(owner: owner, repo: repo, number: number)
+        }
+        return worker
         // reviewLog is wired separately by AppDelegate so all stores
         // share one ModelContainer (sharing the container keeps SwiftData
         // notifications consistent across @Query consumers).
@@ -453,7 +563,8 @@ final class ReviewQueueWorker {
         if dailyCostCapEnabled && cumulativeSpend() >= dailyCostCap {
             PRBarLog.triage.notice("enqueue blocked reason=daily-cap pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) cap=\(self.fmt(self.dailyCostCap), privacy: .public)")
             let now = Date()
-            let capMessage = "Daily $\(String(format: "%.2f", dailyCostCap)) cap reached."
+            let capMessage = "Daily $\(String(format: "%.2f", dailyCostCap)) cap reached. "
+                + "Raise it in Settings → General."
             reviews[pr.nodeId] = ReviewState(
                 prNodeId: pr.nodeId,
                 providerId: resolvedProviderId,
@@ -644,7 +755,9 @@ final class ReviewQueueWorker {
             let chosenProviderId = item.providerOverride
                 ?? config.providerOverride
                 ?? defaultProviderId
-            var effectiveToolMode = config.toolModeOverride ?? toolMode
+            let resolvedModel = resolveModel(providerId: chosenProviderId, config: config)
+            let resolvedEffort = resolveEffort(providerId: chosenProviderId, config: config)
+            var effectiveToolMode = config.toolMode
             // `.sandboxed` works for both providers: claude via its
             // `--settings` Seatbelt sandbox, codex via `exec --sandbox
             // read-only`. Both explore the worktree with git instead of an
@@ -677,7 +790,10 @@ final class ReviewQueueWorker {
                     sharedHandle = try await mgr.provision(
                         owner: pr.owner, repo: pr.repo,
                         headSha: pr.headSha, subpath: "",
-                        baseRef: effectiveToolMode == .sandboxed ? pr.baseRef : ""
+                        baseRef: effectiveToolMode == .sandboxed ? pr.baseRef : "",
+                        historyDepth: config.riskBriefEnabled && config.churnWindowDays > 0
+                            ? config.churnHistoryDepth
+                            : RepoCheckoutManager.defaultHistoryDepth
                     )
                 } catch {
                     // Checkout unavailable (no git/gh, network, etc.) — degrade
@@ -718,6 +834,23 @@ final class ReviewQueueWorker {
             } else {
                 chosenProvider = provider
             }
+            // Commit history for the risk brief's churn term. Read once per
+            // run (not per subdiff) — it's a single `git log` over the whole
+            // worktree and every subdiff indexes into the same map. Needs a
+            // checkout; without one the brief still ships, minus churn.
+            var churn: ChurnWindow? = nil
+            var markedGenerated: Set<String> = []
+            if config.riskBriefEnabled, let handle = sharedHandle {
+                if config.churnWindowDays > 0 {
+                    churn = await churnFetcher(handle.worktreePath, config.churnWindowDays)
+                }
+                // One scan across every subdiff's files — the same file can't
+                // appear in two subdiffs, and one pass keeps the ceiling in
+                // `GeneratedCodeScanner.maxFilesScanned` PR-wide.
+                let allPaths = subdiffs.flatMap(\.filePaths)
+                markedGenerated = await generatedScanner(allPaths, handle.worktreePath)
+            }
+
             // Local alias for the loop; the outer `completedOutcomes`
             // is what survives a throw. We append to both in lockstep.
             var outcomes: [SubreviewOutcome] = []
@@ -733,16 +866,24 @@ final class ReviewQueueWorker {
                     baseSha: sharedHandle?.baseSha ?? "",
                     customSystemPrompt: config.customSystemPrompt,
                     replaceBaseSystemPrompt: config.replaceBaseSystemPrompt,
-                    priorReviews: priorChainForPrompt
+                    priorReviews: priorChainForPrompt,
+                    riskBrief: config.riskBriefEnabled
+                        ? RiskBrief.compute(
+                            subdiff: subdiff,
+                            churn: churn,
+                            markedGenerated: markedGenerated
+                        )
+                        : nil
                 )
                 let options = ProviderOptions(
-                    model: nil,
+                    model: resolvedModel,
+                    effort: resolvedEffort,
                     toolMode: effectiveToolMode,
                     additionalAddDirs: [],
                     repoBarePath: sharedHandle?.barePath,
                     maxToolCalls: config.maxToolCallsPerSubreview,
                     maxCostUsd: config.maxCostUsdPerSubreview,
-                    timeout: .seconds(120),
+                    timeout: .seconds(config.reviewTimeoutSeconds),
                     schema: try PromptLibrary.outputSchema()
                 )
                 let subStart = Date()
@@ -798,7 +939,11 @@ final class ReviewQueueWorker {
                 pr: pr, headSha: pr.headSha, providerId: provId,
                 triggeredAt: triggeredAt, review: aggregated
             )
-            stageAutoApproveIfEligible(pr: pr, review: aggregated, config: config)
+            stageAutoReviewIfEligible(
+                pr: pr, review: aggregated, config: config,
+                providerId: chosenProviderId, diffText: diffText
+            )
+            await resolveAddressedThreads(pr: pr, review: aggregated, config: config)
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
@@ -851,29 +996,190 @@ final class ReviewQueueWorker {
         return tmp
     }
 
-    // MARK: - auto-approve batching
-
-    private func stageAutoApproveIfEligible(
+    /// Close the review threads this triage considers dealt with.
+    ///
+    /// Runs after every completed triage, not just after a share: threads
+    /// PRBar opened via auto-deny inline comments deserve the same
+    /// treatment, and the gate in `ReviewThreadResolver` is what decides
+    /// eligibility, not the caller.
+    ///
+    /// Three things have to line up before anything is queued, and each
+    /// guards a different way this can be wrong:
+    ///
+    /// - **Opt-in.** Resolving collapses a thread for every human on the
+    ///   PR, so it is never inherited silently. `ResolveThreadsConfig`
+    ///   ships off.
+    /// - **Confidence.** The signal that closes a thread is a finding's
+    ///   *absence*, which is also what a degraded run produces. A run
+    ///   under the floor closes nothing.
+    /// - **Head SHA.** Threads are read live but the annotations come from
+    ///   the commit this triage ran on. If the author pushed while the
+    ///   review was running, GitHub's `isOutdated` reflects *their* push
+    ///   while our findings describe the previous head — stale findings
+    ///   would close threads on code nobody has reviewed yet.
+    ///
+    /// The resolve itself goes through `ActionQueue` like every other
+    /// GitHub write, so it is serialized against this PR's other writes,
+    /// retryable, and visible in History.
+    private func resolveAddressedThreads(
         pr: InboxPR,
         review: AggregatedReview,
-        config: RepoConfig
-    ) {
-        let decision = AutoApprovePolicy.evaluate(
-            pr: pr, review: review, config: config.autoApprove
-        )
-        guard case .approve = decision else { return }
-        pendingAutoApprovals[pr.nodeId] = PendingAutoApprove(
-            pr: pr, review: review, stagedAt: Date()
-        )
-        scheduleBatchIfSettled()
+        config: ResolvedRepoConfig
+    ) async {
+        let policy = config.resolveThreads
+        guard policy.enabled else { return }
+        guard let fetcher = reviewThreadFetcher else { return }
+        guard review.confidence >= policy.minConfidence else {
+            PRBarLog.triage.notice("thread resolve skipped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=low-confidence conf=\(self.fmt(review.confidence), privacy: .public)")
+            return
+        }
+        do {
+            let page = try await fetcher(pr.owner, pr.repo, pr.number)
+            guard page.headRefOid == pr.headSha else {
+                PRBarLog.triage.notice("thread resolve skipped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=head-moved reviewed=\(self.short(pr.headSha), privacy: .public) now=\(self.short(page.headRefOid), privacy: .public)")
+                return
+            }
+            let targets = ReviewThreadResolver.resolvable(
+                threads: page.threads,
+                annotations: review.annotations,
+                viewerLogin: page.viewerLogin,
+                prAuthor: pr.author
+            )
+            guard !targets.isEmpty else { return }
+            PRBarLog.triage.notice("thread resolve queued pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) count=\(targets.count, privacy: .public)")
+            enqueueResolveThreads?(pr, targets.map(\.id))
+        } catch {
+            PRBarLog.triage.error("thread fetch failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
     }
 
-    /// Start the undo-window timer iff (a) we have staged approvals and
+    // MARK: - auto-review batching
+
+    /// Evaluate both auto-review sides and stage whatever clears. Called
+    /// with the run's `diffText` still in scope so inline comments can be
+    /// correlated against the diff now — `fireBatch` runs after the undo
+    /// window and no longer has one.
+    private func stageAutoReviewIfEligible(
+        pr: InboxPR,
+        review: AggregatedReview,
+        config: ResolvedRepoConfig,
+        providerId: ProviderID,
+        diffText: String
+    ) {
+        // A fresh verdict supersedes whatever the previous run decided for
+        // this PR — including a still-counting-down staged post from an
+        // older SHA, which would otherwise fire against a review nobody
+        // holds anymore.
+        pendingAutoActions[pr.nodeId] = nil
+        flaggedDenials[pr.nodeId] = nil
+        // Removing the last entry mid-countdown would otherwise leave the
+        // banner ticking down to a batch with nothing in it.
+        if batchUndoActive && pendingAutoActions.isEmpty {
+            cancelAutoReviewBatch()
+        }
+
+        let decision = AutoReviewPolicy.evaluate(
+            pr: pr, review: review, providerId: providerId, config: config
+        )
+        switch decision {
+        case .skip(let reason):
+            PRBarLog.triage.debug("auto-review skip pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=\(reason, privacy: .public)")
+        case .approve:
+            let cfg = config.autoApprove
+            let staged = StagedAutoReview(
+                pr: pr,
+                review: review,
+                action: .approve,
+                // Empty body = a bare GitHub approval, which is what the
+                // green check already says. The attribution line is opt-in
+                // because it lands as a comment on every PR the bot touches.
+                body: cfg.postAttributionComment ? attributionBody(review) : "",
+                comments: cfg.postInlineAnnotations
+                    ? inlineComments(review: review, diffText: diffText)
+                    : [],
+                stagedAt: Date()
+            )
+            pendingAutoActions[pr.nodeId] = staged
+            PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=approve comments=\(staged.comments.count, privacy: .public)")
+            scheduleBatchIfSettled()
+        case .share:
+            // Only the annotations the policy actually asked for — sharing
+            // "warnings and blockers" while posting every nitpick inline
+            // would contradict the setting the user chose.
+            let floor = config.shareFindings.minSeverity ?? .info
+            // Severity first, then the cap — so a truncated share keeps the
+            // findings that matter most rather than whichever the model
+            // happened to emit first.
+            var shared = review.annotations
+                .filter { $0.severity >= floor }
+                .sorted { $0.severity > $1.severity }
+            let cap = config.shareMaxComments
+            if cap > 0 && shared.count > cap {
+                PRBarLog.triage.notice("share capped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) found=\(shared.count, privacy: .public) cap=\(cap, privacy: .public)")
+                shared = Array(shared.prefix(cap))
+            }
+            let staged = StagedAutoReview(
+                pr: pr,
+                review: review,
+                action: .comment,
+                body: shareBody(review),
+                comments: inlineComments(annotations: shared, diffText: diffText),
+                stagedAt: Date(),
+                source: .sharedFindings
+            )
+            pendingAutoActions[pr.nodeId] = staged
+            PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=share comments=\(staged.comments.count, privacy: .public)")
+            scheduleBatchIfSettled()
+        case .deny(let denyAction):
+            let cfg = config.autoDeny
+            let comments = cfg.postInlineAnnotations
+                ? inlineComments(review: review, diffText: diffText)
+                : []
+            let staged = StagedAutoReview(
+                pr: pr,
+                review: review,
+                action: denyAction.reviewActionKind,
+                // GitHub rejects an empty body on REQUEST_CHANGES and
+                // COMMENT, so the AI summary is the body — falling back to
+                // the attribution line only if the summary came back blank.
+                body: review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? denyFallbackBody(review)
+                    : review.summaryMarkdown,
+                comments: comments,
+                stagedAt: Date()
+            )
+            if denyAction == .flagOnly {
+                flaggedDenials[pr.nodeId] = staged
+                PRBarLog.triage.notice("auto-review flagged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+            } else {
+                pendingAutoActions[pr.nodeId] = staged
+                PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=\(denyAction.rawValue, privacy: .public) comments=\(comments.count, privacy: .public)")
+                scheduleBatchIfSettled()
+            }
+        }
+    }
+
+    private func inlineComments(review: AggregatedReview, diffText: String) -> [GHClient.InlineComment] {
+        inlineComments(annotations: review.annotations, diffText: diffText)
+    }
+
+    private func inlineComments(
+        annotations: [DiffAnnotation],
+        diffText: String
+    ) -> [GHClient.InlineComment] {
+        guard !annotations.isEmpty else { return [] }
+        return InlineCommentMapper.map(
+            annotations: annotations,
+            hunks: DiffParser.parse(diffText)
+        )
+    }
+
+    /// Start the undo-window timer iff (a) we have staged posts and
     /// (b) no review is still in-flight. The "wait until everything is
     /// settled" rule deliberately collapses many notifications into one.
     private func scheduleBatchIfSettled() {
         guard !batchUndoActive else { return }
-        guard !pendingAutoApprovals.isEmpty else { return }
+        guard !pendingAutoActions.isEmpty else { return }
         let anyInFlight = reviews.values.contains { $0.status.isInFlight }
         guard !anyInFlight else { return }
 
@@ -888,61 +1194,104 @@ final class ReviewQueueWorker {
     }
 
     /// User-pressed "Undo" — discard the staged batch.
-    func cancelAutoApproveBatch() {
+    func cancelAutoReviewBatch() {
         batchTimer?.cancel()
         batchTimer = nil
-        pendingAutoApprovals.removeAll()
+        pendingAutoActions.removeAll()
         batchUndoActive = false
         batchUndoDeadline = nil
     }
 
-    /// User-pressed "Approve now" — fire immediately instead of waiting.
-    func approveBatchNow() {
+    /// User-pressed "Post now" — fire immediately instead of waiting.
+    func fireAutoReviewBatchNow() {
         batchTimer?.cancel()
         batchTimer = nil
         fireBatch()
     }
 
+    /// Dismiss a flag-only denial the user has looked at.
+    func dismissFlaggedDenial(_ nodeId: String) {
+        flaggedDenials[nodeId] = nil
+    }
+
+    func dismissAllFlaggedDenials() {
+        flaggedDenials.removeAll()
+    }
+
     private func fireBatch() {
-        let toApprove = Array(pendingAutoApprovals.values)
-        pendingAutoApprovals.removeAll()
+        let toPost = Array(pendingAutoActions.values)
+        pendingAutoActions.removeAll()
         batchUndoActive = false
         batchUndoDeadline = nil
-        for entry in toApprove {
-            let body = "Auto-approved by PRBar (\(formatConfidence(entry.review.confidence)) confidence)."
+        for entry in toPost {
+            guard let action = entry.action else { continue }
             // Production: route through the shared ActionQueue so the post
             // is serialized + dedup'd + retryable + logged on the one path.
             // The queue records its own ActionLog entry and triggers the
             // PR refresh via onActionCompleted, so we don't duplicate that
             // here.
-            if let enqueueAutoApprove {
-                enqueueAutoApprove(entry.pr, body, entry.review.costUsd)
+            if let enqueueAutoReview {
+                enqueueAutoReview(
+                    entry.pr, action, entry.body, entry.comments,
+                    entry.review.costUsd, entry.source
+                )
                 continue
             }
             // Fallback (tests / no queue wired): post inline.
-            Task { [poster = approvePoster, weak self] in
+            Task { [poster = autoReviewPoster, weak self] in
                 do {
-                    try await poster(entry.pr, body)
+                    try await poster(entry.pr, action, entry.body, entry.comments)
                     await MainActor.run {
                         self?.actionLog?.record(
-                            kind: .autoApprove, outcome: .success, pr: entry.pr,
-                            detail: body, headSha: entry.pr.headSha,
+                            kind: Self.autoLogKind(action, entry.source), outcome: .success, pr: entry.pr,
+                            detail: entry.body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
                         )
-                        self?.onAutoApproved?(entry.pr)
+                        self?.onAutoReviewPosted?(entry.pr)
                     }
                 } catch {
                     await MainActor.run {
                         self?.actionLog?.record(
-                            kind: .autoApprove, outcome: .failure, pr: entry.pr,
+                            kind: Self.autoLogKind(action, entry.source), outcome: .failure, pr: entry.pr,
                             errorMessage: error.localizedDescription,
-                            detail: body, headSha: entry.pr.headSha,
+                            detail: entry.body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
                         )
                     }
                 }
             }
         }
+    }
+
+    /// Body for a `.share` post: the AI summary verbatim, exactly like the
+    /// auto-deny comment path. No banner or disclaimer — a shared review
+    /// should be indistinguishable from any other review PRBar posts.
+    /// GitHub rejects an empty body on COMMENT, hence the fallback.
+    private func shareBody(_ review: AggregatedReview) -> String {
+        let summary = review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? shareFallbackBody(review) : summary
+    }
+
+    private func shareFallbackBody(_ review: AggregatedReview) -> String {
+        "PRBar's AI review flagged the findings below (\(formatConfidence(review.confidence)) confidence) but returned no summary."
+    }
+
+    /// Log kind for the fallback (no `ActionQueue` wired) post path.
+    /// `ActionQueue.logKindAndDetail` is the production equivalent; both
+    /// have to agree or a share reads as a plain auto-comment in History.
+    private nonisolated static func autoLogKind(
+        _ action: ReviewActionKind,
+        _ source: ActionSource
+    ) -> ActionLogKind {
+        source == .sharedFindings ? .autoShare : action.autoActionLogKind
+    }
+
+    private func attributionBody(_ review: AggregatedReview) -> String {
+        "Auto-approved by PRBar (\(formatConfidence(review.confidence)) confidence)."
+    }
+
+    private func denyFallbackBody(_ review: AggregatedReview) -> String {
+        "PRBar's AI review requested changes (\(formatConfidence(review.confidence)) confidence) but returned no summary. See the annotations."
     }
 
     private func formatConfidence(_ c: Double) -> String {

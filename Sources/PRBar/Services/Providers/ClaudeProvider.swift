@@ -32,7 +32,11 @@ struct ClaudeProvider: ReviewProvider {
             case .decodeFailed(let msg):
                 return "Could not decode claude's structured_output: \(msg.prefix(400))"
             case .budgetExceeded(let detail):
-                return "claude review exceeded budget: \(detail)"
+                // Names the setting, not just the number: the original
+                // "exceeded budget: $1.0031 spent (cap $1.00)" left people
+                // hunting for a cap that only existed on a repo rule.
+                return "claude review stopped by the per-subreview cost cap — \(detail). "
+                    + "Raise \"Max cost / subreview\" in Settings → Review defaults."
             }
         }
     }
@@ -69,7 +73,8 @@ struct ClaudeProvider: ReviewProvider {
             executable: claudePath,
             args: args,
             cwd: cwd,
-            stdin: stdin
+            stdin: stdin,
+            timeout: options.timeout
         ) { line in
             let progress = live.consume(line: line)
             onProgress?(progress)
@@ -115,15 +120,19 @@ struct ClaudeProvider: ReviewProvider {
             throw ClaudeError.budgetExceeded(String(format: "$%.4f spent (cap $%.2f)", cost, max))
         }
 
-        guard let soData = state.structuredOutput else {
+        if state.structuredOutput == nil && state.structuredOutputAttempts.isEmpty {
             throw ClaudeError.missingStructuredOutput
         }
 
-        let decoded: ProviderStructuredOutput
-        do {
-            decoded = try JSONDecoder().decode(ProviderStructuredOutput.self, from: soData)
-        } catch {
-            throw ClaudeError.decodeFailed(String(describing: error))
+        // Recover the substantive review even when the CLI's final answer
+        // degraded to a placeholder — see StructuredOutputRecovery.
+        guard let decoded = StructuredOutputRecovery.best(
+            final: state.structuredOutput,
+            attempts: state.structuredOutputAttempts
+        ) else {
+            throw ClaudeError.decodeFailed(
+                "no decodable structured output among final + \(state.structuredOutputAttempts.count) attempts"
+            )
         }
 
         return ProviderResult(
@@ -150,12 +159,20 @@ struct ClaudeProvider: ReviewProvider {
             "--append-system-prompt", bundle.systemPrompt,
         ]
 
+        if !bundle.sessionLabel.isEmpty {
+            args.append(contentsOf: ["--name", bundle.sessionLabel])
+        }
+
         if let schemaString = String(data: options.schema, encoding: .utf8) {
             args.append(contentsOf: ["--json-schema", schemaString])
         }
 
         if let model = options.model {
             args.append(contentsOf: ["--model", model])
+        }
+
+        if let effort = options.effort {
+            args.append(contentsOf: ["--effort", effort])
         }
 
         switch options.toolMode {
@@ -177,7 +194,14 @@ struct ClaudeProvider: ReviewProvider {
                 "--settings",
                 #"{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true,"network":{"allowedDomains":[]}}}"#,
             ])
-            args.append(contentsOf: ["--allowedTools", "Bash,Read,Glob,Grep"])
+            // StructuredOutput must be allowlisted too: recent claude CLI
+            // versions require an explicit tool call to emit
+            // --json-schema output (a synthetic "[structured-output-enforce]"
+            // message repeats otherwise) instead of validating the final
+            // text — without it here the review can never complete when the
+            // model hesitates on an edge case, since --allowedTools is a
+            // strict allowlist.
+            args.append(contentsOf: ["--allowedTools", "Bash,Read,Glob,Grep,StructuredOutput"])
             args.append(contentsOf: [
                 "--disallowedTools",
                 "Edit,Write,Task,Agent,NotebookEdit,TodoWrite",

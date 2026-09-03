@@ -70,6 +70,42 @@ final class ClaudeStreamParserTests: XCTestCase {
         XCTAssertEqual(state.toolNamesUsed, ["Read", "Grep"])
     }
 
+    func testCapturesStructuredOutputAttempts() {
+        let stream = """
+        {"type":"system","subtype":"init","session_id":"abc"}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","id":"s1","name":"StructuredOutput","input":{"verdict":"comment","confidence":0.8,"summary":"first draft"}}]}}
+        {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s1","is_error":true,"content":"must have required property 'annotations'"}]}}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","id":"s2","name":"StructuredOutput","input":{"verdict":"approve","confidence":0.5,"summary":"test","annotations":[]}}]}}
+        {"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.5,"structured_output":{"verdict":"approve","confidence":0.5,"summary":"test","annotations":[]}}
+        """
+        let state = ClaudeStreamParser.parseFull(stream)
+        XCTAssertEqual(state.structuredOutputAttempts.count, 2)
+        XCTAssertEqual(state.toolNamesUsed, ["StructuredOutput", "StructuredOutput"])
+    }
+
+    /// Full reproducer for the "test" reviews: a substantive attempt gets
+    /// rejected (leaked annotations), the model degrades to a placeholder in
+    /// the final `result`, and recovery pulls the real review back out of the
+    /// captured attempts. Exercises parser + StructuredOutputRecovery
+    /// together (the ClaudeProvider path minus the subprocess).
+    func testRecoversRealReviewFromDegradedStream() throws {
+        let stream = """
+        {"type":"system","subtype":"init","session_id":"abc"}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","id":"s1","name":"StructuredOutput","input":{"verdict":"comment","confidence":0.8,"summary":"The new backoff never resets after success, so one failure permanently degrades the queue throughput.</summary>\\n<parameter name=\\"annotations\\">[]"}}]}}
+        {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s1","is_error":true,"content":"Output does not match required schema: root: must have required property 'annotations'"}]}}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","id":"s2","name":"StructuredOutput","input":{"verdict":"approve","confidence":0.5,"summary":"test","annotations":[]}}]}}
+        {"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.9,"structured_output":{"verdict":"approve","confidence":0.5,"summary":"test","annotations":[]}}
+        """
+        let state = ClaudeStreamParser.parseFull(stream)
+        let recovered = try XCTUnwrap(StructuredOutputRecovery.best(
+            final: state.structuredOutput,
+            attempts: state.structuredOutputAttempts
+        ))
+        XCTAssertEqual(recovered.verdict, .comment, "recovered verdict, not placeholder approve")
+        XCTAssertTrue(recovered.summary.hasSuffix("queue throughput."))
+        XCTAssertFalse(recovered.summary.contains("</summary>"))
+    }
+
     func testGarbledLinesAreIgnored() {
         let stream = """
         {"type":"system","subtype":"init","session_id":"abc"}
