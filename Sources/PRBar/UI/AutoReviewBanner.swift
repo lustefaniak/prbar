@@ -37,9 +37,18 @@ struct AutoReviewBanner: View {
         let commenting = staged.filter { $0.action == .comment }.count
         let pushingBack = staged.filter { $0.action == .requestChanges }.count
 
+        // Tone follows the strongest verdict in the batch. A comment-only
+        // batch is usually shared findings, which casts no verdict at all —
+        // the green approval seal would say the opposite of what happened.
+        let tone: (icon: String, color: Color) = {
+            if pushingBack > 0 { return ("exclamationmark.bubble.fill", .orange) }
+            if approving > 0 { return ("checkmark.seal.fill", .green) }
+            return ("text.bubble.fill", .blue)
+        }()
+
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: pushingBack > 0 ? "exclamationmark.bubble.fill" : "checkmark.seal.fill")
-                .foregroundStyle(pushingBack > 0 ? .orange : .green)
+            Image(systemName: tone.icon)
+                .foregroundStyle(tone.color)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(headline(approving: approving, commenting: commenting, pushingBack: pushingBack)) in \(secondsLeft)s")
@@ -60,7 +69,7 @@ struct AutoReviewBanner: View {
         }
         .padding(8)
         .background(
-            (pushingBack > 0 ? Color.orange : Color.green).opacity(0.10),
+            tone.color.opacity(0.10),
             in: RoundedRectangle(cornerRadius: 6)
         )
     }
