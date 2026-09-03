@@ -9,6 +9,20 @@ import Foundation
 /// API 422) is what lets both the manual post path and the auto-review path
 /// show an honest "N comments will be posted" count.
 enum InlineCommentMapper {
+    /// Appended to every inline comment PRBar posts, and required by
+    /// `ReviewThreadResolver` before it will resolve a thread.
+    ///
+    /// A login check alone can't prove PRBar wrote a comment — it only
+    /// proves the authenticated user did, which is equally true of every
+    /// review comment they hand-typed on github.com. Resolving collapses
+    /// the thread for everyone on the PR, so "did we write this?" has to
+    /// be answerable from the comment itself. An HTML comment renders as
+    /// nothing in GitHub's markdown and survives the round-trip verbatim.
+    ///
+    /// Threads posted before this marker existed will never resolve. That
+    /// is the safe direction: they stay open, exactly as they do today.
+    static let provenanceMarker = "<!-- prbar:finding -->"
+
     static func map(
         annotations: [DiffAnnotation],
         hunks: [Hunk]
@@ -42,7 +56,7 @@ enum InlineCommentMapper {
                 path: ann.path,
                 line: ann.lineEnd,
                 startLine: startLine,
-                body: header + ann.body
+                body: header + ann.body + "\n\n" + Self.provenanceMarker
             )
         }
     }
