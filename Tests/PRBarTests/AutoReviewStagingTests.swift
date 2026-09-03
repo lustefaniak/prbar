@@ -94,7 +94,7 @@ final class AutoReviewStagingTests: XCTestCase {
             config: config(deny: AutoDenyConfig(action: .flagOnly))
         )
         var posted: [Posted] = []
-        worker.enqueueAutoReview = { pr, kind, body, comments, _ in
+        worker.enqueueAutoReview = { pr, kind, body, comments, _, _ in
             posted.append(Posted(nodeId: pr.nodeId, kind: kind, body: body, comments: comments))
         }
 
@@ -125,7 +125,7 @@ final class AutoReviewStagingTests: XCTestCase {
             config: config(deny: AutoDenyConfig(action: .requestChanges))
         )
         var posted: [Posted] = []
-        worker.enqueueAutoReview = { pr, kind, body, comments, _ in
+        worker.enqueueAutoReview = { pr, kind, body, comments, _, _ in
             posted.append(Posted(nodeId: pr.nodeId, kind: kind, body: body, comments: comments))
         }
 
@@ -149,7 +149,7 @@ final class AutoReviewStagingTests: XCTestCase {
             config: config(approve: enabledApprove())
         )
         var posted: [Posted] = []
-        worker.enqueueAutoReview = { pr, kind, body, comments, _ in
+        worker.enqueueAutoReview = { pr, kind, body, comments, _, _ in
             posted.append(Posted(nodeId: pr.nodeId, kind: kind, body: body, comments: comments))
         }
 
@@ -201,12 +201,43 @@ final class AutoReviewStagingTests: XCTestCase {
 
         let staged = try XCTUnwrap(worker.pendingAutoActions["PR_1"])
         XCTAssertEqual(staged.action, .comment, "sharing must never cast a verdict")
-        XCTAssertTrue(
-            staged.body.contains("not a review verdict"),
-            "the author has to know a human review is still pending — got: \(staged.body)"
+        XCTAssertEqual(
+            staged.body, "one thing to fix",
+            "a shared review reads like any other PRBar review — no banner, no disclaimer"
         )
-        XCTAssertTrue(staged.body.contains("one thing to fix"), "got body: \(staged.body)")
         XCTAssertEqual(staged.comments.count, 1)
+        XCTAssertEqual(
+            staged.source, .sharedFindings,
+            "the source is the only thing distinguishing this from an auto-deny comment"
+        )
+    }
+
+    /// A share and an auto-deny comment post the identical GitHub event
+    /// with the identical body shape, so History can only tell them apart
+    /// by the log kind the source resolves to.
+    func testShareIsLoggedAsItsOwnHistoryKind() async throws {
+        let warning = DiffAnnotation(
+            path: "a", lineStart: 1, lineEnd: 1, severity: .warning,
+            title: "Unchecked nil", body: "this can crash"
+        )
+        let log = ActionLogStore(container: PRBarModelContainer.inMemory())
+        let worker = makeWorker(
+            provider: StubProvider(
+                verdict: .approve, summary: "one thing to fix", cost: 0.02,
+                annotations: [warning]
+            ),
+            config: config(share: .warningsAndBlockers)
+        )
+        worker.actionLog = log
+        worker.undoWindow = 0.01
+        worker.enqueue(makePR())
+        try await waitForStaged(worker)
+        worker.fireAutoReviewBatchNow()
+
+        try await waitUntil { !log.fetchAll().isEmpty }
+        let kinds: [ActionLogKind] = log.fetchAll().map(\.kind)
+        XCTAssertEqual(kinds, [.autoShare],
+                       "an auto-deny comment would land as .autoComment")
     }
 
     /// A policy of "warnings and blockers" that still posts every nitpick

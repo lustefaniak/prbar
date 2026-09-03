@@ -141,11 +141,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Auto-review posts route through the ActionQueue so they share
         // the one serialized + dedup'd + retryable + logged write path.
-        q.enqueueAutoReview = { [weak a] pr, kind, body, comments, cost in
+        q.enqueueAutoReview = { [weak a] pr, kind, body, comments, cost, source in
             a?.enqueue(
                 pr,
                 kind: .review(kind: kind, body: body, comments: comments),
-                source: .automated,
+                source: source,
                 costUsd: cost
             )
         }

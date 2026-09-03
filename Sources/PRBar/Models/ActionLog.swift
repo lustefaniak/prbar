@@ -95,6 +95,12 @@ enum ActionLogKind: String, Sendable, CaseIterable {
     case requestChanges = "request_changes"
     case autoApprove = "auto_approve"
     case autoComment = "auto_comment"
+    /// Findings sent to the author under `ShareFindingsPolicy`. Its own
+    /// kind rather than `autoComment` because the two post an identical
+    /// COMMENT review with an identical body shape — without this the
+    /// History (and any query over it) can't tell a verdict-less share
+    /// from an auto-deny that chose to comment instead of block.
+    case autoShare = "auto_share"
     case autoRequestChanges = "auto_request_changes"
     case autoMergeEnable = "auto_merge_enable"
     case autoMergeDisable = "auto_merge_disable"
@@ -108,6 +114,7 @@ enum ActionLogKind: String, Sendable, CaseIterable {
         case .requestChanges: "Requested changes"
         case .autoApprove: "Auto-approved"
         case .autoComment: "Auto-commented"
+        case .autoShare: "Shared findings"
         case .autoRequestChanges: "Auto-requested changes"
         case .autoMergeEnable: "Auto-merge enabled"
         case .autoMergeDisable: "Auto-merge disabled"
@@ -120,6 +127,7 @@ enum ActionLogKind: String, Sendable, CaseIterable {
         case .merge: "arrow.triangle.merge"
         case .approve, .autoApprove: "checkmark.seal.fill"
         case .comment, .autoComment: "text.bubble"
+        case .autoShare: "arrowshape.turn.up.right"
         case .requestChanges, .autoRequestChanges: "exclamationmark.bubble"
         case .autoMergeEnable: "clock.arrow.2.circlepath"
         case .autoMergeDisable: "clock.badge.xmark"

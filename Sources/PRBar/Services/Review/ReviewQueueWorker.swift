@@ -377,7 +377,8 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     var enqueueAutoReview: (@MainActor (
         _ pr: InboxPR, _ kind: ReviewActionKind, _ body: String,
-        _ comments: [GHClient.InlineComment], _ costUsd: Double
+        _ comments: [GHClient.InlineComment], _ costUsd: Double,
+        _ source: ActionSource
     ) -> Void)?
 
     @ObservationIgnored
@@ -421,6 +422,10 @@ final class ReviewQueueWorker {
         let body: String
         let comments: [GHClient.InlineComment]
         let stagedAt: Date
+        /// Distinguishes a share from an auto-approve/deny post. Both post
+        /// the same COMMENT event with the same body shape, so the source
+        /// is the only thing that tells them apart downstream.
+        var source: ActionSource = .automated
     }
 
     init(
@@ -1036,7 +1041,8 @@ final class ReviewQueueWorker {
                 action: .comment,
                 body: shareBody(review),
                 comments: inlineComments(annotations: shared, diffText: diffText),
-                stagedAt: Date()
+                stagedAt: Date(),
+                source: .sharedFindings
             )
             pendingAutoActions[pr.nodeId] = staged
             PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=share comments=\(staged.comments.count, privacy: .public)")
@@ -1142,7 +1148,10 @@ final class ReviewQueueWorker {
             // PR refresh via onActionCompleted, so we don't duplicate that
             // here.
             if let enqueueAutoReview {
-                enqueueAutoReview(entry.pr, action, entry.body, entry.comments, entry.review.costUsd)
+                enqueueAutoReview(
+                    entry.pr, action, entry.body, entry.comments,
+                    entry.review.costUsd, entry.source
+                )
                 continue
             }
             // Fallback (tests / no queue wired): post inline.
@@ -1151,7 +1160,7 @@ final class ReviewQueueWorker {
                     try await poster(entry.pr, action, entry.body, entry.comments)
                     await MainActor.run {
                         self?.actionLog?.record(
-                            kind: action.autoActionLogKind, outcome: .success, pr: entry.pr,
+                            kind: Self.autoLogKind(action, entry.source), outcome: .success, pr: entry.pr,
                             detail: entry.body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
                         )
@@ -1160,7 +1169,7 @@ final class ReviewQueueWorker {
                 } catch {
                     await MainActor.run {
                         self?.actionLog?.record(
-                            kind: action.autoActionLogKind, outcome: .failure, pr: entry.pr,
+                            kind: Self.autoLogKind(action, entry.source), outcome: .failure, pr: entry.pr,
                             errorMessage: error.localizedDescription,
                             detail: entry.body, headSha: entry.pr.headSha,
                             costUsd: entry.review.costUsd
@@ -1171,21 +1180,27 @@ final class ReviewQueueWorker {
         }
     }
 
-    /// Body for a `.share` post. The disclaimer is the load-bearing part:
-    /// this lands as a COMMENT review while the human's verdict is still
-    /// outstanding, and an author who reads it as "I've been reviewed"
-    /// will sit waiting on a merge that nobody has approved.
-    ///
-    /// No finding count in the header on purpose: `InlineCommentMapper`
-    /// drops annotations it can't anchor to a line on the new side of the
-    /// diff, so any count stated here can disagree with what the author
-    /// actually sees.
+    /// Body for a `.share` post: the AI summary verbatim, exactly like the
+    /// auto-deny comment path. No banner or disclaimer — a shared review
+    /// should be indistinguishable from any other review PRBar posts.
+    /// GitHub rejects an empty body on COMMENT, hence the fallback.
     private func shareBody(_ review: AggregatedReview) -> String {
-        let header = "**Automated pre-review from PRBar**, posted ahead of the human "
-            + "review so you can get a head start. This is not a review verdict — "
-            + "the requested review is still pending."
         let summary = review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        return summary.isEmpty ? header : header + "\n\n---\n\n" + summary
+        return summary.isEmpty ? shareFallbackBody(review) : summary
+    }
+
+    private func shareFallbackBody(_ review: AggregatedReview) -> String {
+        "PRBar's AI review flagged the findings below (\(formatConfidence(review.confidence)) confidence) but returned no summary."
+    }
+
+    /// Log kind for the fallback (no `ActionQueue` wired) post path.
+    /// `ActionQueue.logKindAndDetail` is the production equivalent; both
+    /// have to agree or a share reads as a plain auto-comment in History.
+    private nonisolated static func autoLogKind(
+        _ action: ReviewActionKind,
+        _ source: ActionSource
+    ) -> ActionLogKind {
+        source == .sharedFindings ? .autoShare : action.autoActionLogKind
     }
 
     private func attributionBody(_ review: AggregatedReview) -> String {
