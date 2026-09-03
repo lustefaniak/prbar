@@ -35,7 +35,9 @@ final class AutoReviewPolicyTests: XCTestCase {
     func testShareOffLeavesTheSkipIntact() {
         let result = evaluate(
             pr: makePR(additions: 10),
-            review: makeReview(verdict: .approve, confidence: 0.10, annotations: [warning]),
+            // Above the share floor, so `.off` is provably what skips here
+            // rather than the confidence gate doing it by accident.
+            review: makeReview(verdict: .approve, confidence: 0.70, annotations: [warning]),
             config: config(share: .off)
         )
         guard case .skip = result else { return XCTFail("expected skip, got \(result)") }
@@ -44,11 +46,27 @@ final class AutoReviewPolicyTests: XCTestCase {
     func testShareFiresWhenBothAutoSidesSkip() {
         let result = evaluate(
             pr: makePR(additions: 10),
-            // Confidence below the approve floor, so the approve side skips.
-            review: makeReview(verdict: .approve, confidence: 0.10, annotations: [warning]),
+            // Below the 0.85 approve floor so the approve side skips, above
+            // the share floor — the case the feature exists for.
+            review: makeReview(verdict: .approve, confidence: 0.70, annotations: [warning]),
             config: config(share: .warningsAndBlockers)
         )
         XCTAssertEqual(result, .share)
+    }
+
+    /// Sharing deliberately sits below the approve floor, so severity is
+    /// the only thing left gating what reaches the author — and severity
+    /// comes from the same run whose confidence is in question. A run the
+    /// model barely believes doesn't get to publish on the author's PR.
+    func testShareRespectsItsOwnConfidenceFloor() {
+        var cfg = config(share: .warningsAndBlockers)
+        cfg.shareMinConfidence = 0.5
+        let result = evaluate(
+            pr: makePR(additions: 10),
+            review: makeReview(verdict: .approve, confidence: 0.10, annotations: [warning]),
+            config: cfg
+        )
+        guard case .skip = result else { return XCTFail("expected skip, got \(result)") }
     }
 
     /// The shape that actually dominates in practice: the AI returns
@@ -81,7 +99,7 @@ final class AutoReviewPolicyTests: XCTestCase {
     }
 
     func testShareRespectsItsSeverityFloor() {
-        let review = makeReview(verdict: .approve, confidence: 0.10, annotations: [nit])
+        let review = makeReview(verdict: .approve, confidence: 0.70, annotations: [nit])
         guard case .skip = evaluate(
             pr: makePR(additions: 10), review: review,
             config: config(share: .warningsAndBlockers)
@@ -96,7 +114,7 @@ final class AutoReviewPolicyTests: XCTestCase {
     func testShareNeedsSomethingToSay() {
         let result = evaluate(
             pr: makePR(additions: 10),
-            review: makeReview(verdict: .approve, confidence: 0.10, annotations: []),
+            review: makeReview(verdict: .approve, confidence: 0.70, annotations: []),
             config: config(share: .allFindings)
         )
         guard case .skip = result else {

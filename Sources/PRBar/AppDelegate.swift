@@ -149,6 +149,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 costUsd: cost
             )
         }
+        // Thread resolution is a GitHub write like any other, so it takes
+        // the same queued path rather than firing from the worker.
+        q.enqueueResolveThreads = { [weak a] pr, threadIds in
+            a?.enqueue(pr, kind: .resolveThreads(ids: threadIds), source: .automated)
+        }
         q.configResolver = rc.makeResolver()
         // Resolve the persisted default provider. Stored value can be
         // "auto" (probe-and-pick at launch) or a concrete ProviderID

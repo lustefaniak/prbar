@@ -1110,7 +1110,7 @@ struct PRDetailView: View {
         case .merge(let m): return "Merged (\(m.shortDisplayName))"
         case .enableAutoMerge(let m): return "Auto-merge (\(m.shortDisplayName)) enabled"
         case .disableAutoMerge: return "Auto-merge disabled"
-        case .review: return nil
+        case .review, .resolveThreads, .requestReviewer: return nil
         }
     }
 

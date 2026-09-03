@@ -244,6 +244,7 @@ final class ActionQueueTests: XCTestCase {
             pr, kind: .review(kind: .comment, body: "findings", comments: []),
             source: .sharedFindings
         )
+        try await waitUntil { await rec.calls.count == 1 }
         try await waitUntil { q.state(for: "PR_a") == nil }
 
         let calls = await rec.calls
@@ -273,22 +274,48 @@ final class ActionQueueTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty, "got: \(calls)")
     }
 
-    /// The findings already reached the author; a re-request that fails is
-    /// a lost retriage, not a lost review. It must not fail the action.
-    func testShareSucceedsEvenIfReRequestFails() async throws {
+    /// The comment has already landed on the PR, so a failed re-request
+    /// must not re-run the post. It gets its own queue entry, which means
+    /// the failure is visible and `retry` re-sends only the re-request.
+    func testFailedReRequestSurfacesWithoutResendingTheComment() async throws {
         var pr = makePR(nodeId: "PR_a", number: 7, title: "shared")
         pr.viewerLogin = "octocat"
+        let rec = AsyncRecorder()
 
         let q = ActionQueue()
+        q.reviewExecutor = { _, _, body, _ in await rec.record("review:\(body)") }
         q.reRequestReviewerExecutor = { _, _ in throw TestError.boom }
 
         q.enqueue(
             pr, kind: .review(kind: .comment, body: "findings", comments: []),
             source: .sharedFindings
         )
+        try await waitUntil {
+            if case .failed = q.state(for: "PR_a") { return true }
+            return false
+        }
+
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["review:findings"], "the comment must be posted exactly once")
+        guard case .failed = q.state(for: "PR_a") else {
+            return XCTFail("a failed re-request has to be visible, not swallowed")
+        }
+    }
+
+    /// Resolving is a GitHub write like any other and goes through the
+    /// queue, so it is serialized, logged, and retryable.
+    func testResolveThreadsRunsEveryThreadInTheBatch() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "threads")
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.resolveThreadExecutor = { id in await rec.record(id) }
+
+        q.enqueue(pr, kind: .resolveThreads(ids: ["T1", "T2"]), source: .automated)
         try await waitUntil { q.state(for: "PR_a") == nil }
 
-        XCTAssertNil(q.state(for: "PR_a"), "the share itself succeeded")
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["T1", "T2"])
     }
 
     private func makePR(

@@ -69,6 +69,11 @@ enum AutoReviewPolicy {
         config: ResolvedRepoConfig
     ) -> Decision? {
         guard let floor = config.shareFindings.minSeverity else { return nil }
+        // Severity is the model grading its own finding; confidence is the
+        // model grading the whole run. A run that lands under the floor is
+        // one PRBar shouldn't put in front of the author under any
+        // severity — the severities come from the same run.
+        guard review.confidence >= config.shareMinConfidence else { return nil }
         guard review.annotations.contains(where: { $0.severity >= floor }) else { return nil }
         return .share
     }

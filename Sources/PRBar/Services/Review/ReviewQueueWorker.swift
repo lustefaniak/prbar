@@ -284,11 +284,12 @@ final class ReviewQueueWorker {
     /// Fetches a PR's review threads. Injected so tests don't shell out;
     /// nil disables the resolve-on-triage path entirely.
     @ObservationIgnored
-    var reviewThreadFetcher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> (threads: [ReviewThread], viewerLogin: String))?
+    var reviewThreadFetcher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> ReviewThreadPage)?
 
-    /// Marks one review thread resolved. Paired with `reviewThreadFetcher`.
+    /// Hands a batch of resolvable thread ids to `ActionQueue`. Wired in
+    /// `AppDelegate`; nil in tests that only assert the decision.
     @ObservationIgnored
-    var reviewThreadResolver: (@Sendable (_ threadId: String) async throws -> Void)?
+    var enqueueResolveThreads: (@MainActor (_ pr: InboxPR, _ threadIds: [String]) -> Void)?
 
     /// Reads commit history for `RiskBrief`'s churn term. Injected so tests
     /// exercise the brief without a real checkout; returning nil is the
@@ -478,10 +479,6 @@ final class ReviewQueueWorker {
         worker.reviewThreadFetcher = { owner, repo, number in
             let c = try client ?? GHClient()
             return try await c.fetchReviewThreads(owner: owner, repo: repo, number: number)
-        }
-        worker.reviewThreadResolver = { threadId in
-            let c = try client ?? GHClient()
-            try await c.resolveReviewThread(threadId: threadId)
         }
         return worker
         // reviewLog is wired separately by AppDelegate so all stores
@@ -946,7 +943,7 @@ final class ReviewQueueWorker {
                 pr: pr, review: aggregated, config: config,
                 providerId: chosenProviderId, diffText: diffText
             )
-            await resolveAddressedThreads(pr: pr, review: aggregated)
+            await resolveAddressedThreads(pr: pr, review: aggregated, config: config)
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
@@ -1006,27 +1003,51 @@ final class ReviewQueueWorker {
     /// treatment, and the gate in `ReviewThreadResolver` is what decides
     /// eligibility, not the caller.
     ///
-    /// Best-effort throughout. Failing to resolve a thread leaves a stale
-    /// open conversation, which is the status quo without this path — it
-    /// must never mark the triage itself failed.
-    private func resolveAddressedThreads(pr: InboxPR, review: AggregatedReview) async {
-        guard let fetcher = reviewThreadFetcher, let resolver = reviewThreadResolver else { return }
+    /// Three things have to line up before anything is queued, and each
+    /// guards a different way this can be wrong:
+    ///
+    /// - **Opt-in.** Resolving collapses a thread for every human on the
+    ///   PR, so it is never inherited silently. `ResolveThreadsConfig`
+    ///   ships off.
+    /// - **Confidence.** The signal that closes a thread is a finding's
+    ///   *absence*, which is also what a degraded run produces. A run
+    ///   under the floor closes nothing.
+    /// - **Head SHA.** Threads are read live but the annotations come from
+    ///   the commit this triage ran on. If the author pushed while the
+    ///   review was running, GitHub's `isOutdated` reflects *their* push
+    ///   while our findings describe the previous head — stale findings
+    ///   would close threads on code nobody has reviewed yet.
+    ///
+    /// The resolve itself goes through `ActionQueue` like every other
+    /// GitHub write, so it is serialized against this PR's other writes,
+    /// retryable, and visible in History.
+    private func resolveAddressedThreads(
+        pr: InboxPR,
+        review: AggregatedReview,
+        config: ResolvedRepoConfig
+    ) async {
+        let policy = config.resolveThreads
+        guard policy.enabled else { return }
+        guard let fetcher = reviewThreadFetcher else { return }
+        guard review.confidence >= policy.minConfidence else {
+            PRBarLog.triage.notice("thread resolve skipped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=low-confidence conf=\(self.fmt(review.confidence), privacy: .public)")
+            return
+        }
         do {
-            let (threads, viewerLogin) = try await fetcher(pr.owner, pr.repo, pr.number)
+            let page = try await fetcher(pr.owner, pr.repo, pr.number)
+            guard page.headRefOid == pr.headSha else {
+                PRBarLog.triage.notice("thread resolve skipped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=head-moved reviewed=\(self.short(pr.headSha), privacy: .public) now=\(self.short(page.headRefOid), privacy: .public)")
+                return
+            }
             let targets = ReviewThreadResolver.resolvable(
-                threads: threads,
+                threads: page.threads,
                 annotations: review.annotations,
-                viewerLogin: viewerLogin
+                viewerLogin: page.viewerLogin,
+                prAuthor: pr.author
             )
             guard !targets.isEmpty else { return }
-            for thread in targets {
-                do {
-                    try await resolver(thread.id)
-                    PRBarLog.triage.notice("thread resolved pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) path=\(thread.path, privacy: .public)")
-                } catch {
-                    PRBarLog.triage.error("thread resolve failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) path=\(thread.path, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                }
-            }
+            PRBarLog.triage.notice("thread resolve queued pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) count=\(targets.count, privacy: .public)")
+            enqueueResolveThreads?(pr, targets.map(\.id))
         } catch {
             PRBarLog.triage.error("thread fetch failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
@@ -1086,7 +1107,17 @@ final class ReviewQueueWorker {
             // "warnings and blockers" while posting every nitpick inline
             // would contradict the setting the user chose.
             let floor = config.shareFindings.minSeverity ?? .info
-            let shared = review.annotations.filter { $0.severity >= floor }
+            // Severity first, then the cap — so a truncated share keeps the
+            // findings that matter most rather than whichever the model
+            // happened to emit first.
+            var shared = review.annotations
+                .filter { $0.severity >= floor }
+                .sorted { $0.severity > $1.severity }
+            let cap = config.shareMaxComments
+            if cap > 0 && shared.count > cap {
+                PRBarLog.triage.notice("share capped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) found=\(shared.count, privacy: .public) cap=\(cap, privacy: .public)")
+                shared = Array(shared.prefix(cap))
+            }
             let staged = StagedAutoReview(
                 pr: pr,
                 review: review,

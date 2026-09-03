@@ -12,6 +12,14 @@ enum GHActionKind: Sendable, Equatable {
     case enableAutoMerge(method: MergeMethod)
     /// Cancel a pending auto-merge request (`gh pr merge --disable-auto`).
     case disableAutoMerge
+    /// Close review threads PRBar opened, in one batch. Queued rather than
+    /// fired inline so it is serialized against the other writes to this
+    /// PR, retryable, and recorded in History like everything else.
+    case resolveThreads(ids: [String])
+    /// Put back the review request a share consumed. Its own action, not a
+    /// tail on the review post: the post has already succeeded and must not
+    /// be re-sent if only this half fails.
+    case requestReviewer(login: String)
 }
 
 /// Where an action originated. Drives which `ActionLogKind` is recorded
@@ -156,6 +164,11 @@ final class ActionQueue {
     @ObservationIgnored
     var reRequestReviewerExecutor: @Sendable (_ pr: InboxPR, _ login: String) async throws -> Void = { _, _ in }
 
+    /// Resolves one review thread by node id. Injected so tests don't
+    /// shell out.
+    @ObservationIgnored
+    var resolveThreadExecutor: @Sendable (_ threadId: String) async throws -> Void = { _ in }
+
     /// Action history sink — one entry per attempt (success and failure).
     @ObservationIgnored
     weak var actionLog: ActionLogStore?
@@ -212,6 +225,10 @@ final class ActionQueue {
             try await c.requestReviewer(
                 owner: pr.owner, repo: pr.repo, number: pr.number, login: login
             )
+        }
+        q.resolveThreadExecutor = { threadId in
+            let c = try client ?? GHClient()
+            try await c.resolveReviewThread(threadId: threadId)
         }
         return q
     }
@@ -306,7 +323,12 @@ final class ActionQueue {
             case .review(let kind, let body, let comments):
                 try await reviewExecutor(pr, kind, body, comments)
                 recordSuccess(action)
-                await reRequestReviewAfterShare(action)
+            case .resolveThreads(let ids):
+                try await resolveThreads(ids)
+                recordSuccess(action)
+            case .requestReviewer(let login):
+                try await reRequestReviewerExecutor(pr, login)
+                recordSuccess(action)
             case .merge(let method):
                 try await mergeExecutor(pr, method)
                 recordSuccess(action)
@@ -322,6 +344,7 @@ final class ActionQueue {
             entries[nodeId] = nil
             noteSuccess(action)
             onActionCompleted?(pr)
+            enqueueReRequestAfterShare(action)
         } catch {
             let msg = error.localizedDescription
             entries[nodeId]?.state = .failed(msg)
@@ -330,7 +353,7 @@ final class ActionQueue {
         }
     }
 
-    /// Restore the review request that the share post just consumed.
+    /// Queue the review request that the share post just consumed.
     ///
     /// Only for `.sharedFindings`: an auto-approve or auto-deny *is* the
     /// user's verdict, so GitHub clearing the request is correct there. A
@@ -338,21 +361,36 @@ final class ActionQueue {
     /// would drop the PR out of the inbox and silently end retriage — the
     /// opposite of the feature's intent.
     ///
-    /// Best-effort: a failure here is logged, never surfaced as a failed
-    /// action. The findings did reach the author, which is the part the
-    /// user cares about; a missing re-request costs a retriage, not data.
-    private func reRequestReviewAfterShare(_ action: GHAction) async {
+    /// A separate queued action rather than a tail on the review post,
+    /// because the two fail differently. The comment has already landed on
+    /// the PR; re-running the review action to fix a failed re-request
+    /// would post it twice. As its own entry it retries on its own, shows
+    /// up in the failed-action UI, and logs its own History row — which
+    /// matters more here than anywhere else, since the whole reason this
+    /// exists is that the failure is otherwise invisible.
+    private func enqueueReRequestAfterShare(_ action: GHAction) {
         guard action.source == .sharedFindings else { return }
+        guard case .review = action.kind else { return }
         let pr = action.pr
         guard !pr.viewerLogin.isEmpty else {
             PRBarLog.actions.error("re-request skipped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=no-viewer-login")
+            actionLog?.record(
+                kind: .reviewReRequested, outcome: .failure, pr: pr,
+                errorMessage: "No viewer login on the PR; PRBar can't name the reviewer to restore.",
+                headSha: pr.headSha
+            )
             return
         }
-        do {
-            try await reRequestReviewerExecutor(pr, pr.viewerLogin)
-            PRBarLog.actions.notice("re-requested review pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) login=\(pr.viewerLogin, privacy: .public)")
-        } catch {
-            PRBarLog.actions.error("re-request failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        enqueue(pr, kind: .requestReviewer(login: pr.viewerLogin), source: .sharedFindings)
+    }
+
+    /// Resolve a batch of threads, stopping at the first failure so the
+    /// action's `.failed` entry means what it says and a retry re-runs the
+    /// remainder. Resolving an already-resolved thread is a no-op on
+    /// GitHub's side, so a retry re-running earlier ids is harmless.
+    private func resolveThreads(_ ids: [String]) async throws {
+        for id in ids {
+            try await resolveThreadExecutor(id)
         }
     }
 
@@ -405,6 +443,10 @@ final class ActionQueue {
             case .sharedFindings: logKind = .autoShare
             }
             return (logKind, body.isEmpty ? nil : body)
+        case .resolveThreads(let ids):
+            return (.autoResolveThreads, "\(ids.count) thread\(ids.count == 1 ? "" : "s")")
+        case .requestReviewer(let login):
+            return (.reviewReRequested, login)
         case .merge(let method):
             return (.merge, method.rawValue)
         case .enableAutoMerge(let method):
@@ -420,6 +462,8 @@ final class ActionQueue {
         case .merge(let m): return "merge(\(m.rawValue))"
         case .enableAutoMerge(let m): return "enableAutoMerge(\(m.rawValue))"
         case .disableAutoMerge: return "disableAutoMerge"
+        case .resolveThreads(let ids): return "resolveThreads(\(ids.count))"
+        case .requestReviewer(let l): return "requestReviewer(\(l))"
         }
     }
 }
