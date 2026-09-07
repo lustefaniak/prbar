@@ -295,8 +295,11 @@ final class ActionQueueTests: XCTestCase {
             return false
         }
 
+        // Count, not content: an automated post also carries the verdict
+        // marker, and what this test is about is that it happens once.
         let calls = await rec.calls
-        XCTAssertEqual(calls, ["review:findings"], "the comment must be posted exactly once")
+        XCTAssertEqual(calls.count, 1, "the comment must be posted exactly once")
+        XCTAssertTrue(calls[0].hasPrefix("review:findings"))
         guard case .failed = q.state(for: "PR_a") else {
             return XCTFail("a failed re-request has to be visible, not swallowed")
         }
@@ -318,11 +321,107 @@ final class ActionQueueTests: XCTestCase {
         XCTAssertEqual(calls, ["T1", "T2"])
     }
 
+    // MARK: - verdict marker (cross-instance review dedup)
+
+    /// The dedup write path. Every post PRBar makes on its own initiative
+    /// stamps the head SHA so another requested reviewer's instance can see
+    /// this diff is triaged and skip its own run.
+    func testAutomatedReviewPostCarriesTheMarker() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "auto")
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.reviewExecutor = { _, _, body, _ in await rec.record(body) }
+        q.enqueue(
+            pr, kind: .review(kind: .approve, body: "lgtm", comments: []),
+            source: .automated
+        )
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let sent = await rec.calls.first ?? ""
+        XCTAssertTrue(PRBarVerdictMarker.matches(sha: "abc123", in: sent), "sent body was: \(sent)")
+        XCTAssertTrue(sent.hasPrefix("lgtm"), "the human-facing body must come first")
+    }
+
+    /// A share whose findings all land inline posts an empty body, so the
+    /// marker is the entire body. GitHub accepts that on a COMMENT review
+    /// carrying inline comments, and without it a share — the most common
+    /// automated post — would coordinate nothing.
+    func testSharedFindingsPostWithEmptyBodyStillCarriesTheMarker() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "share")
+        let rec = AsyncRecorder()
+        let inline = [GHClient.InlineComment(path: "a.swift", line: 3, startLine: nil, body: "nit")]
+
+        let q = ActionQueue()
+        q.reviewExecutor = { _, _, body, _ in await rec.record(body) }
+        q.enqueue(
+            pr, kind: .review(kind: .comment, body: "", comments: inline),
+            source: .sharedFindings
+        )
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let sent = await rec.calls.first ?? ""
+        XCTAssertEqual(sent, PRBarVerdictMarker.emit(sha: "abc123"))
+    }
+
+    /// A human verdict deliberately doesn't suppress other reviewers' AI
+    /// runs — `skipAIIfReviewedByOthers` owns that policy, separately and
+    /// opt-in — so a manual post stays unmarked.
+    func testManualReviewPostIsNotMarked() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "manual")
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.reviewExecutor = { _, _, body, _ in await rec.record(body) }
+        q.enqueue(pr, kind: .review(kind: .approve, body: "lgtm", comments: []), source: .manual)
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["lgtm"])
+    }
+
+    /// The marker goes onto the outgoing body only. The History row (and
+    /// the undo-window preview, which reads the same staged body) shows
+    /// what a human wrote, not the plumbing.
+    func testHistoryDetailKeepsTheUnmarkedBody() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "auto")
+        let log = ActionLogStore(container: PRBarModelContainer.inMemory())
+
+        let q = ActionQueue()
+        q.actionLog = log
+        q.enqueue(
+            pr, kind: .review(kind: .approve, body: "lgtm", comments: []),
+            source: .automated
+        )
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        XCTAssertEqual(log.fetchAll().first?.detail, "lgtm")
+    }
+
+    /// A PR whose head SHA never made it into the snapshot must not post a
+    /// marker matching every empty SHA.
+    func testMissingHeadShaPostsNoMarker() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "no sha", headSha: "")
+        let rec = AsyncRecorder()
+
+        let q = ActionQueue()
+        q.reviewExecutor = { _, _, body, _ in await rec.record(body) }
+        q.enqueue(
+            pr, kind: .review(kind: .approve, body: "lgtm", comments: []),
+            source: .automated
+        )
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let calls = await rec.calls
+        XCTAssertEqual(calls, ["lgtm"])
+    }
+
     private func makePR(
         nodeId: String,
         number: Int,
         title: String,
-        allowedMergeMethods: Set<MergeMethod> = [.squash, .rebase]
+        allowedMergeMethods: Set<MergeMethod> = [.squash, .rebase],
+        headSha: String = "abc123"
     ) -> InboxPR {
         InboxPR(
             nodeId: nodeId,
@@ -335,7 +434,7 @@ final class ActionQueueTests: XCTestCase {
             author: "alice",
             headRef: "h",
             baseRef: "main",
-            headSha: "abc123",
+            headSha: headSha,
             isDraft: false,
             role: .reviewRequested,
             mergeable: "MERGEABLE",

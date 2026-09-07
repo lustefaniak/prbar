@@ -16,6 +16,12 @@ struct ReviewState: Sendable, Hashable, Codable {
         case draftNotReviewed
         /// Another human already reviewed and `skipAIIfReviewedByOthers` is on.
         case reviewedByOthers
+        /// A PRBar instance — another reviewer's, or this one before its
+        /// review state was lost — already posted an AI verdict for this
+        /// exact head SHA. Not configurable: it is the same diff and the
+        /// findings are already on the PR, so a second run buys nothing but
+        /// cost. Manual Re-run still forces one.
+        case reviewedByPRBarElsewhere
 
         /// Full-sentence explanation for the detail pane.
         var detail: String {
@@ -26,6 +32,8 @@ struct ReviewState: Sendable, Hashable, Codable {
                 return "This PR is a draft, and draft review is off for this repository."
             case .reviewedByOthers:
                 return "Another reviewer already weighed in, and \"skip when reviewed by others\" is on for this repository."
+            case .reviewedByPRBarElsewhere:
+                return "PRBar already posted an AI review of this commit — from another reviewer's instance, or an earlier run of this one. Re-run to review it again."
             }
         }
 
@@ -35,6 +43,7 @@ struct ReviewState: Sendable, Hashable, Codable {
             case .aiReviewDisabled: return "AI review off for this repo"
             case .draftNotReviewed: return "draft review off for this repo"
             case .reviewedByOthers: return "already reviewed by others"
+            case .reviewedByPRBarElsewhere: return "already AI-reviewed at this commit"
             }
         }
     }
@@ -650,8 +659,34 @@ final class ReviewQueueWorker {
                 PRBarLog.triage.debug("auto-enqueue skip reason=failed-at-current-sha pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public)")
                 continue
             }
+            // Some PRBar has already posted an AI verdict for this exact
+            // commit — most often another requested reviewer's instance,
+            // which would otherwise pay for a second review of a diff whose
+            // findings are already on the PR. Deliberately last: every gate
+            // above is cheaper to evaluate and more specific, and `enqueue`
+            // must stay reachable for a PR we already hold a completed
+            // review for so its cache-hit path can fire the settled pulse
+            // `ReadinessCoordinator` depends on.
+            if pr.hasPRBarVerdictAtHead, !holdsCompletedReview(pr) {
+                PRBarLog.triage.notice("auto-enqueue skip reason=verdict-exists-at-sha pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public)")
+                recordSkip(pr, reason: .reviewedByPRBarElsewhere)
+                continue
+            }
             enqueue(pr)
         }
+    }
+
+    /// True when this instance holds its own completed review for the PR's
+    /// current head. The marker skip defers to it: our own verdict is the
+    /// one the UI shows, and `enqueue`'s cache-hit path has to stay
+    /// reachable so it can fire the settled pulse `ReadinessCoordinator`
+    /// needs to notify after a relaunch.
+    private func holdsCompletedReview(_ pr: InboxPR) -> Bool {
+        guard let existing = reviews[pr.nodeId],
+              existing.headSha == pr.headSha,
+              case .completed = existing.status
+        else { return false }
+        return true
     }
 
     /// Record a deliberate auto-triage skip so the row/detail UI can show
