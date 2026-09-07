@@ -123,6 +123,21 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     /// no discussion. Defaulted for the same reasons as `humanReviews`.
     var issueComments: [PRCommentSummary] = []
 
+    /// True when some PRBar instance — this one or another reviewer's —
+    /// has already posted an AI verdict for this exact head SHA, detected
+    /// via `PRBarVerdictMarker` in the review bodies the poll already
+    /// fetches. Drives the auto-triage skip that keeps several requested
+    /// reviewers from each paying for a review of the same diff.
+    ///
+    /// Resolved at map time rather than computed from `humanReviews`: that
+    /// list drops body-less COMMENT reviews (which is precisely the shape a
+    /// share posts once its findings land inline), and the head SHA to
+    /// compare against is only in hand here.
+    ///
+    /// Defaulted so old cached payloads and the test `makePR` helpers don't
+    /// have to supply it.
+    var hasPRBarVerdictAtHead: Bool = false
+
     /// Login of the authenticated user this PR was fetched for. Carried on
     /// the PR because a write may need it long after the fetch — notably
     /// re-requesting review after a share post, which has to name the very
@@ -246,6 +261,7 @@ extension InboxPR {
         case hasAutoMerge, autoMergeEnabledBy, autoMergeMethod, allCheckSummaries
         case allowedMergeMethods, autoMergeAllowed, deleteBranchOnMerge
         case humanReviews, issueComments, viewerLogin
+        case hasPRBarVerdictAtHead
     }
 
     /// Explicit decode so payloads cached before `humanReviews` /
@@ -287,6 +303,8 @@ extension InboxPR {
         self.humanReviews = try c.decodeIfPresent([PRReviewSummary].self, forKey: .humanReviews) ?? []
         self.issueComments = try c.decodeIfPresent([PRCommentSummary].self, forKey: .issueComments) ?? []
         self.viewerLogin = try c.decodeIfPresent(String.self, forKey: .viewerLogin) ?? ""
+        self.hasPRBarVerdictAtHead =
+            try c.decodeIfPresent(Bool.self, forKey: .hasPRBarVerdictAtHead) ?? false
     }
 
     init(node: InboxResponse.PullRequestNode, viewerLogin: String) {
@@ -350,20 +368,30 @@ extension InboxPR {
             )
         }
 
+        // Read off the raw bodies, before the display filtering below drops
+        // the body-less reviews a share posts. Any author counts: the whole
+        // point is to see the *other* reviewer's PRBar verdict.
+        self.hasPRBarVerdictAtHead = node.reviews.nodes.contains { r in
+            PRBarVerdictMarker.matches(sha: self.headSha, in: r.body)
+        }
+
         self.humanReviews = node.reviews.nodes.compactMap { r in
             guard let login = r.author?.login else { return nil }
             // Drop comment-only reviews with no body (the empty wrapper
             // GitHub creates when someone leaves only inline thread
             // comments) — they'd render as noise. Verdicts (approve /
             // changes / dismissed) always carry signal even with no body.
+            // The marker comes off first, so a share whose findings all
+            // landed inline stays body-less here and keeps being dropped.
+            let body = PRBarVerdictMarker.strip(from: r.body)
             let st = r.state.uppercased()
             let isVerdict = (st == "APPROVED" || st == "CHANGES_REQUESTED" || st == "DISMISSED")
-            guard isVerdict || !r.body.isEmpty else { return nil }
+            guard isVerdict || !body.isEmpty else { return nil }
             return PRReviewSummary(
                 author: login,
                 state: r.state,
                 submittedAt: InboxPR.parseISO(r.submittedAt),
-                body: r.body,
+                body: body,
                 isFromViewer: login == viewerLogin
             )
         }

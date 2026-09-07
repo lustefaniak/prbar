@@ -100,6 +100,80 @@ final class ReviewSkipStateTests: XCTestCase {
                        "an unchanged skip must not rewrite the entry (avoids churn / persistence thrash)")
     }
 
+    // MARK: another PRBar already reviewed this commit
+
+    /// The point of the whole feature: several reviewers requested on one
+    /// PR must not each pay for a review of the same diff. The skip lands
+    /// before `enqueue`, so no provider process is spawned at all.
+    func testExistingVerdictAtHeadRecordsSkip() {
+        let w = makeWorker()
+        w.configResolver = { _, _ in Self.config() }
+        w.enqueueNewReviewRequests(from: [makePR(nodeId: "P", hasPRBarVerdictAtHead: true)])
+        XCTAssertEqual(w.reviews["P"]?.status, .skipped(.reviewedByPRBarElsewhere))
+    }
+
+    func testNoVerdictAtHeadDoesNotSkip() {
+        let w = makeWorker()
+        w.configResolver = { _, _ in Self.config() }
+        w.enqueueNewReviewRequests(from: [makePR(nodeId: "P", hasPRBarVerdictAtHead: false)])
+        XCTAssertNotEqual(w.reviews["P"]?.status, .skipped(.reviewedByPRBarElsewhere))
+    }
+
+    /// The gate is last, so a more specific repo-config reason still wins
+    /// the explanation shown on the row.
+    func testConfigReasonsBeatTheVerdictReason() {
+        let w = makeWorker()
+        w.configResolver = { _, _ in Self.config(aiReviewEnabled: false) }
+        w.enqueueNewReviewRequests(from: [makePR(nodeId: "P", hasPRBarVerdictAtHead: true)])
+        XCTAssertEqual(w.reviews["P"]?.status, .skipped(.aiReviewDisabled))
+    }
+
+    /// Our own posted verdict comes back as a marker on the next poll. The
+    /// skip has to defer to the completed review we already hold, or
+    /// `enqueue`'s cache-hit path never runs and `ReadinessCoordinator`
+    /// loses the settled pulse it needs to notify after a relaunch.
+    func testOwnCompletedReviewIsNotOverwrittenByTheVerdictSkip() {
+        let w = makeWorker()
+        var settled: [String] = []
+        w.onReviewSettled = { nodeId, _ in settled.append(nodeId) }
+        w._setReviewsForScreenshot([
+            "P": ReviewState(
+                prNodeId: "P", headSha: "abc123",
+                triggeredAt: Date(timeIntervalSince1970: 0),
+                status: .completed(makeAgg()), costUsd: 0.05
+            )
+        ])
+        w.configResolver = { _, _ in Self.config() }
+        w.enqueueNewReviewRequests(from: [makePR(nodeId: "P", hasPRBarVerdictAtHead: true)])
+        guard case .completed = w.reviews["P"]?.status else {
+            return XCTFail("our own verdict at this head must survive the marker skip")
+        }
+        XCTAssertEqual(settled, ["P"], "the cache-hit settled pulse must still fire")
+    }
+
+    /// A skip recorded on the previous poll must not let the next one fall
+    /// through and run the review anyway.
+    func testRepeatedPollsKeepSkippingWhileTheVerdictStands() {
+        let w = makeWorker()
+        w.configResolver = { _, _ in Self.config() }
+        let pr = makePR(nodeId: "P", hasPRBarVerdictAtHead: true)
+        w.enqueueNewReviewRequests(from: [pr])
+        w.enqueueNewReviewRequests(from: [pr])
+        XCTAssertEqual(w.reviews["P"]?.status, .skipped(.reviewedByPRBarElsewhere))
+    }
+
+    /// A push moves the head SHA past the marker, so the PR is reviewed
+    /// again rather than staying skipped forever.
+    func testNewHeadWithoutAVerdictReArms() {
+        let w = makeWorker()
+        w.configResolver = { _, _ in Self.config() }
+        w.enqueueNewReviewRequests(from: [makePR(nodeId: "P", headSha: "sha1", hasPRBarVerdictAtHead: true)])
+        XCTAssertEqual(w.reviews["P"]?.status, .skipped(.reviewedByPRBarElsewhere))
+        w.enqueueNewReviewRequests(from: [makePR(nodeId: "P", headSha: "sha2", hasPRBarVerdictAtHead: false)])
+        XCTAssertNotEqual(w.reviews["P"]?.status, .skipped(.reviewedByPRBarElsewhere))
+        XCTAssertEqual(w.reviews["P"]?.headSha, "sha2")
+    }
+
     // MARK: helpers
 
     private func makeAgg() -> AggregatedReview {
@@ -122,7 +196,23 @@ final class ReviewSkipStateTests: XCTestCase {
         role: PRRole = .reviewRequested,
         isDraft: Bool = false,
         reviewDecision: String? = nil,
-        headSha: String = "abc123"
+        headSha: String = "abc123",
+        hasPRBarVerdictAtHead: Bool = false
+    ) -> InboxPR {
+        var pr = makeBasePR(
+            nodeId: nodeId, role: role, isDraft: isDraft,
+            reviewDecision: reviewDecision, headSha: headSha
+        )
+        pr.hasPRBarVerdictAtHead = hasPRBarVerdictAtHead
+        return pr
+    }
+
+    private func makeBasePR(
+        nodeId: String,
+        role: PRRole,
+        isDraft: Bool,
+        reviewDecision: String?,
+        headSha: String
     ) -> InboxPR {
         InboxPR(
             nodeId: nodeId,
