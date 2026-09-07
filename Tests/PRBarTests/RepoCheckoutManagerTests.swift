@@ -24,6 +24,9 @@ final class RepoCheckoutManagerTests: XCTestCase {
         try await runGit(in: fixtureRepoPath, ["init", "-q", "-b", "main"])
         try await runGit(in: fixtureRepoPath, ["config", "user.email", "test@local"])
         try await runGit(in: fixtureRepoPath, ["config", "user.name", "Test"])
+        // A developer's global core.hooksPath must not reach a throwaway fixture
+        // repo: an installed commit-msg/pre-commit hook would reject these commits.
+        try await runGit(in: fixtureRepoPath, ["config", "core.hooksPath", "/dev/null"])
         try "hello\n".write(to: fixtureRepoPath.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
         try await runGit(in: fixtureRepoPath, ["add", "README.md"])
         try await runGit(in: fixtureRepoPath, ["commit", "-q", "-m", "initial"])
