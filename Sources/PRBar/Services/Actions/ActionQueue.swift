@@ -321,7 +321,21 @@ final class ActionQueue {
         do {
             switch action.kind {
             case .review(let kind, let body, let comments):
-                try await reviewExecutor(pr, kind, body, comments)
+                // Every post PRBar makes on its own initiative carries the
+                // head-SHA marker, so another reviewer's instance can see
+                // this diff is triaged and skip its own run. Applied here
+                // rather than where the body is composed because this is
+                // the one place all three staged kinds (approve, deny,
+                // share) converge — and because the un-marked body is what
+                // belongs in the History row and the undo-window preview.
+                //
+                // Manual posts stay unmarked on purpose: suppressing other
+                // reviewers' AI runs off a *human* verdict is a different
+                // policy, and `skipAIIfReviewedByOthers` already owns it.
+                let outgoing = action.source.isAutomated
+                    ? PRBarVerdictMarker.append(to: body, sha: pr.headSha)
+                    : body
+                try await reviewExecutor(pr, kind, outgoing, comments)
                 recordSuccess(action)
             case .resolveThreads(let ids):
                 try await resolveThreads(ids)

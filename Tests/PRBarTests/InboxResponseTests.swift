@@ -238,6 +238,91 @@ final class InboxResponseTests: XCTestCase {
 
     // MARK: - fixture helpers
 
+    // MARK: - PRBar verdict marker (cross-instance review dedup)
+
+    /// The dedup read path. Whichever reviewer's PRBar posted first left a
+    /// marker in the review body; this instance has to see it on the very
+    /// next poll, off data the inbox query already returns.
+    func testMarkerAtHeadShaIsDetected() throws {
+        let marker = PRBarVerdictMarker.emit(sha: "x")   // fixture head oid
+        let json = wrapNode(
+            authorLogin: "alice", reviewerLogin: "lustefaniak",
+            reviewsJson: """
+            [{ "state": "COMMENTED", "author": { "login": "bob" },
+               "submittedAt": "2026-04-26T12:00:00Z", "body": "\(marker)" }]
+            """
+        )
+        let response = try JSONDecoder().decode(InboxResponse.self, from: Data(json.utf8))
+        let pr = InboxPR(node: response.data.search.edges[0].node, viewerLogin: "lustefaniak")
+        XCTAssertEqual(pr.headSha, "x")
+        XCTAssertTrue(pr.hasPRBarVerdictAtHead)
+    }
+
+    /// A marker left on an earlier commit must not suppress review of the
+    /// push that followed it.
+    func testMarkerForAnotherShaIsNotDetected() throws {
+        let stale = PRBarVerdictMarker.emit(sha: "older-commit")
+        let json = wrapNode(
+            authorLogin: "alice", reviewerLogin: "lustefaniak",
+            reviewsJson: """
+            [{ "state": "COMMENTED", "author": { "login": "bob" },
+               "submittedAt": "2026-04-26T12:00:00Z", "body": "\(stale)" }]
+            """
+        )
+        let response = try JSONDecoder().decode(InboxResponse.self, from: Data(json.utf8))
+        let pr = InboxPR(node: response.data.search.edges[0].node, viewerLogin: "lustefaniak")
+        XCTAssertFalse(pr.hasPRBarVerdictAtHead)
+    }
+
+    func testHumanReviewWithoutMarkerIsNotDetected() throws {
+        let json = wrapNode(
+            authorLogin: "alice", reviewerLogin: "lustefaniak",
+            reviewsJson: """
+            [{ "state": "APPROVED", "author": { "login": "bob" },
+               "submittedAt": "2026-04-26T12:00:00Z", "body": "LGTM" }]
+            """
+        )
+        let response = try JSONDecoder().decode(InboxResponse.self, from: Data(json.utf8))
+        let pr = InboxPR(node: response.data.search.edges[0].node, viewerLogin: "lustefaniak")
+        XCTAssertFalse(pr.hasPRBarVerdictAtHead)
+    }
+
+    /// A share posts its findings inline and leaves the body empty, so on
+    /// the wire the body is the marker alone. Detection has to see it while
+    /// the activity timeline still doesn't — otherwise every shared review
+    /// shows up as a blank row.
+    func testMarkerOnlyReviewIsDetectedButNotSurfaced() throws {
+        let marker = PRBarVerdictMarker.emit(sha: "x")
+        let json = wrapNode(
+            authorLogin: "alice", reviewerLogin: "lustefaniak",
+            reviewsJson: """
+            [{ "state": "COMMENTED", "author": { "login": "bob" },
+               "submittedAt": "2026-04-26T12:00:00Z", "body": "\(marker)" }]
+            """
+        )
+        let response = try JSONDecoder().decode(InboxResponse.self, from: Data(json.utf8))
+        let pr = InboxPR(node: response.data.search.edges[0].node, viewerLogin: "lustefaniak")
+        XCTAssertTrue(pr.hasPRBarVerdictAtHead)
+        XCTAssertTrue(pr.humanReviews.isEmpty)
+    }
+
+    /// A marked review that *does* carry prose still renders, with the
+    /// marker gone.
+    func testMarkerIsStrippedFromASurfacedReviewBody() throws {
+        let marker = PRBarVerdictMarker.emit(sha: "x")
+        let json = wrapNode(
+            authorLogin: "alice", reviewerLogin: "lustefaniak",
+            reviewsJson: """
+            [{ "state": "CHANGES_REQUESTED", "author": { "login": "bob" },
+               "submittedAt": "2026-04-26T12:00:00Z", "body": "Needs a test.\\n\\n\(marker)" }]
+            """
+        )
+        let response = try JSONDecoder().decode(InboxResponse.self, from: Data(json.utf8))
+        let pr = InboxPR(node: response.data.search.edges[0].node, viewerLogin: "lustefaniak")
+        XCTAssertTrue(pr.hasPRBarVerdictAtHead)
+        XCTAssertEqual(pr.humanReviews.first?.body, "Needs a test.")
+    }
+
     private func wrapNode(
         authorLogin: String,
         reviewerLogin: String?,
