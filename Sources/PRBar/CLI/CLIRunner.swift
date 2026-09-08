@@ -27,6 +27,11 @@ struct Runner {
         /// The provider that actually ran, which a repo rule can change
         /// out from under the configured default.
         var providerId: ProviderID?
+        /// The completed review, so the caller can emit it. Nil for a
+        /// skip or a failure — there is nothing to report.
+        var review: AggregatedReview?
+        /// Whether a verdict or share actually landed on the PR.
+        var posted: Bool = false
     }
 
     func review(pr: InboxPR, force: Bool, providerOverride: ProviderID?) async -> Outcome {
@@ -128,7 +133,9 @@ struct Runner {
             }
             let failed = posts.entries.first?.outcome == .failure
             return Outcome(isFailure: failed, note: parts.joined(separator: "; "),
-                           costUsd: nonZero(review.costUsd), providerId: state.providerId)
+                           costUsd: nonZero(review.costUsd), providerId: state.providerId,
+                           review: review,
+                           posted: posts.entries.first?.outcome == .success)
         }
     }
 

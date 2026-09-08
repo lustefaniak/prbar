@@ -79,6 +79,22 @@ public enum PRBarReviewCLI {
         let outcome = await runner.review(
             pr: pr, force: invocation.force, providerOverride: invocation.providerOverride)
 
+        // Before the terminal event, so that event stays the last line.
+        if let path = invocation.reviewJsonPath, let review = outcome.review {
+            do {
+                try ReviewOutput(
+                    task_id: taskId, head_sha: pr.headSha,
+                    provider: (outcome.providerId ?? providerId).rawValue,
+                    posted: outcome.posted, review: review
+                ).write(to: path)
+            } catch {
+                // The review itself succeeded, so this is reported in the
+                // note rather than turned into a failed outcome.
+                FileHandle.standardError.write(
+                    Data("prbar-review: could not write \(path): \(error.localizedDescription)\n".utf8))
+            }
+        }
+
         BrahmandaEvent(
             taskId: taskId, outcome: outcome.isFailure ? .failed : .succeeded,
             note: outcome.note,
@@ -97,6 +113,10 @@ public enum PRBarReviewCLI {
       --provider claude|codex override the configured provider
       --config <path>         JSON settings file; defaults to
                               $PRBAR_CONFIG, then ./prbar.json
+      --review-json <path>    write the full review (summary, findings,
+                              cost) as one JSON line; - means stdout.
+                              Without it, only the verdict and a finding
+                              count reach the event stream
 
     Emits brahmanda NDJSON on stdout, one event per line. Logs go to stderr.
     """

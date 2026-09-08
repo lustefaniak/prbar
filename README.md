@@ -149,9 +149,23 @@ point:
 ```
 
 Like the app, **it posts nothing until you turn on `shareFindings`, `autoApprove`
-or `autoDeny`** — an unconfigured run reviews the PR and reports the verdict on
-stdout without touching GitHub. `shareFindings` is the one to start with: it posts
-findings as a comment and never casts a verdict.
+or `autoDeny`**. `shareFindings` is the one to start with when you *do* want it on
+the PR: it posts findings as a comment and never casts a verdict.
+
+### Getting the findings without posting them
+
+The event stream only carries a verdict and a finding count, so on its own a
+gates-off run costs money for a number. `--review-json` writes the whole review —
+summary, every annotation with its path and line range, cost, per-subreview
+breakdown — as one JSON line. `-` means stdout:
+
+```sh
+prbar-review --review-json - owner/repo#123 | jq -r 'select(.review).review.summaryMarkdown'
+```
+
+Under an orchestrator, give it a path instead (`--review-json "$AGENT_STATE_ROOT/$AGENT_WORKER_ID.json"`)
+and keep stdout clean for events. A skipped or failed review writes nothing —
+there is no review to report.
 
 > Unknown and mistyped keys are **silently ignored**, not rejected — the decoder
 > is deliberately forgiving so old files keep working. If a setting seems to have

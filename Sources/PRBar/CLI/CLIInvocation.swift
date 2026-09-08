@@ -14,11 +14,16 @@ struct Invocation: Equatable {
     var providerOverride: ProviderID?
     var configPath: String?
 
+    /// Where to write the full review. `-` means stdout. Nil discards
+    /// everything but the summary line in the terminal event.
+    var reviewJsonPath: String?
+
     init?(args: [String]) {
         var positional: String?
         var force = false
         var provider: ProviderID?
         var configPath: String?
+        var reviewJsonPath: String?
 
         var i = args.startIndex
         while i < args.endIndex {
@@ -34,6 +39,10 @@ struct Invocation: Equatable {
                 i += 1
                 guard i < args.endIndex else { return nil }
                 configPath = args[i]
+            case "--review-json":
+                i += 1
+                guard i < args.endIndex else { return nil }
+                reviewJsonPath = args[i]
             default:
                 guard !arg.hasPrefix("-"), positional == nil else { return nil }
                 positional = arg
@@ -46,6 +55,7 @@ struct Invocation: Equatable {
         self.force = force
         self.providerOverride = provider
         self.configPath = configPath
+        self.reviewJsonPath = reviewJsonPath
     }
 
     /// Accepts a PR URL (`https://github.com/o/r/pull/12`, trailing path
