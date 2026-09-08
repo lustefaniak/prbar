@@ -78,11 +78,16 @@ jobs:
 
       # The binary needs its resource bundle (prompts + output schema)
       # beside it, so ship the pair rather than the executable alone.
+      # SwiftPM names that bundle `<package>_<target>.resources` on Linux
+      # and `.bundle` on Darwin, so this glob is Linux-specific. The
+      # schema check is here so a rename fails the build instead of every
+      # review at PromptLibrary.
       - name: Stage artifact
         run: |
           mkdir -p dist
           cp .build/release/prbar-review dist/
-          cp -R .build/release/*.bundle dist/
+          cp -R .build/release/*.resources dist/
+          test -f dist/prbar_PRBarCore.resources/schemas/review.json
           tar -C dist -czf prbar-review-linux-amd64.tar.gz .
 
       - name: Upload CLI artifact

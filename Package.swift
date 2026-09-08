@@ -21,7 +21,17 @@ let package = Package(
         .target(
             name: "PRBarCore",
             path: "Sources/PRBar",
+            // `sources` below already decides what compiles, but SwiftPM
+            // warns once per file it finds under the target path and can't
+            // account for — 48 warnings that would bury a real one. Naming
+            // the app-only half here keeps the build quiet, and keeps this
+            // list readable as the inventory of what stays macOS-side.
             exclude: [
+                "AppDelegate.swift",
+                "PRBarApp.swift",
+                "UI",
+                "Screenshots",
+                "Persistence",
                 // SwiftData @Model rows — app-only persistence.
                 "Models/ActionLogEntry.swift",
                 "Models/DiffCacheEntry.swift",
@@ -29,6 +39,24 @@ let package = Package(
                 "Models/RepoConfigEntry.swift",
                 "Models/ReviewLogEntry.swift",
                 "Models/ReviewStateEntry.swift",
+                // SwiftData-backed stores; the CLI runs with these nil and
+                // reaches them through the ReviewSinks protocols.
+                "Services/ActionLogStore.swift",
+                "Services/ReviewCache.swift",
+                "Services/ReviewLogStore.swift",
+                "Services/RepoConfigStore.swift",
+                "Services/SnapshotCache.swift",
+                "Services/GitHub/DiffStore.swift",
+                "Services/GitHub/FailureLogStore.swift",
+                // Polling, notifications, the write queue and launch-at-login:
+                // the orchestrator's job, or AppKit-only.
+                "Services/Actions",
+                "Services/BadgeCounter.swift",
+                "Services/LaunchAtLogin.swift",
+                "Services/NotificationActions.swift",
+                "Services/Notifier.swift",
+                "Services/PRPoller.swift",
+                "Services/ReadinessCoordinator.swift",
                 // Reaches into UI/Settings for a "fix this setting" link.
                 "Services/Review/ReviewFailureHint.swift",
             ],
