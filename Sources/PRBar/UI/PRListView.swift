@@ -52,8 +52,10 @@ struct PRListView: View {
                     .lineLimit(4)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+            } else if prs.isEmpty, isFetching {
+                PRListSkeleton()
             } else if prs.isEmpty {
-                Text(isFetching ? "Fetching…" : emptyText)
+                Text(emptyText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

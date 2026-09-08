@@ -261,6 +261,27 @@ final class ReviewQueueWorkerTests: XCTestCase {
         XCTAssertNotNil(worker.reviews["C"])
     }
 
+    func testPollPrunesReviewStateForPRsThatLeftTheInbox() async throws {
+        let stayed = makePR(nodeId: "B", number: 2)
+        let left = makePR(nodeId: "GONE", number: 9)
+        let provider = StubProvider(verdict: .approve, summary: "x", cost: 0.05)
+        let worker = makeWorker(provider: provider, diffText: makeDiff())
+
+        worker.enqueueNewReviewRequests(from: [stayed, left])
+        try await waitUntil {
+            self.isCompleted(worker.reviews["B"]?.status)
+                && self.isCompleted(worker.reviews["GONE"]?.status)
+        }
+
+        // An empty poll is untrustworthy — prune nothing.
+        worker.enqueueNewReviewRequests(from: [])
+        XCTAssertNotNil(worker.reviews["GONE"])
+
+        worker.enqueueNewReviewRequests(from: [stayed])
+        XCTAssertNil(worker.reviews["GONE"], "PR absent from the poll should be pruned")
+        XCTAssertNotNil(worker.reviews["B"])
+    }
+
     func testDailyCostCapBlocksEnqueue() async throws {
         let pr1 = makePR(nodeId: "A", number: 1)
         let pr2 = makePR(nodeId: "B", number: 2)
