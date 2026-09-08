@@ -363,7 +363,10 @@ final class AutoReviewStagingTests: XCTestCase {
         worker.enqueue(makePR())
         try await waitUntil { worker.reviews["PR_1"]?.status.isTerminal == true }
 
-        XCTAssertEqual(fetches.count, 0, "the opt-out path must not even fetch")
+        // Threads are fetched regardless — the prompt's prior-discussion
+        // section consumes them unconditionally. The opt-in gates the
+        // *resolve*, which is the part that touches the PR.
+        XCTAssertEqual(fetches.count, 1)
         XCTAssertTrue(queued.isEmpty)
     }
 

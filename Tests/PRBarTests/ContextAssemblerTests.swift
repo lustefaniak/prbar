@@ -59,21 +59,53 @@ final class ContextAssemblerTests: XCTestCase {
         XCTAssertTrue(bundle.userPrompt.contains("`kernel-x/b.go` (+1 / -2)"))
     }
 
-    func testExistingCommentsRendered() throws {
+    func testPriorDiscussionRendersAuthorRepliesAndResolution() throws {
+        let marker = InlineCommentMapper.provenanceMarker
         let bundle = try ContextAssembler.assemble(
             pr: makePR(),
             subdiff: subdiff(),
             diffText: "<>",
-            existingComments: [
-                ExistingReviewComment(author: "alice", body: "lgtm", isReview: true),
-                ExistingReviewComment(author: "bob",   body: "consider buffering", isReview: false),
+            priorThreads: [
+                ReviewThread(
+                    id: "t1", isResolved: false, isOutdated: true, path: "kernel-x/a.go",
+                    comments: [
+                        .init(authorLogin: "me", body: "**Unbounded retry**\n\nthis loops\n\n\(marker)"),
+                        .init(authorLogin: "alice", body: "intentional — the caller times out <!-- agent:reviewed -->"),
+                    ]
+                ),
+                ReviewThread(
+                    id: "t2", isResolved: true, isOutdated: true, path: "kernel-x/a.go",
+                    comments: [.init(authorLogin: "me", body: "**Typo**\n\nx\n\n\(marker)")]
+                ),
             ],
             toolMode: .none,
             workdir: URL(fileURLWithPath: "/tmp")
         )
-        XCTAssertTrue(bundle.userPrompt.contains("Existing review comments"))
-        XCTAssertTrue(bundle.userPrompt.contains("@alice"))
-        XCTAssertTrue(bundle.userPrompt.contains("lgtm"))
+        let p = bundle.userPrompt
+        XCTAssertTrue(p.contains("Prior review discussion"))
+        // The author's reply, attributed as the author's — the whole point.
+        XCTAssertTrue(p.contains("@alice (PR author) replied"))
+        XCTAssertTrue(p.contains("intentional — the caller times out"))
+        XCTAssertTrue(p.contains("resolved"))
+        XCTAssertTrue(p.contains("outdated"))
+        // Top-level verdicts ride along from the inbox query.
+        XCTAssertTrue(p.contains("`CHANGES_REQUESTED`"))
+        XCTAssertTrue(p.contains("needs work"))
+        // HTML comments are invisible to humans on the thread — ours and
+        // any other tool's — so they never reach the prompt.
+        XCTAssertFalse(p.contains(marker))
+        XCTAssertFalse(p.contains("agent:reviewed"))
+    }
+
+    func testPriorDiscussionOmittedWhenNothingSaid() throws {
+        let bundle = try ContextAssembler.assemble(
+            pr: makePR(humanReviews: []),
+            subdiff: subdiff(),
+            diffText: "<>",
+            toolMode: .none,
+            workdir: URL(fileURLWithPath: "/tmp")
+        )
+        XCTAssertFalse(bundle.userPrompt.contains("Prior review discussion"))
     }
 
     func testCIStatusIconsMatchState() throws {
@@ -257,7 +289,13 @@ final class ContextAssemblerTests: XCTestCase {
 
     // MARK: helpers
 
-    private func makePR(checks: [CheckSummary] = []) -> InboxPR {
+    private func makePR(
+        checks: [CheckSummary] = [],
+        humanReviews: [PRReviewSummary] = [
+            PRReviewSummary(author: "alice", state: "CHANGES_REQUESTED",
+                            submittedAt: nil, body: "needs work", isFromViewer: false)
+        ]
+    ) -> InboxPR {
         InboxPR(
             nodeId: "PR_1",
             owner: "getsynq", repo: "cloud", number: 4821,
@@ -275,6 +313,7 @@ final class ContextAssemblerTests: XCTestCase {
             totalAdditions: 312, totalDeletions: 47, changedFiles: 8,
             hasAutoMerge: false, autoMergeEnabledBy: nil,
             allCheckSummaries: checks,
+            humanReviews: humanReviews,
             allowedMergeMethods: [.squash, .rebase],
             autoMergeAllowed: true, deleteBranchOnMerge: true
         )
