@@ -383,7 +383,8 @@ final class ReviewQueueWorker {
         } else {
             try await c.postReviewWithComments(
                 owner: pr.owner, repo: pr.repo, number: pr.number,
-                event: kind.apiEvent, body: body, comments: comments
+                event: kind.apiEvent, body: body, comments: comments,
+                commitId: pr.headSha
             )
         }
     }
