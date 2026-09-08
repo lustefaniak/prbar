@@ -91,3 +91,46 @@ final class CLIConfigTests: XCTestCase {
         XCTAssertThrowsError(try CLIConfig.load(path: "/nonexistent/prbar.json"))
     }
 }
+
+/// The example config is documentation, and `ReviewDefaults.init(from:)`
+/// decodes field by field with `try?` — so a renamed field or a typo in
+/// the example is silently ignored rather than throwing. These assertions
+/// are what keeps it honest.
+final class ExampleConfigTests: XCTestCase {
+    private func loadExample() throws -> CLIConfig {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // PRBarCLITests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // repo root
+        let url = root.appendingPathComponent("docs/prbar.example.json")
+        return try JSONDecoder().decode(CLIConfig.self, from: try Data(contentsOf: url))
+    }
+
+    func testExampleAppLevelValuesDecode() throws {
+        let cfg = try loadExample()
+        XCTAssertEqual(cfg.defaultProvider, .claude)
+        XCTAssertEqual(cfg.defaultClaudeModel, "sonnet")
+
+        let base = cfg.resolver()("some", "repo")
+        XCTAssertEqual(base.toolMode, .sandboxed)
+        XCTAssertEqual(base.maxParallelSubreviews, 2)
+        XCTAssertEqual(base.shareFindings, .warningsAndBlockers)
+        XCTAssertEqual(base.excludeTitlePatterns, ["chore: bump *", "Release *"])
+        XCTAssertFalse(base.autoApprove.enabled)
+        XCTAssertEqual(base.autoDeny.action, .off)
+    }
+
+    func testExampleRepoRulesOverrideAndExclude() throws {
+        let cfg = try loadExample()
+
+        let cloud = cfg.resolver()("getsynq", "cloud")
+        XCTAssertEqual(cloud.providerOverride, .codex)
+        XCTAssertEqual(cloud.shareFindings, .allFindings, "repo rule should win over defaults")
+        XCTAssertEqual(cloud.collapseAboveSubreviewCount, 8)
+        XCTAssertEqual(cloud.rootPatterns, ["kernel-*", "lib/*", "dev-tools"])
+        XCTAssertEqual(cloud.maxParallelSubreviews, 2, "unset fields still inherit")
+
+        XCTAssertTrue(cfg.resolver()("anyone", "infra-tools").excluded, "glob should match")
+        XCTAssertFalse(cfg.resolver()("anyone", "tools").excluded)
+    }
+}

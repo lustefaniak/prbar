@@ -121,11 +121,43 @@ swift build -c release --static-swift-stdlib --product prbar-review
 .build/release/prbar-review https://github.com/owner/repo/pull/123
 ```
 
-It needs the same `gh` and `claude`/`codex` logins the app does. Settings come
-from a JSON file (`--config`, `$PRBAR_CONFIG`, or `./prbar.json`) holding the
-same `ReviewDefaults` ← per-repo override chain the Settings window edits — and
-like the app, it posts nothing until you turn on `shareFindings`, `autoApprove`
-or `autoDeny`.
+It needs the same `gh` and `claude`/`codex` logins the app does.
+
+### Configuring it
+
+Settings come from a JSON file — `--config <path>`, else `$PRBAR_CONFIG`, else
+`./prbar.json`, and running with none of those is valid (everything falls back to
+the same defaults the app ships). It holds the same two-level chain the Settings
+window edits: `defaults` applying everywhere, and `repos` rules overriding it per
+repository. Copy [docs/prbar.example.json](docs/prbar.example.json) as a starting
+point:
+
+```json
+{
+  "defaultProvider": "claude",
+  "defaultClaudeModel": "sonnet",
+  "defaults": {
+    "toolMode": "sandboxed",
+    "shareFindings": "warnings_and_blockers",
+    "excludeTitlePatterns": ["chore: bump *"]
+  },
+  "repos": [
+    { "repoGlobs": ["myorg/monorepo"], "rootPatterns": ["services/*"],
+      "providerOverride": "codex" }
+  ]
+}
+```
+
+Like the app, **it posts nothing until you turn on `shareFindings`, `autoApprove`
+or `autoDeny`** — an unconfigured run reviews the PR and reports the verdict on
+stdout without touching GitHub. `shareFindings` is the one to start with: it posts
+findings as a comment and never casts a verdict.
+
+> Unknown and mistyped keys are **silently ignored**, not rejected — the decoder
+> is deliberately forgiving so old files keep working. If a setting seems to have
+> no effect, check its spelling against
+> [`ReviewDefaults`](Sources/PRBar/Models/ReviewDefaults.swift) and
+> [`RepoConfig`](Sources/PRBar/Models/RepoConfig.swift), which are the schema.
 
 Progress is reported on stdout as one JSON object per line
 (`task_id` / `outcome` / `note` / `agent.cost_usd`), which is
