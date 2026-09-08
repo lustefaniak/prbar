@@ -67,7 +67,16 @@ public enum PRBarReviewCLI {
             agent: .init(runtime: providerId.rawValue, session_id: nil, cost_usd: nil)
         ).emit()
 
-        let outcome = await Runner(config: config, client: client).review(
+        let runner = Runner(
+            config: config,
+            diffFetcher: { owner, repo, number in
+                try await client.fetchDiff(owner: owner, repo: repo, number: number)
+            },
+            reviewThreadFetcher: { owner, repo, number in
+                try await client.fetchReviewThreads(owner: owner, repo: repo, number: number)
+            }
+        )
+        let outcome = await runner.review(
             pr: pr, force: invocation.force, providerOverride: invocation.providerOverride)
 
         BrahmandaEvent(

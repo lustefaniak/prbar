@@ -12,7 +12,12 @@ import Foundation
 @MainActor
 struct Runner {
     let config: CLIConfig
-    let client: GHClient
+
+    /// Injected rather than taking a `GHClient`, which cannot be
+    /// constructed without `gh` on PATH — the skip paths reach neither
+    /// fetch, and that is exactly what needs testing.
+    var diffFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
+    var reviewThreadFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> ReviewThreadPage
 
     struct Outcome {
         var isFailure: Bool
@@ -27,9 +32,7 @@ struct Runner {
     func review(pr: InboxPR, force: Bool, providerOverride: ProviderID?) async -> Outcome {
         let posts = PostRecorder()
         let worker = ReviewQueueWorker(
-            diffFetcher: { [client] owner, repo, number in
-                try await client.fetchDiff(owner: owner, repo: repo, number: number)
-            },
+            diffFetcher: diffFetcher,
             checkoutManager: RepoCheckoutManager(),
             cache: nil,
             failureLogStore: nil
@@ -40,9 +43,7 @@ struct Runner {
         if let v = config.defaultClaudeEffort { worker.defaultClaudeEffort = v }
         if let v = config.defaultCodexModel { worker.defaultCodexModel = v }
         if let v = config.defaultCodexEffort { worker.defaultCodexEffort = v }
-        worker.reviewThreadFetcher = { [client] owner, repo, number in
-            try await client.fetchReviewThreads(owner: owner, repo: repo, number: number)
-        }
+        worker.reviewThreadFetcher = reviewThreadFetcher
         // No human is watching a banner, so the staged batch fires as soon
         // as the run settles.
         worker.undoWindow = 0
@@ -63,16 +64,28 @@ struct Runner {
             worker.enqueueNewReviewRequests(from: [pr])
         }
 
-        // Nothing was queued at all — a gate rejected it synchronously, or
-        // the PR is not one this viewer was asked to review.
-        guard worker.reviews[pr.nodeId] != nil else {
+        // Nothing was recorded at all: `enqueue` drops an excluded repo
+        // without a trace, and `enqueueNewReviewRequests` ignores a PR
+        // this viewer was not asked to review.
+        guard let queued = worker.reviews[pr.nodeId] else {
+            if config.resolver()(pr.owner, pr.repo).excluded {
+                return Outcome(
+                    isFailure: false,
+                    note: "not reviewed: \(pr.owner)/\(pr.repo) is excluded by config")
+            }
             return Outcome(
                 isFailure: false,
                 note: "not reviewed: no review request for the authenticated user "
                     + "(pass --force to review anyway)")
         }
 
-        await settled.wait()
+        // A gate that rejected the PR synchronously recorded a terminal
+        // state without firing `onReviewSettled` — only the cache-hit
+        // branch and the end of a real triage do that — so waiting on the
+        // settle signal here would never return.
+        if !queued.status.isTerminal {
+            await settled.wait()
+        }
 
         // A staged post fires on its own timer; wait for the action log to
         // confirm it landed rather than exiting mid-write.
