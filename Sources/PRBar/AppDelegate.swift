@@ -289,6 +289,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let preShown = Self.findExistingSettingsWindow() {
             preShown.orderOut(nil)
         }
+        // Evict aged-out log/cache rows before anything reads the store.
+        // Detached because it deletes thousands of rows on a store that has
+        // never been swept.
+        if !ScreenshotMode.isActive {
+            Task.detached { StoreRetention.sweep(PRBarModelContainer.live()) }
+        }
+
         installStatusItem()
         installPopover()
         installRightClickMenu()
