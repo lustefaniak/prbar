@@ -507,9 +507,42 @@ final class ReviewQueueWorker {
         self.liveProgress = progress
     }
 
+    @ObservationIgnored
+    private var persistTask: Task<Void, Never>?
+
     /// Save the current `reviews` map to disk if a cache is wired.
+    ///
+    /// Debounced and off the main actor. One poll calls this once per
+    /// enqueued PR, and the encode is a whole-map re-encode — inline on the
+    /// main actor that freezes the popover mid-interaction. Only the pending
+    /// coalescing window is cancellable; a write already handed to the
+    /// detached task always completes.
     private func persist() {
-        cache?.save(reviews)
+        guard let cache else { return }
+        persistTask?.cancel()
+        persistTask = Task { [cache] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            let snapshot = self.reviews
+            await Task.detached(operation: { cache.save(snapshot) }).value
+        }
+    }
+
+    /// Drop review state for PRs that have left the inbox. Without this the
+    /// map grows without bound across every PR ever polled, and each
+    /// `persist()` then re-encodes all of it. The permanent per-review record
+    /// lives in `ReviewLogStore` (the History tab), not here.
+    private func pruneReviews(keeping prs: [InboxPR]) {
+        // An empty list means a poll that returned nothing, not an empty
+        // inbox we can trust to prune against.
+        guard !prs.isEmpty else { return }
+        let live = Set(prs.map(\.nodeId))
+        // In-flight states are kept regardless: the PR may be mid-review.
+        let stale = reviews.filter { !live.contains($0.key) && $0.value.status.isTerminal }
+        guard !stale.isEmpty else { return }
+        for key in stale.keys { reviews.removeValue(forKey: key) }
+        PRBarLog.triage.debug("pruned review states count=\(stale.count, privacy: .public)")
+        persist()
     }
 
     /// Enqueue a PR for review. Idempotent — already-known PR is a no-op
@@ -621,6 +654,7 @@ final class ReviewQueueWorker {
     /// from `PRPoller` after each successful poll. Intentionally idempotent
     /// — repeat polls are no-ops.
     func enqueueNewReviewRequests(from prs: [InboxPR]) {
+        pruneReviews(keeping: prs)
         for pr in prs where pr.role == .reviewRequested || pr.role == .both {
             let cfg = configResolver(pr.owner, pr.repo)
             // Repo opted out of AI triage entirely → ReadinessCoordinator
