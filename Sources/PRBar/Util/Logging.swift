@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(OSLog)
 import OSLog
+#endif
 
 /// Per-subsystem `Logger` registry. One subsystem
 /// (`dev.lustefaniak.prbar`), one category per concern. Tail with:
@@ -25,25 +27,80 @@ enum PRBarLog {
 
     /// AI triage decisions: enqueue / skip / cache-hit / start / done /
     /// fail. The headline category for "why did it decide X".
-    nonisolated(unsafe) static let triage = Logger(subsystem: subsystem, category: "triage")
+    static let triage = Logger(subsystem: subsystem, category: "triage")
 
     /// Provider-level events: per-subreview verdict + cost + tool count.
     /// Distinct from `triage` so you can grep just the LLM-facing layer.
-    nonisolated(unsafe) static let provider = Logger(subsystem: subsystem, category: "provider")
+    static let provider = Logger(subsystem: subsystem, category: "provider")
 
     /// Inbox poll lifecycle: start, success (with delta sizes), error.
-    nonisolated(unsafe) static let poller = Logger(subsystem: subsystem, category: "poller")
+    static let poller = Logger(subsystem: subsystem, category: "poller")
 
     /// Readiness coordinator: notification gating decisions, batch
     /// flushes, persistent dedup hits.
-    nonisolated(unsafe) static let readiness = Logger(subsystem: subsystem, category: "readiness")
+    static let readiness = Logger(subsystem: subsystem, category: "readiness")
 
     /// GitHub write queue: enqueue / dedup-skip / retry / run failure for
     /// post-review / merge / auto-approve actions.
-    nonisolated(unsafe) static let actions = Logger(subsystem: subsystem, category: "actions")
+    static let actions = Logger(subsystem: subsystem, category: "actions")
 
     /// App lifecycle: status-item install, single-instance handoff, and
     /// the re-launch "surface a window" recovery path. The place to look
     /// when the menu-bar icon went missing and the app seemed unreachable.
-    nonisolated(unsafe) static let lifecycle = Logger(subsystem: subsystem, category: "lifecycle")
+    static let lifecycle = Logger(subsystem: subsystem, category: "lifecycle")
 }
+
+#if !canImport(OSLog)
+/// Linux stand-in for the two `OSLog` types the call sites name, so the
+/// review pipeline logs the same lines from the headless CLI without
+/// every `PRBarLog` call growing a platform branch. Only the members
+/// actually used are here — `debug`/`notice`/`error` and the
+/// `privacy:` interpolation, which is a no-op off Apple platforms
+/// (there is no unified log to redact for).
+struct OSLogPrivacy: Sendable {
+    static let `public` = OSLogPrivacy()
+    static let `private` = OSLogPrivacy()
+}
+
+struct PRBarLogMessage: ExpressibleByStringInterpolation, Sendable {
+    let text: String
+
+    init(stringLiteral value: String) { text = value }
+    init(stringInterpolation: StringInterpolation) { text = stringInterpolation.text }
+
+    struct StringInterpolation: StringInterpolationProtocol {
+        var text = ""
+        init(literalCapacity: Int, interpolationCount: Int) {
+            text.reserveCapacity(literalCapacity)
+        }
+        mutating func appendLiteral(_ literal: String) { text += literal }
+        mutating func appendInterpolation(
+            _ value: some Any, privacy _: OSLogPrivacy = .public
+        ) {
+            text += "\(value)"
+        }
+    }
+}
+
+/// stderr, not stdout: the CLI's stdout is brahmanda's NDJSON event
+/// stream, and a stray log line there would be parsed as an event.
+struct Logger: Sendable {
+    let subsystem: String
+    let category: String
+
+    init(subsystem: String, category: String) {
+        self.subsystem = subsystem
+        self.category = category
+    }
+
+    func debug(_ message: PRBarLogMessage) { emit("debug", message) }
+    func notice(_ message: PRBarLogMessage) { emit("notice", message) }
+    func error(_ message: PRBarLogMessage) { emit("error", message) }
+
+    private func emit(_ level: String, _ message: PRBarLogMessage) {
+        FileHandle.standardError.write(
+            Data("[\(level)] \(category): \(message.text)\n".utf8)
+        )
+    }
+}
+#endif

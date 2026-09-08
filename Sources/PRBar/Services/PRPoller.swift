@@ -2,18 +2,6 @@ import Foundation
 import Observation
 import OSLog
 
-struct PollDelta: Sendable, Hashable {
-    let added: [InboxPR]
-    let removed: [InboxPR]
-    let changed: [InboxPR]   // new state of PRs whose previous snapshot differed
-
-    var isEmpty: Bool {
-        added.isEmpty && removed.isEmpty && changed.isEmpty
-    }
-
-    static let empty = PollDelta(added: [], removed: [], changed: [])
-}
-
 @MainActor
 @Observable
 final class PRPoller {

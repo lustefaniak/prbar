@@ -119,7 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Reuse the worker's FailureLogStore so the UI's expandable
         // failure-log section reads from the same cache the prompt
         // pipeline already warmed.
-        let fls = q.failureLogStore ?? FailureLogStore.live()
+        // The seam is protocol-typed for the headless CLI, so recover the
+        // concrete store the UI needs; screenshot mode never sets one.
+        let fls = (q.failureLogStore as? FailureLogStore) ?? FailureLogStore.live()
         q.failureLogStore = fls
         let rc = RepoConfigStore()
         let coord = ReadinessCoordinator(notifier: n)

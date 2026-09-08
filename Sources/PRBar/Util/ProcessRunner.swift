@@ -1,4 +1,8 @@
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 import Foundation
 
 /// Mutex-guarded line buffer for `runStreaming`. The readability handler
@@ -266,8 +270,8 @@ enum ProcessRunner {
             let tmpDir = FileManager.default.temporaryDirectory
             let outURL = tmpDir.appendingPathComponent("prbar-\(UUID().uuidString).out")
             let errURL = tmpDir.appendingPathComponent("prbar-\(UUID().uuidString).err")
-            FileManager.default.createFile(atPath: outURL.path, contents: nil)
-            FileManager.default.createFile(atPath: errURL.path, contents: nil)
+            _ = FileManager.default.createFile(atPath: outURL.path, contents: nil)
+            _ = FileManager.default.createFile(atPath: errURL.path, contents: nil)
             defer {
                 try? FileManager.default.removeItem(at: outURL)
                 try? FileManager.default.removeItem(at: errURL)
