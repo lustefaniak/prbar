@@ -76,7 +76,7 @@ struct CodexProvider: ReviewProvider {
         // Codex (OpenAI strict structured-output) rejects schemas that
         // don't have `additionalProperties: false` on every object —
         // *opposite* of claude, which rejects schemas that contain it.
-        // Transform the shared `Resources/schemas/review.json` on the
+        // Transform the shared `Sources/PRBar/Sources/PRBar/Resources/schemas/review.json` on the
         // fly so a single source of truth feeds both providers.
         let strictSchema = Self.addStrictAdditionalProperties(options.schema) ?? options.schema
         try strictSchema.write(to: schemaURL)

@@ -32,10 +32,17 @@ targets:
     platform: macOS
     sources:
       - path: Sources/PRBar
-      - path: Resources/schemas
+        excludes:
+          # Resources are added explicitly below as folder references;
+          # letting the source glob see them nests a second Resources/
+          # inside the bundle. CLI/ is the headless entry point, built
+          # only by SwiftPM.
+          - Resources/**
+          - CLI/**
+      - path: Sources/PRBar/Resources/schemas
         buildPhase: resources
         type: folder
-      - path: Resources/prompts
+      - path: Sources/PRBar/Resources/prompts
         buildPhase: resources
         type: folder
       - path: Resources/Assets.xcassets

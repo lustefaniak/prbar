@@ -215,7 +215,7 @@ final class CodexProviderTests: XCTestCase {
     }
 
     func testAddStrictAdditionalPropertiesInjectsOnEveryObject() throws {
-        // Mirrors Resources/schemas/review.json shape — top-level object
+        // Mirrors Sources/PRBar/Resources/schemas/review.json shape — top-level object
         // with a nested array of objects.
         let original = """
         {

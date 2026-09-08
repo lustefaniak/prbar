@@ -109,6 +109,33 @@ For SwiftUI Previews / Xcode debugger / project inspection: `open PRBar.xcodepro
 
 `PRBar.xcodeproj/` is generated and gitignored — don't commit it.
 
+## Headless CLI (Linux, macOS)
+
+The menu bar is macOS-only, but the review pipeline isn't. `prbar-review`
+reviews one PR and exits, so an orchestrator such as
+[brahmanda](https://github.com/grasskode/brahmanda) can pick up review requests
+and hand them over one at a time:
+
+```sh
+swift build -c release --static-swift-stdlib --product prbar-review
+.build/release/prbar-review https://github.com/owner/repo/pull/123
+```
+
+It needs the same `gh` and `claude`/`codex` logins the app does. Settings come
+from a JSON file (`--config`, `$PRBAR_CONFIG`, or `./prbar.json`) holding the
+same `ReviewDefaults` ← per-repo override chain the Settings window edits — and
+like the app, it posts nothing until you turn on `shareFindings`, `autoApprove`
+or `autoDeny`.
+
+Progress is reported on stdout as one JSON object per line
+(`task_id` / `outcome` / `note` / `agent.cost_usd`), which is
+[brahmanda's worker contract](https://github.com/grasskode/brahmanda#the-worker-contract);
+logs go to stderr. Copy `prbar_PRBarCore.bundle` alongside the binary — it
+carries the prompts and the output schema.
+
+Linux amd64 builds are attached to every CI run as the `prbar-review-linux-amd64`
+artifact.
+
 ## Auto-update
 
 The release workflow signs each tag with EdDSA, publishes a notarization-ready DMG, and updates the appcast on `gh-pages`. The app uses Sparkle 2 to check for updates in the background; users get a "PRBar X.Y is available" prompt without re-downloading by hand.

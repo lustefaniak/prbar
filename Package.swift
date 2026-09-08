@@ -15,6 +15,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "PRBarCore", targets: ["PRBarCore"]),
+        .executable(name: "prbar-review", targets: ["prbar-review"]),
     ],
     targets: [
         .target(
@@ -32,6 +33,7 @@ let package = Package(
                 "Services/Review/ReviewFailureHint.swift",
             ],
             sources: [
+                "CLI",
                 "Models",
                 "Util",
                 "Services/AutoReviewPolicy.swift",
@@ -44,6 +46,22 @@ let package = Package(
                 "Services/Providers",
                 "Services/Review",
             ],
+            resources: [
+                .copy("Resources/schemas"),
+                .copy("Resources/prompts"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "PRBarCLITests",
+            dependencies: ["PRBarCore"],
+            path: "Tests/PRBarCLITests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "prbar-review",
+            dependencies: ["PRBarCore"],
+            path: "Sources/prbar-review",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

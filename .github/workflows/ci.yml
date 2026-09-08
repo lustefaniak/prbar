@@ -59,3 +59,35 @@ jobs:
 
       - name: Test
         run: ./bin/test
+
+  # The headless review CLI is the half of PRBar that has to run where
+  # there is no menu bar, so it gets built and tested on the platform it
+  # actually ships to rather than only compiled on macOS.
+  linux-cli:
+    runs-on: ubuntu-latest
+    container: swift:6.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Test
+        run: swift test
+
+      - name: Build release binary
+        run: swift build -c release --static-swift-stdlib --product prbar-review
+
+      # The binary needs its resource bundle (prompts + output schema)
+      # beside it, so ship the pair rather than the executable alone.
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp .build/release/prbar-review dist/
+          cp -R .build/release/*.bundle dist/
+          tar -C dist -czf prbar-review-linux-amd64.tar.gz .
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: prbar-review-linux-amd64
+          path: prbar-review-linux-amd64.tar.gz
+          if-no-files-found: error

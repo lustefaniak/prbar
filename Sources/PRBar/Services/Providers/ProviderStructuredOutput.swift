@@ -1,7 +1,7 @@
 import Foundation
 
 /// JSON shape every `ReviewProvider` returns. Matches
-/// `Resources/schemas/review.json`. Shared between `ClaudeProvider`
+/// `Sources/PRBar/Sources/PRBar/Resources/schemas/review.json`. Shared between `ClaudeProvider`
 /// (which gets it via `--json-schema` + a `result.structured_output`
 /// event) and `CodexProvider` (which reads JSON straight out of stdout
 /// — codex doesn't have an equivalent `--json-schema` flag yet).
@@ -24,7 +24,7 @@ struct ProviderStructuredOutput: Decodable, Sendable, Hashable {
     }
 
     /// `confidence` and `annotations` are no longer schema-`required`
-    /// (see `Resources/schemas/review.json`): claude's `--json-schema`
+    /// (see `Sources/PRBar/Sources/PRBar/Resources/schemas/review.json`): claude's `--json-schema`
     /// StructuredOutput tool corrupts the emitted arguments when the
     /// `summary` is long — the closing tag and the `annotations`
     /// parameter leak *into* the summary string, leaving no top-level
