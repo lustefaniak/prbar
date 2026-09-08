@@ -63,6 +63,7 @@ struct PRRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
+                    AuthorAvatar(login: pr.author, size: 12)
                     Text(verbatim: "\(pr.nameWithOwner) #\(pr.numberString)")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)

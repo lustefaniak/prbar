@@ -375,6 +375,7 @@ struct PRDetailView: View {
                 .truncationMode(.middle)
                 .textSelection(.enabled)
             HStack(spacing: 6) {
+                AuthorAvatar(login: pr.author, size: 14)
                 Text("@\(pr.author)")
                     .foregroundStyle(.secondary)
                 Text("·")
