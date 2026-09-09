@@ -65,12 +65,13 @@ enum GraphQLQueries {
     \(prFieldsFragment)
     """
 
-    /// Review threads for one PR, for the resolve-on-retriage path.
+    /// Review threads for one PR. Two consumers: the prompt's prior-discussion
+    /// section (every triage) and the resolve-on-retriage path (opt-in).
     ///
     /// Deliberately *not* folded into `prFieldsFragment`: the inbox query
     /// already returns ~110 KB across 50 PRs, and threads are only needed
-    /// for the handful of PRs actually being retriaged. Fetched on demand
-    /// instead, once per retriage.
+    /// for the handful of PRs actually being triaged. Fetched on demand
+    /// instead, once per triage.
     /// `headRefOid` rides along because resolution must be checked against
     /// the commit the triage actually reviewed. Threads are read live, so
     /// a push landing mid-review would otherwise let stale findings close

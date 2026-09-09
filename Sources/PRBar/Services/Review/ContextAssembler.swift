@@ -1,14 +1,5 @@
 import Foundation
 
-/// Existing review comment fetched off the PR. Used to tell the AI "don't
-/// repeat what others have already said". For Phase 2 MVP callers pass [];
-/// Phase 2+ will plumb these through from the GraphQL response.
-struct ExistingReviewComment: Sendable, Hashable {
-    let author: String
-    let body: String
-    let isReview: Bool   // true for top-level review summary, false for inline
-}
-
 /// Tail of a failed CI job's logs, for the prompt's "CI failures" section.
 /// Phase 2 MVP ships without these — callers pass []. Phase 2+ will fetch
 /// via `gh run view --log-failed`.
@@ -18,13 +9,17 @@ struct CIFailureLog: Sendable, Hashable {
 }
 
 enum ContextAssembler {
+    /// Replies kept per thread, newest-first. The root is always shown on
+    /// top of these.
+    static let maxRepliesPerThread = 5
+
     /// Build the prompt bundle for one subreview. Pure function — all
     /// inputs explicit, no I/O.
     static func assemble(
         pr: InboxPR,
         subdiff: Subdiff,
         diffText: String,
-        existingComments: [ExistingReviewComment] = [],
+        priorThreads: [ReviewThread] = [],
         ciFailures: [CIFailureLog] = [],
         toolMode: ToolMode,
         workdir: URL,
@@ -50,7 +45,7 @@ enum ContextAssembler {
             pr: pr,
             subdiff: subdiff,
             diffText: diffText,
-            existingComments: existingComments,
+            priorThreads: priorThreads,
             ciFailures: ciFailures,
             toolMode: toolMode,
             baseSha: baseSha,
@@ -75,7 +70,7 @@ enum ContextAssembler {
         pr: InboxPR,
         subdiff: Subdiff,
         diffText: String,
-        existingComments: [ExistingReviewComment],
+        priorThreads: [ReviewThread] = [],
         ciFailures: [CIFailureLog],
         toolMode: ToolMode,
         baseSha: String = "",
@@ -97,6 +92,11 @@ enum ContextAssembler {
             out += priorReviewsSection(priorReviews, currentSha: pr.headSha)
             out += "\n"
         }
+        let discussion = priorDiscussionSection(pr: pr, threads: priorThreads)
+        if !discussion.isEmpty {
+            out += discussion
+            out += "\n"
+        }
         out += subfolderSection(subdiff: subdiff, toolMode: toolMode)
         out += "\n"
         // The brief carries every path with its +/- counts, so it *replaces*
@@ -112,10 +112,6 @@ enum ContextAssembler {
             out += filesChangedSection(subdiff: subdiff)
         }
         out += "\n"
-        if !existingComments.isEmpty {
-            out += existingCommentsSection(existingComments)
-            out += "\n"
-        }
         out += ciStatusSection(checks: pr.allCheckSummaries)
         out += "\n"
         if !ciFailures.isEmpty {
@@ -391,14 +387,129 @@ enum ContextAssembler {
         return s
     }
 
-    private static func existingCommentsSection(_ comments: [ExistingReviewComment]) -> String {
-        var s = "## Existing review comments (do not repeat)\n\n"
-        for c in comments.prefix(20) {
-            let body = c.body.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-            let truncated = body.count > 200 ? String(body.prefix(200)) + "…" : body
-            s += "- @\(c.author): \"\(truncated)\"\n"
+    /// Reviews and inline threads already on the PR, rendered as
+    /// conversation rather than a flat comment list.
+    ///
+    /// The structure is the point: a finding matters far less than what the
+    /// PR author said back about it. "Fixed in abc123", "intentional, see
+    /// the comment above", and silence are three different states, and only
+    /// the reply distinguishes them — a flattened list of comment bodies
+    /// reads as a pile of open findings and gets every one of them raised
+    /// again. Replies are attributed by role for the same reason
+    /// `ReviewThreadResolver` insists on the author specifically: another
+    /// reviewer agreeing, or a bot, says nothing about whether the finding
+    /// was addressed.
+    ///
+    /// Returns "" when there is nothing to say, so the caller can skip the
+    /// heading entirely.
+    private static func priorDiscussionSection(pr: InboxPR, threads: [ReviewThread]) -> String {
+        let reviews = pr.humanReviews.filter {
+            !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let threads = threads.filter { !$0.comments.isEmpty }
+        if reviews.isEmpty && threads.isEmpty { return "" }
+
+        var s = "## Prior review discussion (already raised — do not repeat)\n\n"
+        s += "This PR has been reviewed before. Read the PR author's replies before "
+        s += "judging anything they touch:\n\n"
+        s += "- A finding the author fixed or explained is **settled** — do not raise it again.\n"
+        s += "- A finding the author pushed back on that you still judge wrong: raise it **once**, "
+        s += "answering their reasoning directly. Never restate it unchanged.\n"
+        s += "- A thread marked resolved is closed. Leave it closed.\n"
+        s += "- This is context, not a verdict. Judge the code at its current head — an unanswered "
+        s += "finding that no longer applies is as dead as an answered one.\n\n"
+
+        if !reviews.isEmpty {
+            s += "### Review verdicts\n\n"
+            // `suffix`, not `prefix`: `reviews(last: 20)` comes back
+            // oldest-first, so taking the head keeps the stalest verdicts
+            // and can hide the one that decided the PR's current state.
+            for r in reviews.suffix(10) {
+                s += "- \(who(r.author, pr: pr, isViewer: r.isFromViewer)) — `\(r.state)`: "
+                s += "\"\(condense(r.body, limit: 300))\"\n"
+            }
+            s += "\n"
+        }
+
+        for thread in threads.prefix(15) {
+            var flags: [String] = []
+            if thread.isResolved { flags.append("resolved") }
+            if thread.isOutdated { flags.append("outdated — the anchored code has changed since") }
+            let suffix = flags.isEmpty ? "" : " (\(flags.joined(separator: ", ")))"
+            let path = thread.path.isEmpty ? "the PR" : "`\(thread.path)`"
+            s += "### Thread on \(path)\(suffix)\n\n"
+            // Root plus the *latest* replies. Comments come back
+            // chronological, so `prefix` kept the opening debate and
+            // dropped the end of the conversation — which is precisely
+            // where "fixed in abc123" lives, and the only reason this
+            // section exists. A thread long enough to truncate is exactly
+            // the thread whose ending matters most.
+            let root = thread.comments.first
+            let replies = thread.comments.dropFirst()
+            let shownReplies = replies.suffix(Self.maxRepliesPerThread)
+            let omitted = replies.count - shownReplies.count
+            if let root {
+                // The root gets the tighter cap: it states a finding, and a
+                // finding is something this run re-derives from the code
+                // anyway. The replies are the half that exists nowhere else
+                // — which commit fixed it, or why it was left alone — so
+                // truncating those is what makes the section useless.
+                s += "- \(who(root.authorLogin, pr: pr, isViewer: nil)): "
+                s += "\"\(condense(root.body, limit: 250))\"\n"
+            }
+            if omitted > 0 {
+                s += "- … \(omitted) earlier repl\(omitted == 1 ? "y" : "ies") omitted\n"
+            }
+            for c in shownReplies {
+                s += "- \(who(c.authorLogin, pr: pr, isViewer: nil)) replied: "
+                s += "\"\(condense(c.body, limit: 700))\"\n"
+            }
+            s += "\n"
         }
         return s
+    }
+
+    /// Whose voice a comment is in. The PR author's label is the one that
+    /// carries weight; the viewer's own past comments are labelled as the
+    /// model's own so it doesn't argue with itself.
+    private static func who(_ login: String, pr: InboxPR, isViewer: Bool?) -> String {
+        if login == pr.author { return "@\(login) (PR author)" }
+        let viewer = isViewer ?? (!pr.viewerLogin.isEmpty && login == pr.viewerLogin)
+        if viewer { return "@\(login) (you, on an earlier pass)" }
+        return "@\(login) (reviewer)"
+    }
+
+    /// One-line, length-capped, marker-free.
+    ///
+    /// *Every* HTML comment is stripped, not just PRBar's own
+    /// `InlineCommentMapper.provenanceMarker`: they render as nothing on
+    /// GitHub, so a human reading the thread never sees them, and other
+    /// tooling leaves its own behind (`<!-- agent:reviewed -->` shows up on
+    /// real PRs). Feeding a model text no human on the thread can see is
+    /// noise at best and an instruction channel at worst.
+    /// `(?s)` matches `MarkdownSanitizer`: without DOTALL a comment spanning
+    /// lines never reaches its own `-->`, so the whole span survives — and
+    /// the newline flattening below then hands its contents to the model as
+    /// ordinary prose.
+    private static func condense(_ body: String, limit: Int) -> String {
+        let closed = body.replacingOccurrences(
+            of: "(?s)<!--.*?-->",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // An *unterminated* `<!--` hides everything after it on GitHub just
+        // as effectively as a closed one, and the pattern above leaves it
+        // untouched — so text no human on the thread can see would reach
+        // the model as ordinary prose. Drop from the opener to the end.
+        let stripped = closed.replacingOccurrences(
+            of: "(?s)<!--.*$",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        let flat = stripped
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return flat.count > limit ? String(flat.prefix(limit)) + "…" : flat
     }
 
     private static func ciStatusSection(checks: [CheckSummary]) -> String {
