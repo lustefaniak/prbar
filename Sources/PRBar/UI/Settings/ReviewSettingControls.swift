@@ -232,6 +232,71 @@ enum ReviewSettingControls {
                 .filter { !$0.isEmpty }
         }
     }
+
+    /// `KEY=VALUE` lines for the agent subprocess environment.
+    ///
+    /// Same local-`@State` shape as `PatternEditor`, and for the same
+    /// reason: normalizing on every keystroke round-trips away the newline
+    /// the user just typed, which makes Return look broken.
+    struct EnvironmentEditor: View {
+        let title: String
+        let footnote: String
+        @Binding var variables: [String: String]
+
+        @State private var text: String = ""
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.callout)
+                TextEditor(text: $text)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(minHeight: 60, maxHeight: 140)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(.secondary.opacity(0.2))
+                    )
+                    .onChange(of: text) { _, newValue in
+                        variables = Self.parse(newValue)
+                    }
+                Text(footnote)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .onAppear { text = Self.format(variables) }
+        }
+
+        /// Splits on the *first* `=` only — values legitimately contain
+        /// one (a PATH-ish list, a URL with a query). Lines are kept
+        /// verbatim after that: no trimming of the value, since a trailing
+        /// space can matter, and no case folding of the key.
+        static func parse(_ text: String) -> [String: String] {
+            var out: [String: String] = [:]
+            for rawLine in text.split(whereSeparator: \.isNewline) {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty || line.hasPrefix("#") { continue }
+                guard let eq = line.firstIndex(of: "=") else {
+                    // A bare `!NAME` removes an inherited variable; any
+                    // other bare word is an unfinished line the user is
+                    // still typing, so it is dropped rather than stored
+                    // as an empty-valued variable.
+                    if line.hasPrefix("!"), line.count > 1 { out[line] = "" }
+                    continue
+                }
+                let key = String(line[line.startIndex..<eq]).trimmingCharacters(in: .whitespaces)
+                guard !key.isEmpty else { continue }
+                out[key] = String(line[line.index(after: eq)...])
+            }
+            return out
+        }
+
+        /// Sorted so the editor doesn't reshuffle itself between openings —
+        /// dictionary order is not stable.
+        static func format(_ variables: [String: String]) -> String {
+            variables.keys.sorted()
+                .map { $0.hasPrefix("!") ? $0 : "\($0)=\(variables[$0] ?? "")" }
+                .joined(separator: "\n")
+        }
+    }
 }
 
 // MARK: - Auto-review

@@ -1027,6 +1027,7 @@ final class ReviewQueueWorker {
                     maxToolCalls: config.maxToolCallsPerSubreview,
                     maxCostUsd: config.maxCostUsdPerSubreview,
                     timeout: .seconds(config.reviewTimeoutSeconds),
+                    environment: config.agentEnvironment,
                     schema: try PromptLibrary.outputSchema()
                 )
                 let subStart = Date()

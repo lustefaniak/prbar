@@ -88,6 +88,16 @@ struct ReviewDefaultsSettings: View {
             }
 
             Section {
+                ReviewSettingControls.EnvironmentEditor(
+                    title: "Environment for claude / codex (one KEY=VALUE per line)",
+                    footnote: "Layered onto PRBar's own environment, so HOME and PATH survive. Use this to point a review at a different CLI config than your shell would pick — e.g. CLAUDE_CONFIG_DIR=/Users/you/.claude-review. A repo rule adds to this set rather than replacing it.",
+                    variables: $store.defaults.agentEnvironment
+                )
+            } header: {
+                Text("Agent environment")
+            }
+
+            Section {
                 ReviewSettingControls.notifyPolicy($store.defaults.notifyPolicy)
             } header: {
                 Text("Ready-for-review notifications")

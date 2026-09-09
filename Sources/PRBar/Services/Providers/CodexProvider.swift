@@ -95,6 +95,7 @@ struct CodexProvider: ReviewProvider {
         let result = try await ProcessRunner.run(
             executable: codexPath,
             args: args,
+            environment: ProcessRunner.inheritedEnvironment(overrides: options.environment),
             stdin: Data(prompt.utf8)
         )
 
