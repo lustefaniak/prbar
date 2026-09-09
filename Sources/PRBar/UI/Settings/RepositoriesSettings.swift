@@ -431,6 +431,15 @@ struct RepoConfigEditor: View {
                         patterns: binding
                     )
                 }
+                inheritable("Agent environment", \.agentEnvironment,
+                            inherited: [:],
+                            describe: { _ in "the \(defaults.agentEnvironment.count) global variable(s)" }) { binding in
+                    ReviewSettingControls.EnvironmentEditor(
+                        title: "Layered onto the global set, not replacing it",
+                        footnote: "One KEY=VALUE per line. To drop a global variable for this repo, write !NAME on its own line — an empty value is a real value, so it can't mean \"unset\".",
+                        variables: binding
+                    )
+                }
             }
 
             section("Notifications") {

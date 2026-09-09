@@ -73,6 +73,7 @@ struct ClaudeProvider: ReviewProvider {
             executable: claudePath,
             args: args,
             cwd: cwd,
+            environment: ProcessRunner.inheritedEnvironment(overrides: options.environment),
             stdin: stdin,
             timeout: options.timeout
         ) { line in

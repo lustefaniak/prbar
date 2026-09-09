@@ -68,6 +68,22 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
     /// from a global pattern, negate it there (`!chore: bump *`).
     var excludeTitlePatterns: [String] = []
 
+    // MARK: Agent environment
+
+    /// Extra environment variables handed to `claude` / `codex`.
+    ///
+    /// Exists because the CLI a review should run under is not always the
+    /// one the user's shell would pick: `CLAUDE_CONFIG_DIR` points at a
+    /// different config (and so a different account, MCP set, or model
+    /// default), which is exactly the split people already make with shell
+    /// aliases. PRBar spawns the CLI itself and inherits none of that.
+    ///
+    /// Merged onto the inherited environment rather than replacing it —
+    /// see `ProcessRunner.inheritedEnvironment(overrides:)`, which exists
+    /// so no call site can repeat the "passing `environment:` strips
+    /// HOME/USER/PATH" mistake.
+    var agentEnvironment: [String: String] = [:]
+
     // MARK: Notifications
 
     var notifyPolicy: NotifyPolicy = .batchSettled
@@ -120,6 +136,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         case maxToolCallsPerSubreview, maxCostUsdPerSubreview, reviewTimeoutSeconds
         case riskBriefEnabled, churnWindowDays, churnHistoryDepth
         case reviewDrafts, skipAIIfReviewedByOthers, excludeTitlePatterns
+        case agentEnvironment
         case notifyPolicy
         case autoApprove, autoDeny, shareFindings
         case shareMinConfidence, shareMaxComments, resolveThreads
@@ -147,6 +164,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         self.reviewDrafts = (try? c.decode(Bool.self, forKey: .reviewDrafts)) ?? d.reviewDrafts
         self.skipAIIfReviewedByOthers = (try? c.decode(Bool.self, forKey: .skipAIIfReviewedByOthers)) ?? d.skipAIIfReviewedByOthers
         self.excludeTitlePatterns = (try? c.decode([String].self, forKey: .excludeTitlePatterns)) ?? d.excludeTitlePatterns
+        self.agentEnvironment = (try? c.decode([String: String].self, forKey: .agentEnvironment)) ?? d.agentEnvironment
         self.notifyPolicy = (try? c.decode(NotifyPolicy.self, forKey: .notifyPolicy)) ?? d.notifyPolicy
         self.autoApprove = (try? c.decode(AutoApproveConfig.self, forKey: .autoApprove)) ?? d.autoApprove
         self.autoDeny = (try? c.decode(AutoDenyConfig.self, forKey: .autoDeny)) ?? d.autoDeny
@@ -235,6 +253,28 @@ struct ResolvedRepoConfig: Sendable, Hashable {
     /// titles live, and a repo rule adds to it.
     var excludeTitlePatterns: [String] {
         defaults.excludeTitlePatterns + (rule.excludeTitlePatterns ?? [])
+    }
+
+    /// Layered, not replaced: the repo's vars are applied on top of the
+    /// global ones, key by key, so a repo that needs one extra variable
+    /// doesn't have to restate the rest. That mirrors how environments
+    /// compose everywhere else, and how `excludeTitlePatterns` already
+    /// combines here.
+    ///
+    /// To *drop* an inherited variable for one repo, give it the key
+    /// `!NAME` — the same negation escape hatch the title patterns use.
+    /// Without it, a global variable would be impossible to switch off
+    /// per-repo, since an empty string is a legitimate value.
+    var agentEnvironment: [String: String] {
+        var merged = defaults.agentEnvironment
+        for (key, value) in rule.agentEnvironment ?? [:] {
+            if key.hasPrefix("!") {
+                merged.removeValue(forKey: String(key.dropFirst()))
+            } else {
+                merged[key] = value
+            }
+        }
+        return merged
     }
 
     var notifyPolicy: NotifyPolicy { rule.notifyPolicy ?? defaults.notifyPolicy }

@@ -72,6 +72,13 @@ struct ProviderOptions: Sendable {
     /// direct constructions (tests, non-worker callers).
     var timeout: Duration = .seconds(600)
 
+    /// Extra environment variables for the CLI subprocess, resolved from
+    /// `ResolvedRepoConfig.agentEnvironment`. Layered onto the inherited
+    /// environment by the provider via
+    /// `ProcessRunner.inheritedEnvironment(overrides:)` — never passed
+    /// raw, which would strip HOME/USER/PATH from the child.
+    var environment: [String: String] = [:]
+
     /// JSON Schema bytes for `--json-schema`. Always required so the
     /// provider doesn't have to load it itself.
     var schema: Data

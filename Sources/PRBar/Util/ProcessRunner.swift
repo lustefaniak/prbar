@@ -236,6 +236,20 @@ enum ProcessRunner {
     /// same dirs `ExecutableResolver` searches lets node (and any tools the
     /// CLI shells out to) resolve. Caller-supplied `environment` is augmented
     /// the same way rather than replaced wholesale.
+    /// The inherited environment with `overrides` layered on top, or nil
+    /// when there is nothing to override.
+    ///
+    /// `childEnvironment` *replaces* the environment when handed one, so
+    /// passing a bare `["CLAUDE_CONFIG_DIR": ...]` strips HOME, USER and
+    /// everything else the child needs. Every caller that only wants to
+    /// add variables goes through here instead of building the dictionary
+    /// itself; nil-on-empty keeps the untouched path byte-identical to
+    /// before rather than round-tripping the whole environment for nothing.
+    static func inheritedEnvironment(overrides: [String: String]) -> [String: String]? {
+        guard !overrides.isEmpty else { return nil }
+        return ProcessInfo.processInfo.environment.merging(overrides) { _, override in override }
+    }
+
     static func childEnvironment(
         _ override: [String: String]?,
         prepending searchPaths: [String] = ExecutableResolver.searchPaths

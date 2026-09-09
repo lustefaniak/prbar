@@ -543,6 +543,16 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// `["[Prod deploy]*", "*chore: bump*"]`.
     var excludeTitlePatterns: [String]?
 
+    /// Environment variables for this repo's `claude` / `codex` runs.
+    ///
+    /// **Layered onto the global set, not a replacement** — a repo needing
+    /// one extra variable does not restate the rest. `nil` inherits the
+    /// globals untouched. A key of `!NAME` drops an inherited variable,
+    /// the same negation escape hatch `excludeTitlePatterns` uses, and the
+    /// only way to switch a global one off here: an empty string is a
+    /// legitimate value, so it can't double as "unset".
+    var agentEnvironment: [String: String]?
+
     /// When true (default), the worker skips auto-enqueueing PRs that
     /// already have an APPROVED or CHANGES_REQUESTED decision from
     /// another reviewer. PR stays visible in the list — you may still
@@ -653,6 +663,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case autoApprove, autoDeny, shareFindings
         case shareMinConfidence, shareMaxComments, resolveThreads
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
+        case agentEnvironment
         case aiReviewEnabled, providerOverride, notifyPolicy
         case forceFullReview
         case skipMergeConfirmation
@@ -696,6 +707,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.resolveThreads          = try? c.decodeIfPresent(ResolveThreadsConfig.self, forKey: .resolveThreads)
         self.reviewDrafts            = try? c.decodeIfPresent(Bool.self, forKey: .reviewDrafts)
         self.excludeTitlePatterns    = try? c.decodeIfPresent([String].self, forKey: .excludeTitlePatterns)
+        self.agentEnvironment        = try? c.decodeIfPresent([String: String].self, forKey: .agentEnvironment)
         self.skipAIIfReviewedByOthers = try? c.decodeIfPresent(Bool.self, forKey: .skipAIIfReviewedByOthers)
         self.aiReviewEnabled         = try? c.decodeIfPresent(Bool.self, forKey: .aiReviewEnabled)
         self.providerOverride        = try? c.decodeIfPresent(ProviderID.self, forKey: .providerOverride)
@@ -739,6 +751,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         resolveThreads: ResolveThreadsConfig? = nil,
         reviewDrafts: Bool? = nil,
         excludeTitlePatterns: [String]? = nil,
+        agentEnvironment: [String: String]? = nil,
         skipAIIfReviewedByOthers: Bool? = nil,
         aiReviewEnabled: Bool? = nil,
         providerOverride: ProviderID? = nil,
@@ -776,6 +789,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.resolveThreads = resolveThreads
         self.reviewDrafts = reviewDrafts
         self.excludeTitlePatterns = excludeTitlePatterns
+        self.agentEnvironment = agentEnvironment
         self.skipAIIfReviewedByOthers = skipAIIfReviewedByOthers
         self.aiReviewEnabled = aiReviewEnabled
         self.providerOverride = providerOverride
