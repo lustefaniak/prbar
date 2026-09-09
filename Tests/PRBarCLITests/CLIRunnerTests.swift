@@ -82,14 +82,40 @@ final class CLIRunnerTests: XCTestCase {
         XCTAssertFalse(outcome.note.contains("--force"))
     }
 
+    /// `excludeTitlePatterns` was enforced only in `PRPoller`, which the
+    /// CLI never goes through — so the shared config said skip and the
+    /// worker reviewed it anyway, spending money and possibly posting.
+    func testTitleExcludedSkipsWithoutFetching() async {
+        var config = CLIConfig()
+        config.defaults.excludeTitlePatterns = ["chore: bump *"]
+
+        let outcome = await review(
+            runner(config), pr: Self.pr(title: "chore: bump deps to 1.2.3")
+        )
+
+        XCTAssertFalse(outcome.isFailure)
+        XCTAssertTrue(outcome.note.contains("title"), "got: \(outcome.note)")
+    }
+
+    func testNonMatchingTitleIsNotExcluded() async {
+        var config = CLIConfig()
+        config.defaults.excludeTitlePatterns = ["chore: bump *"]
+        config.defaults.aiReviewEnabled = false   // stop before any fetch
+
+        let outcome = await review(runner(config), pr: Self.pr(title: "feat: real work"))
+
+        XCTAssertTrue(outcome.note.contains("AI review"), "got: \(outcome.note)")
+    }
+
     private static func pr(
         role: PRRole = .reviewRequested,
         isDraft: Bool = false,
-        hasPRBarVerdictAtHead: Bool = false
+        hasPRBarVerdictAtHead: Bool = false,
+        title: String = "test"
     ) -> InboxPR {
         InboxPR(
             nodeId: "PR_test", owner: "o", repo: "r", number: 1,
-            title: "test", body: "", url: URL(string: "https://github.com/o/r/pull/1")!,
+            title: title, body: "", url: URL(string: "https://github.com/o/r/pull/1")!,
             author: "someone", headRef: "feature", baseRef: "main",
             headSha: "abc1234", isDraft: isDraft, role: role,
             mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", reviewDecision: nil,

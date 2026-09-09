@@ -177,11 +177,10 @@ final class PRPoller {
     private func applyTitleFilter(_ prs: [InboxPR]) -> [InboxPR] {
         guard let resolver = configResolver else { return prs }
         return prs.filter { pr in
-            let cfg = resolver(pr.owner, pr.repo)
-            if cfg.excludeTitlePatterns.isEmpty { return true }
-            let lcTitle = pr.title.lowercased()
-            let lcPatterns = cfg.excludeTitlePatterns.map { $0.lowercased() }
-            return !GlobMatcher.anyMatch(lcPatterns, lcTitle)
+            !TitleExclusion.isExcluded(
+                title: pr.title,
+                patterns: resolver(pr.owner, pr.repo).excludeTitlePatterns
+            )
         }
     }
 

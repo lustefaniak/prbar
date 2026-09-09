@@ -24,6 +24,10 @@ struct ReviewState: Sendable, Hashable, Codable {
         /// findings are already on the PR, so a second run buys nothing but
         /// cost. Manual Re-run still forces one.
         case reviewedByPRBarElsewhere
+        /// The PR's title matches the repo's `excludeTitlePatterns`.
+        /// Enforced here as well as in `PRPoller` because the poller is not
+        /// the only entry point — the headless CLI is handed a PR directly.
+        case titleExcluded
 
         /// Full-sentence explanation for the detail pane.
         var detail: String {
@@ -36,6 +40,8 @@ struct ReviewState: Sendable, Hashable, Codable {
                 return "Another reviewer already weighed in, and \"skip when reviewed by others\" is on for this repository."
             case .reviewedByPRBarElsewhere:
                 return "PRBar already posted an AI review of this commit — from another reviewer's instance, or an earlier run of this one. Re-run to review it again."
+            case .titleExcluded:
+                return "This PR's title matches an exclude pattern for this repository."
             }
         }
 
@@ -46,6 +52,7 @@ struct ReviewState: Sendable, Hashable, Codable {
             case .draftNotReviewed: return "draft review off for this repo"
             case .reviewedByOthers: return "already reviewed by others"
             case .reviewedByPRBarElsewhere: return "already AI-reviewed at this commit"
+            case .titleExcluded: return "title matches an exclude pattern"
             }
         }
     }
@@ -632,10 +639,20 @@ final class ReviewQueueWorker {
     /// Auto-enqueue any review-requested PR we haven't seen before. Wired
     /// from `PRPoller` after each successful poll. Intentionally idempotent
     /// — repeat polls are no-ops.
-    func enqueueNewReviewRequests(from prs: [InboxPR]) {
+    /// `providerOverride` is forwarded to `enqueue` so a caller that has
+    /// one — the CLI's `--provider` — is not silently ignored on the gated
+    /// path. The app passes nil and resolves per repo as before.
+    func enqueueNewReviewRequests(from prs: [InboxPR], providerOverride: ProviderID? = nil) {
         pruneReviews(keeping: prs)
         for pr in prs where pr.role == .reviewRequested || pr.role == .both {
             let cfg = configResolver(pr.owner, pr.repo)
+            // Also a poller filter, but the poller is not the only entry
+            // point: the CLI is handed a PR directly and never polls.
+            if TitleExclusion.isExcluded(title: pr.title, patterns: cfg.excludeTitlePatterns) {
+                PRBarLog.triage.debug("auto-enqueue skip reason=title-excluded pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+                recordSkip(pr, reason: .titleExcluded)
+                continue
+            }
             // Repo opted out of AI triage entirely → ReadinessCoordinator
             // marks these as "ready" immediately on the human side.
             if !cfg.aiReviewEnabled {
@@ -685,7 +702,7 @@ final class ReviewQueueWorker {
                 recordSkip(pr, reason: .reviewedByPRBarElsewhere)
                 continue
             }
-            enqueue(pr)
+            enqueue(pr, providerOverride: providerOverride)
         }
     }
 

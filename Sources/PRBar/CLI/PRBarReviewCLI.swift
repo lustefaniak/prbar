@@ -74,12 +74,34 @@ public enum PRBarReviewCLI {
             },
             reviewThreadFetcher: { owner, repo, number in
                 try await client.fetchReviewThreads(owner: owner, repo: repo, number: number)
+            },
+            reviewPoster: { pr, kind, body, comments in
+                if comments.isEmpty {
+                    try await client.postReview(
+                        owner: pr.owner, repo: pr.repo, number: pr.number,
+                        kind: kind, body: body
+                    )
+                } else {
+                    try await client.postReviewWithComments(
+                        owner: pr.owner, repo: pr.repo, number: pr.number,
+                        event: kind.apiEvent, body: body, comments: comments
+                    )
+                }
+            },
+            reviewerRequester: { pr, login in
+                try await client.requestReviewer(
+                    owner: pr.owner, repo: pr.repo, number: pr.number, login: login
+                )
+            },
+            threadResolver: { threadId in
+                try await client.resolveReviewThread(threadId: threadId)
             }
         )
         let outcome = await runner.review(
             pr: pr, force: invocation.force, providerOverride: invocation.providerOverride)
 
         // Before the terminal event, so that event stays the last line.
+        var outputFailure: String?
         if let path = invocation.reviewJsonPath, let review = outcome.review {
             do {
                 try ReviewOutput(
@@ -88,16 +110,19 @@ public enum PRBarReviewCLI {
                     posted: outcome.posted, review: review
                 ).write(to: path)
             } catch {
-                // The review itself succeeded, so this is reported in the
-                // note rather than turned into a failed outcome.
-                FileHandle.standardError.write(
-                    Data("prbar-review: could not write \(path): \(error.localizedDescription)\n".utf8))
+                // With the auto gates off this file is the *only* durable
+                // output, so reporting success here would tell the
+                // orchestrator the work landed while the findings it paid
+                // for are gone.
+                outputFailure = "could not write \(path): \(error.localizedDescription)"
+                FileHandle.standardError.write(Data("prbar-review: \(outputFailure!)\n".utf8))
             }
         }
 
         BrahmandaEvent(
-            taskId: taskId, outcome: outcome.isFailure ? .failed : .succeeded,
-            note: outcome.note,
+            taskId: taskId,
+            outcome: (outcome.isFailure || outputFailure != nil) ? .failed : .succeeded,
+            note: outputFailure.map { "\(outcome.note); \($0)" } ?? outcome.note,
             agent: .init(runtime: (outcome.providerId ?? providerId).rawValue,
                          session_id: outcome.sessionId, cost_usd: outcome.costUsd)
         ).emit()

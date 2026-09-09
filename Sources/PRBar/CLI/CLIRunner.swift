@@ -18,6 +18,21 @@ struct Runner {
     /// fetch, and that is exactly what needs testing.
     var diffFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
     var reviewThreadFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> ReviewThreadPage
+    /// Posts the staged auto-review. Injected for the same reason as the
+    /// fetches — a test must be able to drive the post path without `gh`.
+    var reviewPoster: @Sendable (
+        _ pr: InboxPR, _ kind: ReviewActionKind, _ body: String,
+        _ comments: [GHClient.InlineComment]
+    ) async throws -> Void = { _, _, _, _ in }
+    /// Restores the review request a verdict-less share consumed.
+    var reviewerRequester: @Sendable (_ pr: InboxPR, _ login: String) async throws -> Void = { _, _ in }
+    /// Closes review threads the triage decided are addressed.
+    var threadResolver: @Sendable (_ threadId: String) async throws -> Void = { _ in }
+
+    /// Test seam. Nil uses the real claude/codex providers, which is the
+    /// only thing a production run wants — but it means a test that reaches
+    /// the review path spawns a paid CLI call, so tests set this.
+    var provider: (any ReviewProvider)?
 
     struct Outcome {
         var isFailure: Bool
@@ -42,6 +57,12 @@ struct Runner {
             cache: nil,
             failureLogStore: nil
         )
+        if let provider {
+            // `providerLookup` wins in the run path, so both have to go —
+            // otherwise a test still spawns a real, paid claude call.
+            worker.provider = provider
+            worker.providerLookup = { _ in provider }
+        }
         worker.configResolver = config.resolver()
         worker.defaultProviderId = config.defaultProvider
         if let v = config.defaultClaudeModel { worker.defaultClaudeModel = v }
@@ -53,6 +74,72 @@ struct Runner {
         // as the run settles.
         worker.undoWindow = 0
         worker.actionLog = posts
+
+        // Own the post rather than letting `fireBatch` fall through to its
+        // built-in poster. Two things depend on it:
+        //
+        // - **The verdict marker.** The app appends it in `ActionQueue`,
+        //   which is app-only and excluded from PRBarCore. Without this the
+        //   CLI's posts carry no `prbar:verdict` marker, so every other
+        //   PRBar instance re-reviews and re-posts the same head SHA —
+        //   exactly the duplicate cost the marker exists to prevent.
+        // - **The exit race.** `fireBatch` clears its staging flags *before*
+        //   spawning the post, so a runner checking those flags could see
+        //   them already false and exit mid-write. Registering the post
+        //   here happens synchronously inside `fireBatch`, before it
+        //   returns, so the wait below cannot miss it.
+        worker.enqueueAutoReview = { [reviewPoster, reviewerRequester] pr, kind, body, comments, cost, source in
+            posts.expect()
+            Task { @MainActor in
+                let outgoing = source.isAutomated
+                    ? PRBarVerdictMarker.append(to: body, sha: pr.headSha)
+                    : body
+                do {
+                    try await reviewPoster(pr, kind, outgoing, comments)
+                    posts.record(kind: Self.logKind(kind, source), outcome: .success,
+                                 pr: pr, errorMessage: nil, detail: nil,
+                                 headSha: pr.headSha, costUsd: cost, timestamp: Date())
+                    // A share casts no verdict, but GitHub drops the viewer
+                    // from reviewRequests anyway — so without this the PR
+                    // leaves the inbox and is never retriaged.
+                    if source == .sharedFindings, !pr.viewerLogin.isEmpty {
+                        do {
+                            try await reviewerRequester(pr, pr.viewerLogin)
+                            posts.record(kind: .reviewReRequested, outcome: .success,
+                                         pr: pr, errorMessage: nil, detail: nil,
+                                         headSha: pr.headSha, costUsd: nil, timestamp: Date())
+                        } catch {
+                            posts.record(kind: .reviewReRequested, outcome: .failure,
+                                         pr: pr, errorMessage: error.localizedDescription,
+                                         detail: nil, headSha: pr.headSha, costUsd: nil,
+                                         timestamp: Date())
+                        }
+                    }
+                } catch {
+                    posts.record(kind: Self.logKind(kind, source), outcome: .failure,
+                                 pr: pr, errorMessage: error.localizedDescription, detail: nil,
+                                 headSha: pr.headSha, costUsd: cost, timestamp: Date())
+                }
+                posts.finish()
+            }
+        }
+        // Resolving addressed threads is opt-in and was wired to nothing,
+        // so the worker logged "thread resolve queued" and dropped it.
+        worker.enqueueResolveThreads = { [threadResolver] pr, threadIds in
+            posts.expect()
+            Task { @MainActor in
+                var failure: String?
+                for id in threadIds {
+                    do { try await threadResolver(id) }
+                    catch { failure = error.localizedDescription }
+                }
+                posts.record(kind: .autoResolveThreads,
+                             outcome: failure == nil ? .success : .failure,
+                             pr: pr, errorMessage: failure, detail: "\(threadIds.count) thread(s)",
+                             headSha: pr.headSha, costUsd: nil, timestamp: Date())
+                posts.finish()
+            }
+        }
 
         let settled = Waiter()
         worker.onReviewSettled = { nodeId, _ in
@@ -66,7 +153,7 @@ struct Runner {
             // Not `enqueue`: this applies the repo gates (AI off, draft,
             // already reviewed by a human, an AI verdict already posted at
             // this SHA) and records a typed skip reason for each.
-            worker.enqueueNewReviewRequests(from: [pr])
+            worker.enqueueNewReviewRequests(from: [pr], providerOverride: providerOverride)
         }
 
         // Nothing was recorded at all: `enqueue` drops an excluded repo
@@ -92,11 +179,20 @@ struct Runner {
             await settled.wait()
         }
 
-        // A staged post fires on its own timer; wait for the action log to
-        // confirm it landed rather than exiting mid-write.
-        if worker.pendingAutoActions[pr.nodeId] != nil || worker.batchUndoActive {
-            await posts.wait()
+        // A staged post fires on its own timer, so there are two waits and
+        // the order matters.
+        //
+        // Staging happens synchronously during the triage, before the
+        // settle signal, so a post that is coming is already visible here.
+        // `fireBatch` then clears these flags and registers the post in the
+        // same synchronous block — so once they are clear, `posts` knows
+        // about the write. Draining first would race that and exit before
+        // the batch had even fired.
+        while worker.pendingAutoActions[pr.nodeId] != nil || worker.batchUndoActive {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(5))
         }
+        await posts.drain()
 
         return outcome(state: worker.reviews[pr.nodeId], posts: posts, worker: worker, pr: pr)
     }
@@ -119,7 +215,7 @@ struct Runner {
         case let .completed(review):
             var parts = ["\(review.verdict.rawValue) (confidence \(pct(review.confidence)))"]
             parts.append("\(review.annotations.count) findings")
-            if let post = posts.entries.first {
+            if let post = posts.reviewEntry {
                 parts.append(post.outcome == .success
                     ? "posted \(post.kind.rawValue)"
                     : "post failed: \(post.errorMessage ?? "unknown")")
@@ -131,12 +227,19 @@ struct Runner {
             if review.isSubscriptionAuth {
                 parts.append("cost is API-equivalent (subscription auth)")
             }
-            let failed = posts.entries.first?.outcome == .failure
+            let failed = posts.reviewEntry?.outcome == .failure
             return Outcome(isFailure: failed, note: parts.joined(separator: "; "),
                            costUsd: nonZero(review.costUsd), providerId: state.providerId,
                            review: review,
-                           posted: posts.entries.first?.outcome == .success)
+                           posted: posts.reviewEntry?.outcome == .success)
         }
+    }
+
+    /// Mirrors `ActionQueue.logKindAndDetail` — a share and an auto-deny
+    /// `.comment` post the identical GitHub event, so the source is the only
+    /// thing that tells them apart in a History query.
+    private static func logKind(_ action: ReviewActionKind, _ source: ActionSource) -> ActionLogKind {
+        source == .sharedFindings ? .autoShare : action.autoActionLogKind
     }
 
     private func nonZero(_ v: Double) -> Double? { v > 0 ? v : nil }
@@ -162,8 +265,12 @@ final class Waiter {
     }
 }
 
-/// Captures the worker's auto-review action-log writes, which double as
-/// the "post finished" signal.
+/// Tracks the writes this process still owes GitHub.
+///
+/// `expect()` is called synchronously from inside `fireBatch`, before it
+/// returns, so a post can never be registered *after* the runner has
+/// decided nothing is pending — which is how the previous check against
+/// the worker's staging flags could exit mid-write.
 @MainActor
 final class PostRecorder: ActionLogging {
     struct Entry {
@@ -174,9 +281,33 @@ final class PostRecorder: ActionLogging {
     }
 
     private(set) var entries: [Entry] = []
-    private let waiter = Waiter()
+    private var outstanding = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    func wait() async { await waiter.wait() }
+    /// A write is about to start.
+    func expect() { outstanding += 1 }
+
+    /// A write finished, successfully or not.
+    func finish() {
+        outstanding = max(0, outstanding - 1)
+        guard outstanding == 0 else { return }
+        let pending = waiters
+        waiters = []
+        for w in pending { w.resume() }
+    }
+
+    /// Wait until nothing is outstanding. Returns immediately when the run
+    /// posted nothing at all, which is the common case.
+    func drain() async {
+        guard outstanding > 0 else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// The first *review* post, which is what the outcome line reports.
+    /// Re-request and thread-resolve rows are bookkeeping around it.
+    var reviewEntry: Entry? {
+        entries.first { $0.kind != .reviewReRequested && $0.kind != .autoResolveThreads }
+    }
 
     func record(
         kind: ActionLogKind,
@@ -190,6 +321,5 @@ final class PostRecorder: ActionLogging {
     ) {
         entries.append(Entry(kind: kind, outcome: outcome,
                              errorMessage: errorMessage, costUsd: costUsd))
-        waiter.signal()
     }
 }
