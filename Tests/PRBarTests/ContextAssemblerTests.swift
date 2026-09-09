@@ -70,7 +70,10 @@ final class ContextAssemblerTests: XCTestCase {
                     id: "t1", isResolved: false, isOutdated: true, path: "kernel-x/a.go",
                     comments: [
                         .init(authorLogin: "me", body: "**Unbounded retry**\n\nthis loops\n\n\(marker)"),
-                        .init(authorLogin: "alice", body: "intentional — the caller times out <!-- agent:reviewed -->"),
+                        .init(authorLogin: "alice",
+                              body: "intentional — the caller times out"
+                                  + " <!-- agent:reviewed -->"
+                                  + "\n<!--\nSTART hidden\nsecond line\n-->\n"),
                     ]
                 ),
                 ReviewThread(
@@ -95,6 +98,10 @@ final class ContextAssemblerTests: XCTestCase {
         // any other tool's — so they never reach the prompt.
         XCTAssertFalse(p.contains(marker))
         XCTAssertFalse(p.contains("agent:reviewed"))
+        // A comment spanning lines has to go too — its `-->` is on another
+        // line, and the flattening below would otherwise inline its body.
+        XCTAssertFalse(p.contains("START hidden"))
+        XCTAssertFalse(p.contains("second line"))
     }
 
     func testPriorDiscussionOmittedWhenNothingSaid() throws {

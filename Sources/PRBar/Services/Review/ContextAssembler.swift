@@ -467,9 +467,13 @@ enum ContextAssembler {
     /// tooling leaves its own behind (`<!-- agent:reviewed -->` shows up on
     /// real PRs). Feeding a model text no human on the thread can see is
     /// noise at best and an instruction channel at worst.
+    /// `(?s)` matches `MarkdownSanitizer`: without DOTALL a comment spanning
+    /// lines never reaches its own `-->`, so the whole span survives — and
+    /// the newline flattening below then hands its contents to the model as
+    /// ordinary prose.
     private static func condense(_ body: String, limit: Int) -> String {
         let stripped = body.replacingOccurrences(
-            of: "<!--.*?-->",
+            of: "(?s)<!--.*?-->",
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
