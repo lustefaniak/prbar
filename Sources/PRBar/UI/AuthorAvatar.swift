@@ -3,7 +3,7 @@ import SwiftUI
 
 /// GitHub avatar for a login, rendered as a circle.
 ///
-/// ponytail: `github.com/<login>.png` redirects to the same avatar CDN, so no
+/// `github.com/<login>.png` redirects to the same avatar CDN, so no
 /// `avatarUrl` has to be threaded through the GraphQL query, `InboxPR`, and
 /// every `makePR` fixture. Falls back to an SF symbol offline (screenshot
 /// fixtures included).
