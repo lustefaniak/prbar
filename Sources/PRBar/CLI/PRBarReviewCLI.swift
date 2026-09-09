@@ -84,7 +84,10 @@ public enum PRBarReviewCLI {
                 } else {
                     try await client.postReviewWithComments(
                         owner: pr.owner, repo: pr.repo, number: pr.number,
-                        event: kind.apiEvent, body: body, comments: comments
+                        event: kind.apiEvent, body: body, comments: comments,
+                        // The SHA the review actually read, not current head
+                        // — same reason as every other post path.
+                        commitId: pr.headSha
                     )
                 }
             },

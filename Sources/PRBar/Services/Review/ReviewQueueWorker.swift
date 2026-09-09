@@ -537,7 +537,7 @@ final class ReviewQueueWorker {
     /// as "Interrupted by previous app exit", losing a verdict that was
     /// already paid for. Debounce cancellation alone doesn't prevent it: it
     /// only stops a task still inside the sleep, never one already writing.
-    private func enqueueSave(_ cache: ReviewCache) {
+    private func enqueueSave(_ cache: any ReviewStateCaching) {
         let snapshot = reviews
         let previous = persistChain
         persistChain = Task {
