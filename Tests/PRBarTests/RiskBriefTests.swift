@@ -321,7 +321,6 @@ final class RiskBriefTests: XCTestCase {
             pr: makeRiskBriefPR(),
             subdiff: subdiff([("kernel-auth/session/store.go", 40, 5), ("go.sum", 20, 3)]),
             diffText: "",
-            existingComments: [],
             ciFailures: [],
             toolMode: .sandboxed,
             baseSha: "abc1234",
@@ -345,7 +344,6 @@ final class RiskBriefTests: XCTestCase {
             pr: makeRiskBriefPR(),
             subdiff: subdiff([("a.go", 1, 1)]),
             diffText: "",
-            existingComments: [],
             ciFailures: [],
             toolMode: .sandboxed,
             baseSha: "abc1234",
@@ -360,7 +358,6 @@ final class RiskBriefTests: XCTestCase {
             pr: makeRiskBriefPR(),
             subdiff: Subdiff(subpath: "", hunks: []),
             diffText: "",
-            existingComments: [],
             ciFailures: [],
             toolMode: .sandboxed,
             baseSha: "abc1234",
@@ -376,12 +373,12 @@ final class RiskBriefTests: XCTestCase {
     func testLargeDiffTriageDefersToBriefWhenPresent() {
         let big = subdiff([("kernel-auth/session/store.go", 2_000, 500)])
         let withBrief = ContextAssembler.buildUserPrompt(
-            pr: makeRiskBriefPR(), subdiff: big, diffText: "", existingComments: [],
+            pr: makeRiskBriefPR(), subdiff: big, diffText: "",
             ciFailures: [], toolMode: .sandboxed, baseSha: "abc1234",
             riskBrief: RiskBrief.compute(subdiff: big)
         )
         let without = ContextAssembler.buildUserPrompt(
-            pr: makeRiskBriefPR(), subdiff: big, diffText: "", existingComments: [],
+            pr: makeRiskBriefPR(), subdiff: big, diffText: "",
             ciFailures: [], toolMode: .sandboxed, baseSha: "abc1234", riskBrief: nil
         )
         XCTAssertGreaterThan(ContextAssembler.subdiffContentBytes(big),
@@ -397,7 +394,7 @@ final class RiskBriefTests: XCTestCase {
         }
         let sub = subdiff(many)
         let prompt = ContextAssembler.buildUserPrompt(
-            pr: makeRiskBriefPR(), subdiff: sub, diffText: "", existingComments: [],
+            pr: makeRiskBriefPR(), subdiff: sub, diffText: "",
             ciFailures: [], toolMode: .sandboxed, baseSha: "abc1234",
             riskBrief: RiskBrief.compute(subdiff: sub)
         )

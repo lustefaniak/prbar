@@ -252,6 +252,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// Let the debounced review-state save finish before we go.
+    ///
+    /// `persist()` coalesces for 300 ms, so quitting inside that window
+    /// drops the update — a review that just completed is re-run, and
+    /// re-billed, on the next launch. `.terminateLater` is the only hook
+    /// that can await anything; the timeout is there so a wedged SQLite
+    /// write can't hold a quit open indefinitely.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task { @MainActor in
+            let flush = Task { await self.queue.flushPendingSaves() }
+            let timeout = Task { try? await Task.sleep(for: .seconds(3)) }
+            _ = await withTaskGroup(of: Void.self) { group in
+                group.addTask { await flush.value }
+                group.addTask { await timeout.value }
+                await group.next()
+                group.cancelAll()
+            }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     /// A reopen (Dock/Finder open of the already-running app, or a
     /// re-launch that single-instance enforcement folds into the live
     /// process) should surface the popover — PRBar's real UI — not let

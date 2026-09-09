@@ -63,6 +63,7 @@ struct PRRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
+                    AuthorAvatar(login: pr.author, size: 12)
                     Text(verbatim: "\(pr.nameWithOwner) #\(pr.numberString)")
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -116,6 +117,11 @@ struct PRRowView: View {
             ProgressView()
                 .controlSize(.small)
                 .help("Action in progress…")
+        case .retrying(let msg, let attempt):
+            // Visible, not silent: the write failed and is being re-run.
+            // The same menu offers Cancel, so a verdict the user has
+            // changed their mind about isn't locked in for the backoff.
+            retryingControl(message: msg, attempt: attempt)
         case .failed(let msg):
             failedControl(message: msg)
         case .none:
@@ -139,6 +145,26 @@ struct PRRowView: View {
                 }
             }
         }
+    }
+
+    /// In-flight retry after a failed attempt. Reads as "working on it,
+    /// but it did fail" rather than a plain spinner, and stays cancellable.
+    @ViewBuilder
+    private func retryingControl(message: String, attempt: Int) -> some View {
+        Menu {
+            Button("Cancel", role: .destructive) { onDismissAction() }
+        } label: {
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.small)
+                Text("Retrying \(attempt)")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Attempt \(attempt) after: \(message)")
     }
 
     /// Failed-write control: a red badge plus a small menu to retry or
