@@ -75,12 +75,35 @@ struct GHAction: Sendable, Identifiable, Equatable {
 enum ActionRunState: Sendable, Equatable {
     case queued
     case running
+    /// A write failed and is waiting out its backoff before re-running.
+    /// Distinct from `.queued` so the failure is *visible* while it is
+    /// being retried — a silent retry looks identical to a slow write, and
+    /// the user has already been advanced off the PR by then.
+    case retrying(message: String, attempt: Int)
     case failed(String)
 
     var isBusy: Bool {
         switch self {
-        case .queued, .running: return true
+        case .queued, .running, .retrying: return true
         case .failed: return false
+        }
+    }
+
+    /// True once the user can act on it — retry by hand, or give up.
+    /// A pending auto-retry counts: cancelling one is the only way to stop
+    /// a write the user has changed their mind about.
+    var isCancellable: Bool {
+        switch self {
+        case .retrying, .failed: return true
+        case .queued, .running: return false
+        }
+    }
+
+    var failureMessage: String? {
+        switch self {
+        case .failed(let m):          return m
+        case .retrying(let m, _):     return m
+        case .queued, .running:       return nil
         }
     }
 }
@@ -183,8 +206,10 @@ final class ActionQueue {
     @ObservationIgnored
     var resolveThreadExecutor: @Sendable (_ threadId: String) async throws -> Void = { _ in }
 
-    /// Action history sink — one entry per settled action: the success,
-    /// or the failure left after the auto-retry schedule is spent.
+    /// Action history sink — one entry per *attempt*, success and failure
+    /// alike. A failure that later succeeds on retry leaves both rows: the
+    /// queue is in-memory, so an attempt not recorded when it happens is
+    /// one a crash or a quit erases entirely.
     @ObservationIgnored
     weak var actionLog: ActionLogStore?
 
@@ -295,7 +320,7 @@ final class ActionQueue {
 
     /// Re-run a failed action verbatim (same captured parameters).
     func retry(_ nodeId: String) {
-        guard let entry = entries[nodeId], case .failed = entry.state else { return }
+        guard let entry = entries[nodeId], entry.state.isCancellable else { return }
         var action = entry.action
         action.attempts += 1
         entries[nodeId] = ActionEntry(action: action, state: .queued)
@@ -305,8 +330,12 @@ final class ActionQueue {
     }
 
     /// Drop a failed entry the user has given up on (or acknowledged).
+    /// Drop a failed entry the user has given up on — or cancel a retry
+    /// still waiting out its backoff, which is the only way to stop a write
+    /// they have changed their mind about. The scheduled task re-checks the
+    /// slot before running, so clearing it here is enough.
     func dismissFailure(_ nodeId: String) {
-        guard let entry = entries[nodeId], case .failed = entry.state else { return }
+        guard let entry = entries[nodeId], entry.state.isCancellable else { return }
         entries[nodeId] = nil
     }
 
@@ -377,9 +406,13 @@ final class ActionQueue {
         } catch {
             let msg = error.localizedDescription
             PRBarLog.actions.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) attempt=\(action.attempts, privacy: .public) error=\(msg, privacy: .public)")
-            if scheduleAutoRetry(action) { return }
-            entries[nodeId]?.state = .failed(msg)
+            // Recorded per attempt, before the retry is scheduled. History
+            // is the only durable trace of a write: the queue lives in
+            // memory, so a quit or crash during the backoff would otherwise
+            // lose the user's verdict leaving nothing behind that says so.
             recordFailure(action, message: msg)
+            if scheduleAutoRetry(action, message: msg) { return }
+            entries[nodeId]?.state = .failed(msg)
         }
     }
 
@@ -392,17 +425,20 @@ final class ActionQueue {
     /// Only the final failure reaches `ActionLogStore` — History is the
     /// record of what PRBar did to a PR, and a blip that resolved itself
     /// on retry did nothing.
-    private func scheduleAutoRetry(_ action: GHAction) -> Bool {
+    private func scheduleAutoRetry(_ action: GHAction, message: String) -> Bool {
         guard action.attempts < autoRetryDelays.count else { return false }
         var next = action
         next.attempts += 1
         let delay = autoRetryDelays[action.attempts]
-        entries[next.pr.nodeId] = ActionEntry(action: next, state: .queued)
+        entries[next.pr.nodeId] = ActionEntry(
+            action: next, state: .retrying(message: message, attempt: next.attempts)
+        )
         PRBarLog.actions.notice("auto-retry scheduled pr=\(next.pr.nameWithOwner, privacy: .public)#\(next.pr.number, privacy: .public) attempt=\(next.attempts, privacy: .public)")
         Task { @MainActor in
             try? await Task.sleep(for: delay)
-            // The user may have dismissed or superseded it while we waited.
-            guard case .queued = self.entries[next.pr.nodeId]?.state,
+            // The user may have cancelled or superseded it while we waited
+            // — `dismissFailure` accepts `.retrying` for exactly that.
+            guard case .retrying = self.entries[next.pr.nodeId]?.state,
                   self.entries[next.pr.nodeId]?.action.id == next.id else { return }
             self.pending.append(next)
             self.drainIfPossible()

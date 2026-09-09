@@ -194,8 +194,56 @@ final class ActionQueueTests: XCTestCase {
 
         let runs = await attempts.value
         XCTAssertEqual(runs, 2, "the failed write should re-run itself")
-        XCTAssertEqual(log.fetchAll().filter { $0.outcome == .failure }.count, 0,
-                       "a blip that resolved on retry did nothing to the PR")
+        XCTAssertEqual(log.fetchAll().filter { $0.outcome == .failure }.count, 1,
+                       "the attempt is recorded when it happens — the queue is in memory, so "
+                       + "a row written only at the end is one a crash erases")
+    }
+
+    /// The verdict must not be able to vanish: a failure is in History from
+    /// the moment it happens, so quitting mid-backoff still leaves a trace
+    /// of the write the user asked for.
+    func testFailureIsRecordedBeforeTheRetryIsScheduled() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "blip")
+        let log = ActionLogStore(container: PRBarModelContainer.inMemory())
+
+        let q = ActionQueue()
+        q.autoRetryDelays = [.seconds(30)]   // long enough that it never fires
+        q.actionLog = log
+        q.reviewExecutor = { _, _, _, _ in throw TestError.boom }
+
+        q.enqueue(pr, kind: .review(kind: .approve, body: "lgtm", comments: []))
+        try await waitUntil {
+            if case .retrying = q.state(for: "PR_a") { return true }
+            return false
+        }
+        XCTAssertEqual(log.fetchAll().filter { $0.outcome == .failure }.count, 1,
+                       "recorded while the retry is still pending, not after")
+    }
+
+    /// A pending retry is cancellable — otherwise a permanent failure locks
+    /// the PR's controls for the whole schedule.
+    func testPendingRetryCanBeCancelled() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "nope")
+        let attempts = AsyncCounter()
+
+        let q = ActionQueue()
+        q.autoRetryDelays = [.milliseconds(80)]
+        q.reviewExecutor = { _, _, _, _ in
+            _ = await attempts.incrementAndGet()
+            throw TestError.boom
+        }
+
+        q.enqueue(pr, kind: .review(kind: .approve, body: "lgtm", comments: []))
+        try await waitUntil {
+            if case .retrying = q.state(for: "PR_a") { return true }
+            return false
+        }
+        q.dismissFailure("PR_a")
+        XCTAssertNil(q.state(for: "PR_a"), "cancelling clears the slot")
+
+        try await Task.sleep(for: .milliseconds(200))
+        let runs = await attempts.value
+        XCTAssertEqual(runs, 1, "the cancelled retry must not run")
     }
 
     /// Backoff is bounded — once the schedule is spent the failure is the
