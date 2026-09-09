@@ -126,6 +126,20 @@ final class ActionQueue {
     @ObservationIgnored
     var successDisplayDuration: Duration = .seconds(5)
 
+    /// Backoff schedule for automatic re-runs after a failed write — one
+    /// delay per retry, so the count *is* the retry limit. A `gh` write
+    /// fails mostly for reasons that pass on their own (a network blip, a
+    /// GitHub 5xx), and re-posting a verdict the user already gave is not
+    /// something to ask them for again. Requests are idempotent enough for
+    /// this: a repeated review at the same state is at worst a duplicate,
+    /// and the alternative is a verdict silently not landing.
+    ///
+    /// Deliberately not error-classified — a permanent failure (a 422 on a
+    /// bad inline comment) just burns the schedule and lands on `.failed`
+    /// as before. Add classification if the wasted minute ever matters.
+    @ObservationIgnored
+    var autoRetryDelays: [Duration] = [.seconds(2), .seconds(6), .seconds(18)]
+
     /// Hard cap on concurrent runners. Per-PR serialization is enforced
     /// separately via `inFlightNodes`, so this only bounds how many
     /// *different* PRs run at once.
@@ -169,7 +183,8 @@ final class ActionQueue {
     @ObservationIgnored
     var resolveThreadExecutor: @Sendable (_ threadId: String) async throws -> Void = { _ in }
 
-    /// Action history sink — one entry per attempt (success and failure).
+    /// Action history sink — one entry per settled action: the success,
+    /// or the failure left after the auto-retry schedule is spent.
     @ObservationIgnored
     weak var actionLog: ActionLogStore?
 
@@ -361,10 +376,38 @@ final class ActionQueue {
             enqueueReRequestAfterShare(action)
         } catch {
             let msg = error.localizedDescription
+            PRBarLog.actions.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) attempt=\(action.attempts, privacy: .public) error=\(msg, privacy: .public)")
+            if scheduleAutoRetry(action) { return }
             entries[nodeId]?.state = .failed(msg)
             recordFailure(action, message: msg)
-            PRBarLog.actions.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(msg, privacy: .public)")
         }
+    }
+
+    /// Re-queue a failed action after its backoff delay, if the schedule
+    /// has one left. The entry stays `.queued` throughout, so the UI keeps
+    /// showing the write as in progress and the double-submit guard holds
+    /// across the wait. Returns false once the schedule is spent, leaving
+    /// the caller to record the terminal failure.
+    ///
+    /// Only the final failure reaches `ActionLogStore` — History is the
+    /// record of what PRBar did to a PR, and a blip that resolved itself
+    /// on retry did nothing.
+    private func scheduleAutoRetry(_ action: GHAction) -> Bool {
+        guard action.attempts < autoRetryDelays.count else { return false }
+        var next = action
+        next.attempts += 1
+        let delay = autoRetryDelays[action.attempts]
+        entries[next.pr.nodeId] = ActionEntry(action: next, state: .queued)
+        PRBarLog.actions.notice("auto-retry scheduled pr=\(next.pr.nameWithOwner, privacy: .public)#\(next.pr.number, privacy: .public) attempt=\(next.attempts, privacy: .public)")
+        Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            // The user may have dismissed or superseded it while we waited.
+            guard case .queued = self.entries[next.pr.nodeId]?.state,
+                  self.entries[next.pr.nodeId]?.action.id == next.id else { return }
+            self.pending.append(next)
+            self.drainIfPossible()
+        }
+        return true
     }
 
     /// Queue the review request that the share post just consumed.

@@ -158,6 +158,7 @@ final class ActionQueueTests: XCTestCase {
         let attempts = AsyncCounter()
 
         let q = ActionQueue()
+        q.autoRetryDelays = []
         q.mergeExecutor = { _, _ in
             let n = await attempts.incrementAndGet()
             if n == 1 { throw StubError() }
@@ -173,12 +174,59 @@ final class ActionQueueTests: XCTestCase {
         XCTAssertEqual(total, 2, "retry should re-run the executor")
     }
 
+    /// A blip must not cost the user their verdict: the queue re-runs the
+    /// captured action on its own and the entry never surfaces as failed.
+    func testTransientFailureIsRetriedAutomatically() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "blip")
+        let attempts = AsyncCounter()
+        let log = ActionLogStore(container: PRBarModelContainer.inMemory())
+
+        let q = ActionQueue()
+        q.autoRetryDelays = [.milliseconds(1), .milliseconds(1)]
+        q.actionLog = log
+        q.reviewExecutor = { _, _, _, _ in
+            let n = await attempts.incrementAndGet()
+            if n == 1 { throw TestError.boom }
+        }
+
+        q.enqueue(pr, kind: .review(kind: .approve, body: "lgtm", comments: []))
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let runs = await attempts.value
+        XCTAssertEqual(runs, 2, "the failed write should re-run itself")
+        XCTAssertEqual(log.fetchAll().filter { $0.outcome == .failure }.count, 0,
+                       "a blip that resolved on retry did nothing to the PR")
+    }
+
+    /// Backoff is bounded — once the schedule is spent the failure is the
+    /// user's to retry or dismiss.
+    func testFailureSurfacesOnceTheRetryScheduleIsSpent() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "broken")
+        let attempts = AsyncCounter()
+
+        let q = ActionQueue()
+        q.autoRetryDelays = [.milliseconds(1), .milliseconds(1)]
+        q.reviewExecutor = { _, _, _, _ in
+            _ = await attempts.incrementAndGet()
+            throw TestError.boom
+        }
+
+        q.enqueue(pr, kind: .review(kind: .approve, body: "lgtm", comments: []))
+        try await waitUntil {
+            if case .failed = q.state(for: "PR_a") { return true }
+            return false
+        }
+        let runs = await attempts.value
+        XCTAssertEqual(runs, 3, "one initial run plus each scheduled retry")
+    }
+
     func testDismissFailureClearsEntry() async throws {
         struct StubError: Error, LocalizedError {
             var errorDescription: String? { "nope" }
         }
         let pr = makePR(nodeId: "PR_a", number: 7, title: "x")
         let q = ActionQueue()
+        q.autoRetryDelays = []
         q.mergeExecutor = { _, _ in throw StubError() }
 
         q.enqueue(pr, kind: .merge(method: .squash))
@@ -216,6 +264,7 @@ final class ActionQueueTests: XCTestCase {
         }
         let pr = makePR(nodeId: "PR_a", number: 7, title: "bad")
         let q = ActionQueue()
+        q.autoRetryDelays = []
         q.reviewExecutor = { _, _, _, _ in throw StubError() }
 
         q.enqueue(pr, kind: .review(kind: .comment, body: "x", comments: []))
@@ -283,6 +332,7 @@ final class ActionQueueTests: XCTestCase {
         let rec = AsyncRecorder()
 
         let q = ActionQueue()
+        q.autoRetryDelays = []
         q.reviewExecutor = { _, _, body, _ in await rec.record("review:\(body)") }
         q.reRequestReviewerExecutor = { _, _ in throw TestError.boom }
 
@@ -303,6 +353,37 @@ final class ActionQueueTests: XCTestCase {
         guard case .failed = q.state(for: "PR_a") else {
             return XCTFail("a failed re-request has to be visible, not swallowed")
         }
+    }
+
+    /// The re-request is the one write whose silent loss reproduces the
+    /// bug it exists to prevent, so a blip on it must self-heal — and the
+    /// retry must re-run *only* the re-request, never the comment that
+    /// already landed.
+    func testTransientReRequestFailureRetriesWithoutResendingTheComment() async throws {
+        var pr = makePR(nodeId: "PR_a", number: 7, title: "shared")
+        pr.viewerLogin = "octocat"
+        let reviews = AsyncRecorder()
+        let requests = AsyncCounter()
+
+        let q = ActionQueue()
+        q.autoRetryDelays = [.milliseconds(1)]
+        q.reviewExecutor = { _, _, body, _ in await reviews.record(body) }
+        q.reRequestReviewerExecutor = { _, _ in
+            let n = await requests.incrementAndGet()
+            if n == 1 { throw TestError.boom }
+        }
+
+        q.enqueue(
+            pr, kind: .review(kind: .comment, body: "findings", comments: []),
+            source: .sharedFindings
+        )
+        try await waitUntil {
+            let n = await requests.value
+            return n == 2 && q.state(for: "PR_a") == nil
+        }
+
+        let posts = await reviews.calls
+        XCTAssertEqual(posts.count, 1, "the comment must still be posted exactly once")
     }
 
     /// Resolving is a GitHub write like any other and goes through the
