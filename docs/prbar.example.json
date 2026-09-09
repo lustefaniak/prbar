@@ -1,0 +1,40 @@
+{
+  "defaultProvider": "claude",
+  "defaultClaudeModel": "sonnet",
+  "defaultClaudeEffort": "",
+
+  "defaults": {
+    "toolMode": "sandboxed",
+    "splitMode": "per_subfolder",
+    "maxParallelSubreviews": 2,
+    "maxCostUsdPerSubreview": 3.0,
+    "maxToolCallsPerSubreview": 10,
+    "reviewTimeoutSeconds": 600,
+
+    "reviewDrafts": false,
+    "skipAIIfReviewedByOthers": true,
+    "excludeTitlePatterns": ["chore: bump *", "Release *"],
+
+    "shareFindings": "warnings_and_blockers",
+    "shareMinConfidence": 0.5,
+    "shareMaxComments": 20,
+
+    "autoApprove": { "enabled": false },
+    "autoDeny": { "action": "off" },
+    "resolveThreads": { "enabled": false }
+  },
+
+  "repos": [
+    {
+      "repoGlobs": ["getsynq/cloud"],
+      "rootPatterns": ["kernel-*", "lib/*", "dev-tools"],
+      "providerOverride": "codex",
+      "collapseAboveSubreviewCount": 8,
+      "shareFindings": "all_findings"
+    },
+    {
+      "repoGlobs": ["*/infra-*"],
+      "excluded": true
+    }
+  ]
+}

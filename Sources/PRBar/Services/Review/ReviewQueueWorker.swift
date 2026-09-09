@@ -1,6 +1,8 @@
 import Foundation
 import Observation
+#if canImport(OSLog)
 import OSLog
+#endif
 
 /// One pending or completed AI review keyed by PR node ID. Drives the
 /// per-row "review status" UI in the inbox and the AI section in the
@@ -22,6 +24,10 @@ struct ReviewState: Sendable, Hashable, Codable {
         /// findings are already on the PR, so a second run buys nothing but
         /// cost. Manual Re-run still forces one.
         case reviewedByPRBarElsewhere
+        /// The PR's title matches the repo's `excludeTitlePatterns`.
+        /// Enforced here as well as in `PRPoller` because the poller is not
+        /// the only entry point — the headless CLI is handed a PR directly.
+        case titleExcluded
 
         /// Full-sentence explanation for the detail pane.
         var detail: String {
@@ -34,6 +40,8 @@ struct ReviewState: Sendable, Hashable, Codable {
                 return "Another reviewer already weighed in, and \"skip when reviewed by others\" is on for this repository."
             case .reviewedByPRBarElsewhere:
                 return "PRBar already posted an AI review of this commit — from another reviewer's instance, or an earlier run of this one. Re-run to review it again."
+            case .titleExcluded:
+                return "This PR's title matches an exclude pattern for this repository."
             }
         }
 
@@ -44,6 +52,7 @@ struct ReviewState: Sendable, Hashable, Codable {
             case .draftNotReviewed: return "draft review off for this repo"
             case .reviewedByOthers: return "already reviewed by others"
             case .reviewedByPRBarElsewhere: return "already AI-reviewed at this commit"
+            case .titleExcluded: return "title matches an exclude pattern"
             }
         }
     }
@@ -273,7 +282,7 @@ final class ReviewQueueWorker {
     /// cache so PRDetailView's expandable failure log doesn't refetch.
     /// Tests that don't care about CI logs leave this nil.
     @ObservationIgnored
-    var failureLogStore: FailureLogStore?
+    var failureLogStore: (any CIFailureTailing)?
 
     /// Resolves the effective config used when reviewing a PR — the
     /// matching repo rule with `ReviewDefaults` folded in. Pluggable so
@@ -332,7 +341,7 @@ final class ReviewQueueWorker {
     /// Disk persistence. Loads on init, saves after every state mutation.
     /// Nil disables persistence (used by tests).
     @ObservationIgnored
-    var cache: ReviewCache?
+    var cache: (any ReviewStateCaching)?
 
     // MARK: - Auto-review batch state
     //
@@ -415,13 +424,13 @@ final class ReviewQueueWorker {
     /// per auto-approved PR so the History tab can show what shipped
     /// (or what failed) without the user having to scroll review traces.
     @ObservationIgnored
-    weak var actionLog: ActionLogStore?
+    weak var actionLog: (any ActionLogging)?
 
     /// AI-triage history sink. Appends one row per terminal triage
     /// (completed or failed). Owns the spend ledger queried by the
     /// daily-cost-cap check. Weak: the store outlives this worker.
     @ObservationIgnored
-    weak var reviewLog: ReviewLogStore?
+    weak var reviewLog: (any ReviewLogging)?
 
     /// Hook fired after a successful auto-review post so the inbox row
     /// reflects the new reviewDecision without waiting for the next 60s
@@ -451,8 +460,8 @@ final class ReviewQueueWorker {
     init(
         diffFetcher: @escaping @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String,
         checkoutManager: RepoCheckoutManager? = nil,
-        cache: ReviewCache? = nil,
-        failureLogStore: FailureLogStore? = nil
+        cache: (any ReviewStateCaching)? = nil,
+        failureLogStore: (any CIFailureTailing)? = nil
     ) {
         self.diffFetcher = diffFetcher
         self.checkoutManager = checkoutManager
@@ -471,29 +480,6 @@ final class ReviewQueueWorker {
                 return state
             }
         }
-    }
-
-    /// Convenience: real GHClient-backed worker with a real checkout manager.
-    static func live() -> ReviewQueueWorker {
-        let client = try? GHClient()
-        let checkout = RepoCheckoutManager()
-        let worker = ReviewQueueWorker(
-            diffFetcher: { owner, repo, number in
-                let c = try client ?? GHClient()
-                return try await c.fetchDiff(owner: owner, repo: repo, number: number)
-            },
-            checkoutManager: checkout,
-            cache: ReviewCache.live(),
-            failureLogStore: FailureLogStore.live()
-        )
-        worker.reviewThreadFetcher = { owner, repo, number in
-            let c = try client ?? GHClient()
-            return try await c.fetchReviewThreads(owner: owner, repo: repo, number: number)
-        }
-        return worker
-        // reviewLog is wired separately by AppDelegate so all stores
-        // share one ModelContainer (sharing the container keeps SwiftData
-        // notifications consistent across @Query consumers).
     }
 
     /// Test/preview only: pre-populate the reviews map without going
@@ -551,7 +537,7 @@ final class ReviewQueueWorker {
     /// as "Interrupted by previous app exit", losing a verdict that was
     /// already paid for. Debounce cancellation alone doesn't prevent it: it
     /// only stops a task still inside the sleep, never one already writing.
-    private func enqueueSave(_ cache: ReviewCache) {
+    private func enqueueSave(_ cache: any ReviewStateCaching) {
         let snapshot = reviews
         let previous = persistChain
         persistChain = Task {
@@ -717,10 +703,20 @@ final class ReviewQueueWorker {
     /// Auto-enqueue any review-requested PR we haven't seen before. Wired
     /// from `PRPoller` after each successful poll. Intentionally idempotent
     /// — repeat polls are no-ops.
-    func enqueueNewReviewRequests(from prs: [InboxPR]) {
+    /// `providerOverride` is forwarded to `enqueue` so a caller that has
+    /// one — the CLI's `--provider` — is not silently ignored on the gated
+    /// path. The app passes nil and resolves per repo as before.
+    func enqueueNewReviewRequests(from prs: [InboxPR], providerOverride: ProviderID? = nil) {
         pruneReviews(keeping: prs)
         for pr in prs where pr.role == .reviewRequested || pr.role == .both {
             let cfg = configResolver(pr.owner, pr.repo)
+            // Also a poller filter, but the poller is not the only entry
+            // point: the CLI is handed a PR directly and never polls.
+            if TitleExclusion.isExcluded(title: pr.title, patterns: cfg.excludeTitlePatterns) {
+                PRBarLog.triage.debug("auto-enqueue skip reason=title-excluded pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+                recordSkip(pr, reason: .titleExcluded)
+                continue
+            }
             // Repo opted out of AI triage entirely → ReadinessCoordinator
             // marks these as "ready" immediately on the human side.
             if !cfg.aiReviewEnabled {
@@ -770,7 +766,7 @@ final class ReviewQueueWorker {
                 recordSkip(pr, reason: .reviewedByPRBarElsewhere)
                 continue
             }
-            enqueue(pr)
+            enqueue(pr, providerOverride: providerOverride)
         }
     }
 
@@ -824,7 +820,7 @@ final class ReviewQueueWorker {
     /// that don't construct a store).
     func cumulativeSpend() -> Double {
         if let log = reviewLog {
-            return log.todaysSpend()
+            return log.todaysSpend(calendar: .current)
         }
         return reviews.values.reduce(0) { $0 + $1.costUsd }
     }
@@ -879,7 +875,7 @@ final class ReviewQueueWorker {
                 reviews[pr.nodeId]?.status = .failed(msg)
                 reviewLog?.recordFailed(
                     pr: pr, headSha: pr.headSha, providerId: provId,
-                    triggeredAt: triggeredAt, errorMessage: msg, costUsd: 0
+                    triggeredAt: triggeredAt, completedAt: Date(), errorMessage: msg, costUsd: 0
                 )
                 return
             }
@@ -903,7 +899,7 @@ final class ReviewQueueWorker {
                 reviews[pr.nodeId]?.status = .failed(msg)
                 reviewLog?.recordFailed(
                     pr: pr, headSha: pr.headSha, providerId: provId,
-                    triggeredAt: triggeredAt, errorMessage: msg, costUsd: 0
+                    triggeredAt: triggeredAt, completedAt: Date(), errorMessage: msg, costUsd: 0
                 )
                 return
             }
@@ -1068,7 +1064,7 @@ final class ReviewQueueWorker {
                 reviews[pr.nodeId]?.status = .failed(msg)
                 reviewLog?.recordFailed(
                     pr: pr, headSha: pr.headSha, providerId: provId,
-                    triggeredAt: triggeredAt, errorMessage: msg,
+                    triggeredAt: triggeredAt, completedAt: Date(), errorMessage: msg,
                     costUsd: partialSpend > 0 ? partialSpend : nil
                 )
                 return
@@ -1084,7 +1080,7 @@ final class ReviewQueueWorker {
             persist()
             reviewLog?.recordCompleted(
                 pr: pr, headSha: pr.headSha, providerId: provId,
-                triggeredAt: triggeredAt, review: aggregated
+                triggeredAt: triggeredAt, completedAt: Date(), review: aggregated
             )
             stageAutoReviewIfEligible(
                 pr: pr, review: aggregated, config: config,
@@ -1103,7 +1099,7 @@ final class ReviewQueueWorker {
             let partialSpend = completedOutcomes.compactMap { $0.result.costUsd }.reduce(0, +)
             reviewLog?.recordFailed(
                 pr: pr, headSha: pr.headSha, providerId: provId,
-                triggeredAt: triggeredAt,
+                triggeredAt: triggeredAt, completedAt: Date(),
                 errorMessage: error.localizedDescription,
                 costUsd: partialSpend > 0 ? partialSpend : nil
             )
@@ -1408,8 +1404,8 @@ final class ReviewQueueWorker {
                     await MainActor.run {
                         self?.actionLog?.record(
                             kind: Self.autoLogKind(action, entry.source), outcome: .success, pr: entry.pr,
-                            detail: entry.body, headSha: entry.pr.headSha,
-                            costUsd: entry.review.costUsd
+                            errorMessage: nil, detail: entry.body, headSha: entry.pr.headSha,
+                            costUsd: entry.review.costUsd, timestamp: Date()
                         )
                         self?.onAutoReviewPosted?(entry.pr)
                     }
@@ -1419,7 +1415,7 @@ final class ReviewQueueWorker {
                             kind: Self.autoLogKind(action, entry.source), outcome: .failure, pr: entry.pr,
                             errorMessage: error.localizedDescription,
                             detail: entry.body, headSha: entry.pr.headSha,
-                            costUsd: entry.review.costUsd
+                            costUsd: entry.review.costUsd, timestamp: Date()
                         )
                     }
                 }

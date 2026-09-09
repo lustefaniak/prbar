@@ -61,7 +61,13 @@ enum PromptLibrary {
     }
 
     private static func loadData(_ name: String, ext: String, subdir: String) throws -> Data {
+        // SwiftPM stages these as a target resource bundle beside the
+        // executable; the .app carries them in Contents/Resources.
+        #if SWIFT_PACKAGE
+        let bundle = Bundle.module
+        #else
         let bundle = Bundle.main
+        #endif
         // Try with subdirectory first (XcodeGen preserves directory structure).
         if let url = bundle.url(forResource: name, withExtension: ext, subdirectory: subdir) {
             return try Data(contentsOf: url)
