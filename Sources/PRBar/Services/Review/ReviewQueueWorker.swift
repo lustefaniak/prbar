@@ -511,6 +511,20 @@ final class ReviewQueueWorker {
     @ObservationIgnored
     private var persistTask: Task<Void, Never>?
 
+    /// Tail of the serialized save chain — see `enqueueSave`.
+    @ObservationIgnored
+    private var persistChain: Task<Void, Never>?
+
+    /// Consecutive polls a PR has been absent from before its review state
+    /// is dropped. The inbox query is capped at 50 with no pagination and no
+    /// stable sort, so one poll's absence is not evidence a PR is gone.
+    @ObservationIgnored
+    var pruneAfterConsecutiveAbsences: Int = 3
+
+    /// How many polls in a row each known PR has been missing from.
+    @ObservationIgnored
+    private var absenceStreak: [String: Int] = [:]
+
     /// Save the current `reviews` map to disk if a cache is wired.
     ///
     /// Debounced and off the main actor. One poll calls this once per
@@ -524,24 +538,73 @@ final class ReviewQueueWorker {
         persistTask = Task { [cache] in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
-            let snapshot = self.reviews
+            self.enqueueSave(cache)
+        }
+    }
+
+    /// Chain each save behind the previous one.
+    ///
+    /// `ReviewCache.save` is a whole-table fetch/update/delete against its
+    /// own `ModelContext`. Two of them in flight together are unordered, so
+    /// an older snapshot can commit *after* a newer one and regress a
+    /// completed review back to queued — which the next launch then reports
+    /// as "Interrupted by previous app exit", losing a verdict that was
+    /// already paid for. Debounce cancellation alone doesn't prevent it: it
+    /// only stops a task still inside the sleep, never one already writing.
+    private func enqueueSave(_ cache: ReviewCache) {
+        let snapshot = reviews
+        let previous = persistChain
+        persistChain = Task {
+            await previous?.value
             await Task.detached(operation: { cache.save(snapshot) }).value
         }
+    }
+
+    /// Write the current map and wait for every queued save to land.
+    ///
+    /// Called from `applicationShouldTerminate`. Without it, quitting inside
+    /// the 300 ms debounce drops the update outright — a review that just
+    /// completed is re-run, and re-billed, on the next launch.
+    func flushPendingSaves() async {
+        guard let cache else { return }
+        persistTask?.cancel()
+        persistTask = nil
+        enqueueSave(cache)
+        await persistChain?.value
     }
 
     /// Drop review state for PRs that have left the inbox. Without this the
     /// map grows without bound across every PR ever polled, and each
     /// `persist()` then re-encodes all of it. The permanent per-review record
     /// lives in `ReviewLogStore` (the History tab), not here.
+    /// A PR must be missing from `pruneAfterConsecutiveAbsences` polls in a
+    /// row before its state goes. `search(... first: 50)` has no pagination
+    /// and no explicit sort, so a PR can drop out of one response and return
+    /// in the next while nothing about it changed. Pruning on a single
+    /// absence then throws away a completed verdict for a PR that is still
+    /// open and still assigned — and since a review PRBar never posted
+    /// leaves no `PRBarVerdictMarker` on GitHub, its return is a cache miss
+    /// that re-runs the same head SHA and bills for it again.
     private func pruneReviews(keeping prs: [InboxPR]) {
         // An empty list means a poll that returned nothing, not an empty
         // inbox we can trust to prune against.
         guard !prs.isEmpty else { return }
         let live = Set(prs.map(\.nodeId))
-        // In-flight states are kept regardless: the PR may be mid-review.
-        let stale = reviews.filter { !live.contains($0.key) && $0.value.status.isTerminal }
+        for key in live { absenceStreak[key] = nil }
+
+        var stale: [String] = []
+        for (key, state) in reviews where !live.contains(key) {
+            // In-flight states are kept regardless: the PR may be mid-review.
+            guard state.status.isTerminal else { continue }
+            let streak = (absenceStreak[key] ?? 0) + 1
+            absenceStreak[key] = streak
+            if streak >= pruneAfterConsecutiveAbsences { stale.append(key) }
+        }
         guard !stale.isEmpty else { return }
-        for key in stale.keys { reviews.removeValue(forKey: key) }
+        for key in stale {
+            reviews.removeValue(forKey: key)
+            absenceStreak[key] = nil
+        }
         PRBarLog.triage.debug("pruned review states count=\(stale.count, privacy: .public)")
         persist()
     }

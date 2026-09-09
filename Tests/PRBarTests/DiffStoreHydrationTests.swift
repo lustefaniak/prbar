@@ -109,3 +109,84 @@ final class DiffStoreHydrationTests: XCTestCase {
         }
     }
 }
+
+/// `invalidate` + `ensureLoaded` is the "Reload diff" sequence. Both touch
+/// disk from detached tasks, so the reload must not depend on the delete
+/// winning that race.
+@MainActor
+final class DiffStoreInvalidationTests: XCTestCase {
+
+    func testReloadAfterInvalidateRefetchesInsteadOfRehydrating() async throws {
+        let container = PRBarModelContainer.inMemory()
+        let pr = makeInvalidationPR()
+        let fetches = FetchCounter()
+
+        let store = DiffStore(diffFetcher: { _, _, _ in
+            await fetches.bump()
+            return hydrationFixtureDiff
+        }, container: container)
+
+        store.ensureLoaded(for: pr)
+        try await waitForLoaded(store, pr)
+        let afterFirst = await fetches.value
+        XCTAssertEqual(afterFirst, 1)
+
+        // Reload: the row is still on disk, and the delete is detached.
+        store.invalidate(for: pr)
+        store.ensureLoaded(for: pr)
+        try await waitForLoaded(store, pr)
+
+        let afterReload = await fetches.value
+        XCTAssertEqual(afterReload, 2, "reload must hit the network, not the row it just invalidated")
+    }
+
+    /// An ordinary cold load still comes off disk — the bypass is scoped to
+    /// the invalidated key and cleared once consumed.
+    func testUninvalidatedKeyStillHydratesFromDisk() async throws {
+        let container = PRBarModelContainer.inMemory()
+        let pr = makeInvalidationPR()
+
+        let warm = DiffStore(diffFetcher: { _, _, _ in hydrationFixtureDiff }, container: container)
+        warm.ensureLoaded(for: pr)
+        try await waitForLoaded(warm, pr)
+
+        let cold = DiffStore(diffFetcher: { _, _, _ in
+            XCTFail("should have hydrated from disk")
+            return ""
+        }, container: container)
+        cold.ensureLoaded(for: pr)
+        try await waitForLoaded(cold, pr)
+    }
+
+    private func waitForLoaded(_ store: DiffStore, _ pr: InboxPR) async throws {
+        let deadline = Date().addingTimeInterval(2)
+        while true {
+            if case .loaded = store.status(for: pr) { return }
+            if Date() > deadline { return XCTFail("diff never loaded") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    private func makeInvalidationPR() -> InboxPR {
+        InboxPR(
+            nodeId: "PR_2", owner: "getsynq", repo: "cloud", number: 2,
+            title: "t", body: "",
+            url: URL(string: "https://github.com/getsynq/cloud/pull/2")!,
+            author: "alice",
+            headRef: "h", baseRef: "main", headSha: "def5678",
+            isDraft: false, role: .reviewRequested,
+            mergeable: "MERGEABLE", mergeStateStatus: "CLEAN",
+            reviewDecision: "REVIEW_REQUIRED", checkRollupState: "SUCCESS",
+            totalAdditions: 1, totalDeletions: 0, changedFiles: 1,
+            hasAutoMerge: false, autoMergeEnabledBy: nil,
+            allCheckSummaries: [],
+            allowedMergeMethods: [.squash],
+            autoMergeAllowed: true, deleteBranchOnMerge: true
+        )
+    }
+}
+
+private actor FetchCounter {
+    private(set) var value = 0
+    func bump() { value += 1 }
+}
