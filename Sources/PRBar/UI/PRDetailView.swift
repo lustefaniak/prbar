@@ -1191,8 +1191,8 @@ struct PRDetailView: View {
             // For `.both` PRs the review `actionsCard` already renders the
             // shared failure banner (it reads the same per-PR action state),
             // so only show ours when this is the sole action surface.
-            if !showsReviewActions, case .failed(let msg) = actionQueue.state(for: pr.nodeId) {
-                actionFailedBanner(message: msg)
+            if !showsReviewActions, let s0 = actionQueue.state(for: pr.nodeId), let msg = s0.failureMessage {
+                actionFailedBanner(message: msg, state: s0)
             }
         }
     }
@@ -1445,8 +1445,8 @@ struct PRDetailView: View {
                 }
             }
 
-            if case .failed(let msg) = actionQueue.state(for: pr.nodeId) {
-                actionFailedBanner(message: msg)
+            if let state = actionQueue.state(for: pr.nodeId), let msg = state.failureMessage {
+                actionFailedBanner(message: msg, state: state)
             } else if let err = poller.lastError {
                 Text(err)
                     .font(.caption2)
@@ -1457,17 +1457,24 @@ struct PRDetailView: View {
         }
     }
 
+    /// The attempt number when a failed write is mid-backoff, so the
+    /// banner can say it is being retried rather than implying it is over.
+    private func retryingAttempt(_ state: ActionRunState) -> Int? {
+        if case .retrying(_, let attempt) = state { return attempt }
+        return nil
+    }
+
     /// Shown when the queued review post failed (gh/network error). The
     /// captured action is retained by `ActionQueue`, so Retry re-runs it
     /// verbatim without the user re-typing anything.
     @ViewBuilder
-    private func actionFailedBanner(message: String) -> some View {
+    private func actionFailedBanner(message: String, state: ActionRunState) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .font(.caption)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Posting failed")
+                Text(retryingAttempt(state).map { "Posting failed — retrying (\($0))" } ?? "Posting failed")
                     .font(.caption.bold())
                 Text(message)
                     .font(.caption2)
