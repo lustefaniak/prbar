@@ -373,12 +373,12 @@ final class RiskBriefTests: XCTestCase {
     func testLargeDiffTriageDefersToBriefWhenPresent() {
         let big = subdiff([("kernel-auth/session/store.go", 2_000, 500)])
         let withBrief = ContextAssembler.buildUserPrompt(
-            pr: makeRiskBriefPR(), subdiff: big, diffText: "", 
+            pr: makeRiskBriefPR(), subdiff: big, diffText: "",
             ciFailures: [], toolMode: .sandboxed, baseSha: "abc1234",
             riskBrief: RiskBrief.compute(subdiff: big)
         )
         let without = ContextAssembler.buildUserPrompt(
-            pr: makeRiskBriefPR(), subdiff: big, diffText: "", 
+            pr: makeRiskBriefPR(), subdiff: big, diffText: "",
             ciFailures: [], toolMode: .sandboxed, baseSha: "abc1234", riskBrief: nil
         )
         XCTAssertGreaterThan(ContextAssembler.subdiffContentBytes(big),
@@ -394,7 +394,7 @@ final class RiskBriefTests: XCTestCase {
         }
         let sub = subdiff(many)
         let prompt = ContextAssembler.buildUserPrompt(
-            pr: makeRiskBriefPR(), subdiff: sub, diffText: "", 
+            pr: makeRiskBriefPR(), subdiff: sub, diffText: "",
             ciFailures: [], toolMode: .sandboxed, baseSha: "abc1234",
             riskBrief: RiskBrief.compute(subdiff: sub)
         )

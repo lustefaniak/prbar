@@ -9,6 +9,10 @@ struct CIFailureLog: Sendable, Hashable {
 }
 
 enum ContextAssembler {
+    /// Replies kept per thread, newest-first. The root is always shown on
+    /// top of these.
+    static let maxRepliesPerThread = 5
+
     /// Build the prompt bundle for one subreview. Pure function — all
     /// inputs explicit, no I/O.
     static func assemble(
@@ -417,7 +421,10 @@ enum ContextAssembler {
 
         if !reviews.isEmpty {
             s += "### Review verdicts\n\n"
-            for r in reviews.prefix(10) {
+            // `suffix`, not `prefix`: `reviews(last: 20)` comes back
+            // oldest-first, so taking the head keeps the stalest verdicts
+            // and can hide the one that decided the PR's current state.
+            for r in reviews.suffix(10) {
                 s += "- \(who(r.author, pr: pr, isViewer: r.isFromViewer)) — `\(r.state)`: "
                 s += "\"\(condense(r.body, limit: 300))\"\n"
             }
@@ -431,18 +438,31 @@ enum ContextAssembler {
             let suffix = flags.isEmpty ? "" : " (\(flags.joined(separator: ", ")))"
             let path = thread.path.isEmpty ? "the PR" : "`\(thread.path)`"
             s += "### Thread on \(path)\(suffix)\n\n"
-            for (idx, c) in thread.comments.prefix(6).enumerated() {
-                let isRoot = idx == 0
+            // Root plus the *latest* replies. Comments come back
+            // chronological, so `prefix` kept the opening debate and
+            // dropped the end of the conversation — which is precisely
+            // where "fixed in abc123" lives, and the only reason this
+            // section exists. A thread long enough to truncate is exactly
+            // the thread whose ending matters most.
+            let root = thread.comments.first
+            let replies = thread.comments.dropFirst()
+            let shownReplies = replies.suffix(Self.maxRepliesPerThread)
+            let omitted = replies.count - shownReplies.count
+            if let root {
                 // The root gets the tighter cap: it states a finding, and a
                 // finding is something this run re-derives from the code
                 // anyway. The replies are the half that exists nowhere else
                 // — which commit fixed it, or why it was left alone — so
                 // truncating those is what makes the section useless.
-                s += "- \(who(c.authorLogin, pr: pr, isViewer: nil))\(isRoot ? "" : " replied"): "
-                s += "\"\(condense(c.body, limit: isRoot ? 250 : 700))\"\n"
+                s += "- \(who(root.authorLogin, pr: pr, isViewer: nil)): "
+                s += "\"\(condense(root.body, limit: 250))\"\n"
             }
-            if thread.comments.count > 6 {
-                s += "- … \(thread.comments.count - 6) more repl\(thread.comments.count - 6 == 1 ? "y" : "ies") in this thread\n"
+            if omitted > 0 {
+                s += "- … \(omitted) earlier repl\(omitted == 1 ? "y" : "ies") omitted\n"
+            }
+            for c in shownReplies {
+                s += "- \(who(c.authorLogin, pr: pr, isViewer: nil)) replied: "
+                s += "\"\(condense(c.body, limit: 700))\"\n"
             }
             s += "\n"
         }
@@ -472,8 +492,17 @@ enum ContextAssembler {
     /// the newline flattening below then hands its contents to the model as
     /// ordinary prose.
     private static func condense(_ body: String, limit: Int) -> String {
-        let stripped = body.replacingOccurrences(
+        let closed = body.replacingOccurrences(
             of: "(?s)<!--.*?-->",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // An *unterminated* `<!--` hides everything after it on GitHub just
+        // as effectively as a closed one, and the pattern above leaves it
+        // untouched — so text no human on the thread can see would reach
+        // the model as ordinary prose. Drop from the opener to the end.
+        let stripped = closed.replacingOccurrences(
+            of: "(?s)<!--.*$",
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )

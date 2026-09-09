@@ -1047,6 +1047,16 @@ final class ReviewQueueWorker {
 
     /// Close the review threads this triage considers dealt with.
     ///
+    /// Threads anchored in this subreview's files. A monorepo split routes
+    /// each subfolder to its own run, so a thread on another folder is noise
+    /// for that prompt. Path-less threads are dropped rather than shown to
+    /// every subreview.
+    private func threads(_ all: [ReviewThread], for subdiff: Subdiff) -> [ReviewThread] {
+        guard !all.isEmpty else { return [] }
+        let paths = Set(subdiff.filePaths)
+        return all.filter { !$0.path.isEmpty && paths.contains($0.path) }
+    }
+
     /// Runs after every completed triage, not just after a share: threads
     /// PRBar opened via auto-deny inline comments deserve the same
     /// treatment, and the gate in `ReviewThreadResolver` is what decides
@@ -1070,16 +1080,6 @@ final class ReviewQueueWorker {
     /// The resolve itself goes through `ActionQueue` like every other
     /// GitHub write, so it is serialized against this PR's other writes,
     /// retryable, and visible in History.
-    /// Threads anchored in this subreview's files. A monorepo split routes
-    /// each subfolder to its own run, so a thread on another folder is noise
-    /// for that prompt. Path-less threads are dropped rather than shown to
-    /// every subreview.
-    private func threads(_ all: [ReviewThread], for subdiff: Subdiff) -> [ReviewThread] {
-        guard !all.isEmpty else { return [] }
-        let paths = Set(subdiff.filePaths)
-        return all.filter { !$0.path.isEmpty && paths.contains($0.path) }
-    }
-
     private func resolveAddressedThreads(
         pr: InboxPR,
         review: AggregatedReview,
