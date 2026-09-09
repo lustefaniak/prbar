@@ -375,6 +375,7 @@ struct PRDetailView: View {
                 .truncationMode(.middle)
                 .textSelection(.enabled)
             HStack(spacing: 6) {
+                AuthorAvatar(login: pr.author, size: 14)
                 Text("@\(pr.author)")
                     .foregroundStyle(.secondary)
                 Text("·")
@@ -1190,8 +1191,8 @@ struct PRDetailView: View {
             // For `.both` PRs the review `actionsCard` already renders the
             // shared failure banner (it reads the same per-PR action state),
             // so only show ours when this is the sole action surface.
-            if !showsReviewActions, case .failed(let msg) = actionQueue.state(for: pr.nodeId) {
-                actionFailedBanner(message: msg)
+            if !showsReviewActions, let s0 = actionQueue.state(for: pr.nodeId), let msg = s0.failureMessage {
+                actionFailedBanner(message: msg, state: s0)
             }
         }
     }
@@ -1319,7 +1320,10 @@ struct PRDetailView: View {
         let primary: ReviewActionKind = aiVerdict.flatMap(reviewAction(for:)) ?? .approve
         let postable = postableInlineComments
         let primaryNeedsBody = (primary == .requestChanges)
-        let primaryDisabled = isPosting || (primaryNeedsBody && bodyDraft.isEmpty)
+        // Posting while the diff is still hydrating sends the verdict with
+        // none of its annotations, irreversibly — see `InlineCommentReadiness`.
+        let waitingForDiff = inlineReadiness == .waitingForDiff
+        let primaryDisabled = isPosting || waitingForDiff || (primaryNeedsBody && bodyDraft.isEmpty)
 
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -1335,10 +1339,16 @@ struct PRDetailView: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Post a different review action")
-                .disabled(isPosting)
+                .disabled(isPosting || waitingForDiff)
 
-                if isPosting {
+                if isPosting || waitingForDiff {
                     ProgressView().controlSize(.small)
+                }
+
+                if waitingForDiff {
+                    Text("Loading diff to anchor annotations…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Spacer()
@@ -1435,8 +1445,8 @@ struct PRDetailView: View {
                 }
             }
 
-            if case .failed(let msg) = actionQueue.state(for: pr.nodeId) {
-                actionFailedBanner(message: msg)
+            if let state = actionQueue.state(for: pr.nodeId), let msg = state.failureMessage {
+                actionFailedBanner(message: msg, state: state)
             } else if let err = poller.lastError {
                 Text(err)
                     .font(.caption2)
@@ -1447,17 +1457,24 @@ struct PRDetailView: View {
         }
     }
 
+    /// The attempt number when a failed write is mid-backoff, so the
+    /// banner can say it is being retried rather than implying it is over.
+    private func retryingAttempt(_ state: ActionRunState) -> Int? {
+        if case .retrying(_, let attempt) = state { return attempt }
+        return nil
+    }
+
     /// Shown when the queued review post failed (gh/network error). The
     /// captured action is retained by `ActionQueue`, so Retry re-runs it
     /// verbatim without the user re-typing anything.
     @ViewBuilder
-    private func actionFailedBanner(message: String) -> some View {
+    private func actionFailedBanner(message: String, state: ActionRunState) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .font(.caption)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Posting failed")
+                Text(retryingAttempt(state).map { "Posting failed — retrying (\($0))" } ?? "Posting failed")
                     .font(.caption.bold())
                 Text(message)
                     .font(.caption2)
@@ -1541,24 +1558,27 @@ struct PRDetailView: View {
         // rerun the same call so we don't over-engineer disabled state.
         let postable = postableInlineComments
         let isPosting = actionQueue.isBusy(pr.nodeId)
+        // Same guard as the primary button: every one of these posts the
+        // review, so none may fire while the annotations can't be anchored.
+        let blocked = isPosting || inlineReadiness == .waitingForDiff
 
         if primary != .approve {
             Button {
                 postReview(kind: .approve, includeInline: includeInlineAnnotations)
             } label: { Label("Approve", systemImage: "hand.thumbsup") }
-                .disabled(isPosting)
+                .disabled(blocked)
         }
         if primary != .requestChanges {
             Button {
                 postReview(kind: .requestChanges, includeInline: includeInlineAnnotations)
             } label: { Label("Request changes", systemImage: "hand.thumbsdown") }
-                .disabled(isPosting || bodyDraft.isEmpty)
+                .disabled(blocked || bodyDraft.isEmpty)
         }
         if primary != .comment {
             Button {
                 postReview(kind: .comment, includeInline: includeInlineAnnotations)
             } label: { Label("Comment (neutral)", systemImage: "bubble.left") }
-                .disabled(isPosting || bodyDraft.isEmpty)
+                .disabled(blocked || bodyDraft.isEmpty)
         }
         if !postable.isEmpty {
             Divider()
@@ -1619,6 +1639,16 @@ struct PRDetailView: View {
         return InlineCommentMapper.map(annotations: annotations, hunks: hunks)
     }
 
+    /// Whether the annotations this review found can be anchored yet. The
+    /// post controls gate on `.waitingForDiff` so a fast click can't submit
+    /// a verdict stripped of its findings.
+    private var inlineReadiness: InlineCommentReadiness.State {
+        InlineCommentReadiness.state(
+            annotationCount: review?.annotations.count ?? 0,
+            diff: diffStore.status(for: pr)
+        )
+    }
+
     /// Informational verdict pill. Posting now happens through the
     /// unified action row in `actionsSection`, where the matching button
     /// gets prominent styling. The pill itself is a plain badge — no
@@ -1639,6 +1669,14 @@ struct PRDetailView: View {
     }
 
     private func postReview(kind: ReviewActionKind, includeInline: Bool) {
+        // Every caller's control is already disabled here, so this is a
+        // backstop rather than a path the user can reach. It stays because
+        // the failure is invisible and permanent: the review lands, just
+        // without the findings, and GitHub offers no way to add them after.
+        guard inlineReadiness != .waitingForDiff else {
+            PRBarLog.actions.notice("post refused reason=diff-hydrating pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+            return
+        }
         let comments = includeInline ? postableInlineComments : []
         actionQueue.enqueue(
             pr,

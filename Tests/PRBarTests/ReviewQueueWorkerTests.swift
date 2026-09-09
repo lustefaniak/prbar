@@ -261,6 +261,62 @@ final class ReviewQueueWorkerTests: XCTestCase {
         XCTAssertNotNil(worker.reviews["C"])
     }
 
+    func testPollPrunesReviewStateForPRsThatLeftTheInbox() async throws {
+        let stayed = makePR(nodeId: "B", number: 2)
+        let left = makePR(nodeId: "GONE", number: 9)
+        let provider = StubProvider(verdict: .approve, summary: "x", cost: 0.05)
+        let worker = makeWorker(provider: provider, diffText: makeDiff())
+
+        worker.enqueueNewReviewRequests(from: [stayed, left])
+        try await waitUntil {
+            self.isCompleted(worker.reviews["B"]?.status)
+                && self.isCompleted(worker.reviews["GONE"]?.status)
+        }
+
+        // An empty poll is untrustworthy — prune nothing.
+        worker.enqueueNewReviewRequests(from: [])
+        XCTAssertNotNil(worker.reviews["GONE"])
+
+        // One absence is not evidence: the inbox query is capped at 50 with
+        // no pagination and no stable sort, so a PR can fall out of one
+        // response and be back in the next.
+        worker.enqueueNewReviewRequests(from: [stayed])
+        XCTAssertNotNil(worker.reviews["GONE"], "a single absence must not discard a paid verdict")
+        worker.enqueueNewReviewRequests(from: [stayed])
+        XCTAssertNotNil(worker.reviews["GONE"])
+
+        worker.enqueueNewReviewRequests(from: [stayed])
+        XCTAssertNil(worker.reviews["GONE"], "gone for the full streak — prune")
+        XCTAssertNotNil(worker.reviews["B"])
+    }
+
+    /// The churn case the streak exists for: a PR that drops out of the
+    /// capped search result and comes back keeps its verdict, so it is not
+    /// re-reviewed (and re-billed) at the same head SHA.
+    func testReappearingPRKeepsItsReviewAndResetsTheStreak() async throws {
+        let stayed = makePR(nodeId: "B", number: 2)
+        let flaky = makePR(nodeId: "FLAKY", number: 9)
+        let provider = StubProvider(verdict: .approve, summary: "x", cost: 0.05)
+        let worker = makeWorker(provider: provider, diffText: makeDiff())
+
+        worker.enqueueNewReviewRequests(from: [stayed, flaky])
+        try await waitUntil {
+            self.isCompleted(worker.reviews["B"]?.status)
+                && self.isCompleted(worker.reviews["FLAKY"]?.status)
+        }
+        let verdict = worker.reviews["FLAKY"]
+
+        worker.enqueueNewReviewRequests(from: [stayed])
+        worker.enqueueNewReviewRequests(from: [stayed])
+        worker.enqueueNewReviewRequests(from: [stayed, flaky])   // back — streak resets
+        XCTAssertEqual(worker.reviews["FLAKY"]?.headSha, verdict?.headSha)
+
+        // Two more absences must not be enough now that the streak reset.
+        worker.enqueueNewReviewRequests(from: [stayed])
+        worker.enqueueNewReviewRequests(from: [stayed])
+        XCTAssertNotNil(worker.reviews["FLAKY"], "the streak restarted when it reappeared")
+    }
+
     func testDailyCostCapBlocksEnqueue() async throws {
         let pr1 = makePR(nodeId: "A", number: 1)
         let pr2 = makePR(nodeId: "B", number: 2)

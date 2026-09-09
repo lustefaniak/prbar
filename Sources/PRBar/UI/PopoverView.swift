@@ -7,11 +7,14 @@ struct PopoverView: View {
 
     @State private var selectedTab: Tab = .myPRs
     @State private var selectedPR: InboxPR?
-    /// Node IDs the user chose to "Skip for now" during the current
-    /// review session. Excluded from sequential auto-advance so the user
-    /// isn't bounced back onto a PR they deferred. Forgotten (cleared)
-    /// once advancing finds nothing left to review — see `advanceToNext`.
-    @State private var skippedNodeIds: Set<String> = []
+    /// Node IDs the user has resolved in this review run — deferred with
+    /// the Skip button, or actioned by posting a review. Excluded from
+    /// sequential auto-advance for two reasons: a deferred PR shouldn't
+    /// bounce back, and `poller.prs` lags a posted review by a poll
+    /// cycle, so an actioned PR still looks review-requested and would
+    /// otherwise be handed back to the user for a second approval.
+    /// Cleared once advancing finds nothing left — see `advanceToNext`.
+    @State private var handledNodeIds: Set<String> = []
     @State private var toolResults: [ToolProbeResult] = []
     /// Persisted popover height (points). `0` = unset → use the default
     /// (3/4 of screen). Updated live while dragging the resize handle.
@@ -279,11 +282,11 @@ struct PopoverView: View {
         }
     }
 
-    /// Open a PR the user explicitly picked from a list. Un-skips it —
-    /// choosing it is an explicit decision to review it now, so it should
-    /// no longer be excluded from later auto-advance.
+    /// Open a PR the user explicitly picked from a list. Drops it from
+    /// the handled set — choosing it is an explicit decision to review it,
+    /// so it should no longer be excluded from later auto-advance.
     private func select(_ pr: InboxPR) {
-        skippedNodeIds.remove(pr.nodeId)
+        handledNodeIds.remove(pr.nodeId)
         selectedPR = pr
     }
 
@@ -292,50 +295,37 @@ struct PopoverView: View {
     /// `advanceOrClose`, this ignores `sequentialFocusMode` — advancing
     /// is the button's whole purpose).
     private func skip(after current: InboxPR) {
-        skippedNodeIds.insert(current.nodeId)
-        advanceToNext(after: current)
+        handledNodeIds.insert(current.nodeId)
+        advanceToNext()
     }
 
     /// Pick the next ready PR after the user actioned the current one.
-    /// Honours `sequentialFocusMode`: off ⇒ return to the list (and end
-    /// the skip session).
+    /// Honours `sequentialFocusMode`: off ⇒ return to the list (and
+    /// forget what this run handled).
     private func advanceOrClose(after current: InboxPR) {
         guard sequentialFocusMode else {
             selectedPR = nil
-            skippedNodeIds.removeAll()
+            handledNodeIds.removeAll()
             return
         }
-        advanceToNext(after: current)
+        handledNodeIds.insert(current.nodeId)
+        advanceToNext()
     }
 
-    /// Select the next ready, non-skipped PR. "Ready" = role is
-    /// reviewRequested or both, not the same PR, not skipped this
-    /// session, and (AI triage is terminal OR the repo has AI off OR no
-    /// review state recorded). When nothing remains, return to the list
-    /// and forget the session's skips.
-    private func advanceToNext(after current: InboxPR) {
-        let next = poller.prs.first { pr in
-            guard pr.nodeId != current.nodeId else { return false }
-            guard !skippedNodeIds.contains(pr.nodeId) else { return false }
-            guard pr.role == .reviewRequested || pr.role == .both else { return false }
-            guard !pr.isDraft else { return false }
-            // Skip ones another reviewer already decided (approved or
-            // requested changes) — same predicate as the Inbox hide filter.
-            if pr.isReviewedByOthers { return false }
-            // Treat "no review state yet" as ready too — repos with AI off
-            // never enqueue, so they'd otherwise be skipped here.
-            switch queue.reviews[pr.nodeId]?.status {
-            // .skipped = AI won't triage it (e.g. repo AI off), so the human
-            // still needs to look — treat it as ready like terminal states.
-            case .none, .completed, .failed, .skipped: return true
-            case .queued, .running: return false
-            }
-        }
+    /// Select the next PR that still needs the user, per
+    /// `ReviewAdvance.next`. When nothing remains, return to the list and
+    /// forget what this run handled.
+    private func advanceToNext() {
+        let next = ReviewAdvance.next(
+            in: poller.prs,
+            handled: handledNodeIds,
+            triageStatus: { queue.reviews[$0]?.status }
+        )
         if let next {
             selectedPR = next
         } else {
             selectedPR = nil
-            skippedNodeIds.removeAll()
+            handledNodeIds.removeAll()
         }
     }
 

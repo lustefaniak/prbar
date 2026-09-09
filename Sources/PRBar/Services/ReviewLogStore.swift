@@ -49,7 +49,7 @@ final class ReviewLogStore {
     ) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        let payload = try? encoder.encode(review)
+        let payload = try? encoder.encode(review.strippingRawStreams())
         let entry = ReviewLogEntry(
             prNodeId: pr.nodeId,
             owner: pr.owner,

@@ -17,6 +17,11 @@ packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: "2.6.0"
+  # Already in the graph as MarkdownUI's dependency; declared explicitly so
+  # AuthorAvatar can use its in-memory image cache.
+  NetworkImage:
+    url: https://github.com/gonzalezreal/NetworkImage
+    from: "6.0.0"
 
 settings:
   base:
@@ -42,6 +47,7 @@ targets:
         buildPhase: resources
     dependencies:
       - package: MarkdownUI
+      - package: NetworkImage
       - package: Sparkle
     # Custom Info.plist — Sparkle keys (SUFeedURL / SUPublicEDKey / SUEnableInstallerLauncherService)
     # are not in Apple's INFOPLIST_KEY_* allow-list, so GENERATE_INFOPLIST_FILE silently drops them.

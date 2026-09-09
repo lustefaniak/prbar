@@ -29,6 +29,11 @@ final class DiffStore {
 
     private(set) var statuses: [String: LoadStatus] = [:]   // key = "<prNodeId>@<headSha>"
 
+    /// Keys whose next `ensureLoaded` must bypass disk hydration — see
+    /// `invalidate(for:)`. Cleared as soon as that load starts.
+    @ObservationIgnored
+    private var invalidatedKeys: Set<String> = []
+
     @ObservationIgnored
     var diffFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
 
@@ -50,43 +55,48 @@ final class DiffStore {
         DiffStore(diffFetcher: worker.diffFetcher, container: PRBarModelContainer.live())
     }
 
+    /// In-memory read only — never touches disk. Called from view bodies,
+    /// where a SQLite fetch plus a multi-MB JSON decode would land on the
+    /// main actor. Disk hydration happens asynchronously in `ensureLoaded`,
+    /// which every call site already pairs this with.
     func status(for pr: InboxPR) -> LoadStatus {
-        let k = key(for: pr)
-        if let s = statuses[k] { return s }
-        // Cold lookup: hydrate from disk if we have a hit.
-        if let hunks = readPersisted(cacheKey: k) {
-            statuses[k] = .loaded(hunks)
-            return .loaded(hunks)
-        }
-        return .idle
+        statuses[key(for: pr)] ?? .idle
     }
 
     /// Fetch (and parse) the diff if we don't already have it. Idempotent
     /// — calling while loading is a no-op; calling after success is a no-op.
+    /// A prior failure is retried.
     func ensureLoaded(for pr: InboxPR) {
         let k = key(for: pr)
-        // Hydrate from disk first; avoids a needless fetch when the user
-        // re-opens a PR they already loaded in a prior session.
-        if statuses[k] == nil, let hunks = readPersisted(cacheKey: k) {
-            statuses[k] = .loaded(hunks)
-            return
+        if let s = statuses[k] {
+            switch s {
+            case .loading, .loaded: return
+            case .idle, .failed: break
+            }
         }
-        if let s = statuses[k], s != .idle, case .failed = s { /* allow retry */ }
-        else if let s = statuses[k], s != .idle { return }
-
         statuses[k] = .loading
-        Task { [weak self, fetcher = diffFetcher] in
+        // A key the caller just invalidated must come from the network, not
+        // from the row the detached delete may not have removed yet.
+        let mayHydrateFromDisk = !invalidatedKeys.contains(k)
+        invalidatedKeys.remove(k)
+        Task { [weak self, fetcher = diffFetcher, container] in
+            // Disk hit first, so re-opening a PR loaded in a prior session
+            // doesn't re-run `gh pr diff`. Both the SQLite read and the JSON
+            // decode go off the main actor: the PR list prefetches a dozen
+            // PRs at once and the payloads run to megabytes.
+            if mayHydrateFromDisk, let hunks = await Task.detached(operation: {
+                Self.readPersisted(container, cacheKey: k)
+            }).value {
+                self?.statuses[k] = .loaded(hunks)
+                return
+            }
             do {
                 let raw = try await fetcher(pr.owner, pr.repo, pr.number)
-                let hunks = DiffParser.parse(raw)
-                await MainActor.run {
-                    self?.statuses[k] = .loaded(hunks)
-                    self?.writePersisted(cacheKey: k, hunks: hunks)
-                }
+                let hunks = await Task.detached(operation: { DiffParser.parse(raw) }).value
+                self?.statuses[k] = .loaded(hunks)
+                Task.detached { Self.writePersisted(container, cacheKey: k, hunks: hunks) }
             } catch {
-                await MainActor.run {
-                    self?.statuses[k] = .failed(error.localizedDescription)
-                }
+                self?.statuses[k] = .failed(error.localizedDescription)
             }
         }
     }
@@ -98,10 +108,19 @@ final class DiffStore {
     }
 
     /// Drop the cached diff (e.g. on Re-run after a force-push).
+    ///
+    /// The disk delete is detached, so it does not race the reload that
+    /// always follows: `ensureLoaded` consults `invalidatedKeys` and skips
+    /// hydration outright rather than depending on the delete winning. It
+    /// did not, reliably — both are unordered detached tasks, and when the
+    /// read won, "Reload diff" re-hydrated the exact row it had just
+    /// invalidated and returned without calling `gh pr diff`. The stale
+    /// hunks then also decided which annotations could be posted inline.
     func invalidate(for pr: InboxPR) {
         let k = key(for: pr)
         statuses[k] = .idle
-        deletePersisted(cacheKey: k)
+        invalidatedKeys.insert(k)
+        Task.detached { [container] in Self.deletePersisted(container, cacheKey: k) }
     }
 
     private func key(for pr: InboxPR) -> String {
@@ -110,7 +129,13 @@ final class DiffStore {
 
     // MARK: - SwiftData
 
-    private func readPersisted(cacheKey: String) -> [Hunk]? {
+    // `nonisolated static` so these run off the main actor. A `ModelContext`
+    // built and discarded inside one call never escapes, which is what makes
+    // the Sendable `ModelContainer` safe to hand to a detached task.
+
+    nonisolated private static func readPersisted(
+        _ container: ModelContainer?, cacheKey: String
+    ) -> [Hunk]? {
         guard let container else { return nil }
         let context = ModelContext(container)
         let descriptor = FetchDescriptor<DiffCacheEntry>(
@@ -120,7 +145,9 @@ final class DiffStore {
         return try? JSONDecoder().decode([Hunk].self, from: row.payload)
     }
 
-    private func writePersisted(cacheKey: String, hunks: [Hunk]) {
+    nonisolated private static func writePersisted(
+        _ container: ModelContainer?, cacheKey: String, hunks: [Hunk]
+    ) {
         guard let container else { return }
         guard let payload = try? JSONEncoder().encode(hunks) else { return }
         let context = ModelContext(container)
@@ -136,7 +163,9 @@ final class DiffStore {
         try? context.save()
     }
 
-    private func deletePersisted(cacheKey: String) {
+    nonisolated private static func deletePersisted(
+        _ container: ModelContainer?, cacheKey: String
+    ) {
         guard let container else { return }
         let context = ModelContext(container)
         let descriptor = FetchDescriptor<DiffCacheEntry>(
