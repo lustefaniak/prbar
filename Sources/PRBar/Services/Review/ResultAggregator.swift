@@ -32,6 +32,46 @@ struct SubreviewOutcome: Sendable, Hashable, Codable {
     let result: ProviderResult
 }
 
+extension AggregatedReview {
+    /// Copy with every subreview's raw provider stream dropped.
+    ///
+    /// `rawJson` is 97% of a stored review and is only ever read back from
+    /// the live `ReviewState` (PRDetailView's "How the AI reviewed" trace).
+    /// Nothing reads it out of a `ReviewLogEntry`, so the archive keeps the
+    /// verdict, summary and annotations and drops the stream.
+    func strippingRawStreams() -> AggregatedReview {
+        AggregatedReview(
+            verdict: verdict,
+            confidence: confidence,
+            summaryMarkdown: summaryMarkdown,
+            annotations: annotations,
+            costUsd: costUsd,
+            toolCallCount: toolCallCount,
+            toolNamesUsed: toolNamesUsed,
+            perSubreview: perSubreview.map {
+                SubreviewOutcome(subpath: $0.subpath, result: $0.result.strippingRawJson())
+            },
+            isSubscriptionAuth: isSubscriptionAuth
+        )
+    }
+}
+
+extension ProviderResult {
+    func strippingRawJson() -> ProviderResult {
+        ProviderResult(
+            verdict: verdict,
+            confidence: confidence,
+            summaryMarkdown: summaryMarkdown,
+            annotations: annotations,
+            costUsd: costUsd,
+            toolCallCount: toolCallCount,
+            toolNamesUsed: toolNamesUsed,
+            rawJson: Data(),
+            isSubscriptionAuth: isSubscriptionAuth
+        )
+    }
+}
+
 extension ProviderResult: Hashable {
     public static func == (lhs: ProviderResult, rhs: ProviderResult) -> Bool {
         lhs.verdict == rhs.verdict

@@ -321,27 +321,14 @@ actor GHClient {
         let body: String
     }
 
-    /// Submit a review with inline (line-anchored) comments in a single
-    /// API call. Uses `POST /repos/{o}/{r}/pulls/{n}/reviews` because
-    /// `gh pr review` doesn't expose `comments[]`.
-    ///
-    /// `event`: `"APPROVE"`, `"REQUEST_CHANGES"`, or `"COMMENT"` (neutral).
-    /// `body`: review body — required for REQUEST_CHANGES and COMMENT,
-    /// optional for APPROVE. `comments`: zero or more inline comments;
-    /// each anchors against the PR's current head SHA (the API defaults
-    /// `commit_id` to head when omitted).
-    ///
-    /// GitHub rejects inline comments whose `line` isn't part of the
-    /// PR's diff. Caller is responsible for filtering out annotations
-    /// against unchanged regions before passing them in.
-    func postReviewWithComments(
-        owner: String,
-        repo: String,
-        number: Int,
+    /// Encode the create-review request body. Split out from the call so
+    /// the payload shape is assertable without spawning `gh`.
+    nonisolated static func reviewPayloadJSON(
         event: String,
         body: String,
-        comments: [InlineComment]
-    ) async throws {
+        comments: [InlineComment],
+        commitId: String?
+    ) throws -> Data {
         struct CommentPayload: Encodable {
             let path: String
             let body: String
@@ -355,12 +342,14 @@ actor GHClient {
         struct ReviewPayload: Encodable {
             let event: String
             let body: String?
+            let commit_id: String?
             let comments: [CommentPayload]
         }
 
         let payload = ReviewPayload(
             event: event,
             body: body.isEmpty ? nil : body,
+            commit_id: (commitId?.isEmpty ?? true) ? nil : commitId,
             comments: comments.map {
                 CommentPayload(
                     path: $0.path,
@@ -370,7 +359,42 @@ actor GHClient {
                 )
             }
         )
-        let data = try JSONEncoder().encode(payload)
+        return try JSONEncoder().encode(payload)
+    }
+
+    /// Submit a review with inline (line-anchored) comments in a single
+    /// API call. Uses `POST /repos/{o}/{r}/pulls/{n}/reviews` because
+    /// `gh pr review` doesn't expose `comments[]`.
+    ///
+    /// `event`: `"APPROVE"`, `"REQUEST_CHANGES"`, or `"COMMENT"` (neutral).
+    /// `body`: review body — required for REQUEST_CHANGES and COMMENT,
+    /// optional for APPROVE. `comments`: zero or more inline comments.
+    ///
+    /// `commitId` is the SHA the review actually read. It must be passed:
+    /// omitting it makes GitHub anchor every comment in the *current* head
+    /// diff instead, so on a PR that moved mid-review a comment can land on
+    /// code the review never saw, and a superseded finding renders as
+    /// current because the changes that superseded it predate the commit
+    /// GitHub thinks it was written against. GitHub rejects a SHA no longer
+    /// in the PR (force-push, rebase) — that throw is the wanted outcome,
+    /// since the findings describe the old code and the next triage covers
+    /// the new head.
+    ///
+    /// GitHub rejects inline comments whose `line` isn't part of the
+    /// PR's diff. Caller is responsible for filtering out annotations
+    /// against unchanged regions before passing them in.
+    func postReviewWithComments(
+        owner: String,
+        repo: String,
+        number: Int,
+        event: String,
+        body: String,
+        comments: [InlineComment],
+        commitId: String?
+    ) async throws {
+        let data = try Self.reviewPayloadJSON(
+            event: event, body: body, comments: comments, commitId: commitId
+        )
 
         // gh api --input <file> reads the JSON body from disk so we
         // don't have to thread stdin through ProcessRunner.
