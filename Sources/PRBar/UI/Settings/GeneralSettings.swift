@@ -2,7 +2,7 @@ import SwiftUI
 
 struct GeneralSettings: View {
     @Environment(ReviewQueueModel.self) private var queue
-    @Environment(RepoConfigStore.self) private var repoConfigs
+    @Environment(ConfigModel.self) private var repoConfigs
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true
     @AppStorage("postIncludesAISummary") private var postIncludesAISummary = true
@@ -295,7 +295,8 @@ struct GeneralSettings: View {
     }
 
     // Provider, model and effort live in prbar.yaml (shared with the CLI)
-    // via `RepoConfigStore`; its `onChange` pushes them into the worker.
+    // via the server (`ConfigModel` here, `RepoConfigStore` there), whose
+    // `onChange` pushes them into the worker.
 
     private var defaultClaudeModel: String {
         repoConfigs.defaultClaudeModel ?? ReviewQueueWorker.compiledDefaultClaudeModel

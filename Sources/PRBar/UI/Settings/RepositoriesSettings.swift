@@ -2,14 +2,14 @@ import SwiftUI
 
 /// Settings tab for per-repo `RepoConfig`s. Lists user-defined entries
 /// (with built-ins shown as read-only suggestions you can clone), and
-/// pops a detail editor when a row is selected. Saves write through to
-/// `RepoConfigStore` immediately.
+/// pops a detail editor when a row is selected. Saves go to the server
+/// (`ConfigModel`) immediately.
 ///
 /// A rule holds *overrides*, not a full configuration: anything it doesn't
 /// override comes from Settings → Review defaults, and the editor shows
 /// which is which.
 struct RepositoriesSettings: View {
-    @Environment(RepoConfigStore.self) private var store
+    @Environment(ConfigModel.self) private var store
     @Environment(InboxModel.self) private var poller
 
     @State private var selection: String? = nil   // repoGlobs.joined(",")

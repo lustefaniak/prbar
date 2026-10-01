@@ -27,12 +27,23 @@ struct StateUpdate: Codable, Sendable, Equatable {
     var removedDiffs: [String]?
     var ciLogs: [String: FailureLogStore.LoadStatus]?
     var removedCILogs: [String]?
+    var config: ConfigState?
 
     var isEmpty: Bool {
         prs == nil && polling == nil && reviews == nil && removedReviews == nil
             && progress == nil && autoReview == nil && actions == nil
             && diffs == nil && removedDiffs == nil && ciLogs == nil && removedCILogs == nil
+            && config == nil
     }
+}
+
+/// `prbar.yaml` as the server has it in effect, and what's wrong with it.
+struct ConfigState: Codable, Sendable, Equatable {
+    var config: PRBarConfig
+    var path: String
+    var loadIssue: String?
+    var warnings: [String]
+    var migratedFromLegacy: Bool
 }
 
 /// GitHub writes queued, running, retrying or failed, per PR, and the ones

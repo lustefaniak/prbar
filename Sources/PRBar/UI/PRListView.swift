@@ -15,7 +15,7 @@ struct PRListView: View {
 
     @Environment(DiffModel.self) private var diffStore
     @Environment(ActionQueueModel.self) private var actionQueue
-    @Environment(RepoConfigStore.self) private var repoConfigs
+    @Environment(ConfigModel.self) private var repoConfigs
     @Environment(ReviewQueueModel.self) private var reviewQueue
     @AppStorage("skipMergeConfirmation") private var skipMergeConfirmationGlobal = false
 

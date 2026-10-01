@@ -13,6 +13,7 @@ final class ServerSession {
     let actions: ActionQueueModel
     let diffs: DiffModel
     let ciLogs: CILogModel
+    let config: ConfigModel
 
     private let client: APIClient
     private var listener: Task<Void, Never>?
@@ -24,11 +25,13 @@ final class ServerSession {
         actions = ActionQueueModel()
         diffs = DiffModel()
         ciLogs = CILogModel()
+        config = ConfigModel()
         inbox.session = self
         reviews.session = self
         actions.session = self
         diffs.session = self
         ciLogs.session = self
+        config.session = self
     }
 
     /// Subscribes, applies the snapshot, then follows updates until the
@@ -56,6 +59,18 @@ final class ServerSession {
         actions.apply(update)
         diffs.apply(update)
         ciLogs.apply(update)
+        config.apply(update)
+    }
+
+    /// `send` with the reply, delivered on the main actor in the order the
+    /// replies arrive.
+    func send<P: Codable & Sendable, R: Codable & Sendable>(
+        _ method: APIMethod, _ params: P, as type: R.Type,
+        completion: @escaping @MainActor (Result<R, Error>) -> Void
+    ) {
+        client.post(method, params, as: type) { result in
+            Task { @MainActor in completion(result) }
+        }
     }
 
     /// A request whose answer the caller needs.
@@ -282,5 +297,123 @@ final class CILogModel {
             statuses[FailureLogStore.key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)] = .idle
         }
         session?.send(.invalidateCILog, CILogParams(pr: pr, check: check))
+    }
+}
+
+/// `prbar.yaml` as the server has it, editable. Same names as the parts of
+/// `RepoConfigStore` the views use.
+///
+/// Edits apply here at once (Settings binds text fields to these values and
+/// can't wait a round trip per keystroke) and go to the server as the whole
+/// config. While any of this model's writes are unanswered, config arriving
+/// from the server is an echo of an older write and is ignored; the reply
+/// to the last write is adopted, which also picks up a hand edit made in
+/// the meantime.
+@MainActor
+@Observable
+final class ConfigModel {
+    private(set) var config = PRBarConfig()
+    private(set) var path = ""
+    private(set) var loadIssue: String?
+    private(set) var warnings: [String] = []
+    private(set) var migratedFromLegacy = false
+
+    @ObservationIgnored
+    weak var session: ServerSession?
+    @ObservationIgnored
+    private var unansweredWrites = 0
+
+    var fileURL: URL { URL(fileURLWithPath: path) }
+    var userConfigs: [RepoConfig] { config.repos }
+    var providerOverrides: [ProviderID] { userConfigs.compactMap(\.providerOverride) }
+
+    var defaults: ReviewDefaults {
+        get { config.defaults }
+        set { mutate { $0.defaults = newValue } }
+    }
+
+    var defaultProvider: ProviderChoice {
+        get { config.defaultProvider }
+        set { mutate { $0.defaultProvider = newValue } }
+    }
+
+    var defaultClaudeModel: String? {
+        get { config.defaultClaudeModel }
+        set { mutate { $0.defaultClaudeModel = newValue } }
+    }
+
+    var defaultClaudeEffort: String? {
+        get { config.defaultClaudeEffort }
+        set { mutate { $0.defaultClaudeEffort = newValue } }
+    }
+
+    var defaultCodexModel: String? {
+        get { config.defaultCodexModel }
+        set { mutate { $0.defaultCodexModel = newValue } }
+    }
+
+    var defaultCodexEffort: String? {
+        get { config.defaultCodexEffort }
+        set { mutate { $0.defaultCodexEffort = newValue } }
+    }
+
+    func resolve(owner: String, repo: String) -> ResolvedRepoConfig {
+        config.resolve(owner: owner, repo: repo)
+    }
+
+    func rule(owner: String, repo: String) -> RepoConfig {
+        config.rule(owner: owner, repo: repo)
+    }
+
+    func setAll(_ configs: [RepoConfig]) {
+        mutate { $0.repos = configs }
+    }
+
+    func upsert(_ rule: RepoConfig) {
+        mutate { config in
+            if let idx = config.repos.firstIndex(where: { $0.id == rule.id }) {
+                config.repos[idx] = rule
+            } else {
+                config.repos.append(rule)
+            }
+        }
+    }
+
+    func remove(id: UUID) {
+        mutate { $0.repos.removeAll { $0.id == id } }
+    }
+
+    func apply(_ update: StateUpdate) {
+        guard let state = update.config else { return }
+        adopt(state, includingConfig: unansweredWrites == 0)
+    }
+
+    private func adopt(_ state: ConfigState, includingConfig: Bool) {
+        if includingConfig { config = state.config }
+        path = state.path
+        loadIssue = state.loadIssue
+        warnings = state.warnings
+        migratedFromLegacy = state.migratedFromLegacy
+    }
+
+    private func mutate(_ body: (inout PRBarConfig) -> Void) {
+        var next = config
+        body(&next)
+        // SwiftUI writes bindings back on every edit; an unchanged value
+        // must not reach the file.
+        guard next != config else { return }
+        config = next
+        guard let session else { return }
+        unansweredWrites += 1
+        session.send(.setConfig, SetConfigParams(config: next), as: ConfigState.self) { [weak self] result in
+            guard let self else { return }
+            self.unansweredWrites -= 1
+            switch result {
+            case .success(let state):
+                self.adopt(state, includingConfig: self.unansweredWrites == 0)
+            case .failure(let error):
+                self.loadIssue = "Could not save: \(error.localizedDescription)"
+            }
+        }
     }
 }

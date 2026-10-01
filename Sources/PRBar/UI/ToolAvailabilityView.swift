@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ToolAvailabilityView: View {
-    @Environment(RepoConfigStore.self) private var repoConfigs
+    @Environment(ConfigModel.self) private var repoConfigs
     @AppStorage(ProviderRelevance.suppressionStorageKey)
         private var suppressUnusedProviderWarnings = false
 

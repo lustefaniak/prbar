@@ -146,6 +146,45 @@ final class ServerSessionTests: XCTestCase {
 
         XCTAssertEqual(transport.methods, ["diff.invalidate", "diff.load", "poll"])
     }
+
+    func testConfigEditsReachTheFileAndHandEditsComeBack() async throws {
+        let (runtime, server) = makeServer(prs: [])
+        let session = ServerSession(client: server.connectInProcess())
+        defer { session.stop() }
+        try await session.start()
+        let model = session.config
+        XCTAssertEqual(model.path, runtime.repoConfigs.fileURL.path)
+
+        // A burst, as a text field produces: the model shows the last value
+        // at once, and the server ends on it rather than an older echo.
+        for usd in stride(from: 1.0, through: 9.0, by: 1.0) {
+            model.defaults.maxCostUsdPerSubreview = usd
+        }
+        XCTAssertEqual(model.defaults.maxCostUsdPerSubreview, 9)
+        try await until { runtime.repoConfigs.defaults.maxCostUsdPerSubreview == 9 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.defaults.maxCostUsdPerSubreview, 9)
+        let text = try String(contentsOf: runtime.repoConfigs.fileURL, encoding: .utf8)
+        XCTAssertTrue(text.contains("maxCostUsdPerSubreview: 9"), text)
+
+        // Rule ids are UI identity: they survive the round trip, so the
+        // Settings selection does too.
+        var rule = RepoConfig.default
+        rule.repoGlobs = ["o/r"]
+        model.upsert(rule)
+        try await until { runtime.repoConfigs.userConfigs.first?.id == rule.id }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.userConfigs.map(\.id), [rule.id])
+
+        try "repos:\n  - repoGlobs: [x/y]\n".write(to: runtime.repoConfigs.fileURL, atomically: true, encoding: .utf8)
+        runtime.repoConfigs.reloadIfChanged()
+        try await until { model.userConfigs.map(\.repoGlobs) == [["x/y"]] }
+
+        try "repos: [broken".write(to: runtime.repoConfigs.fileURL, atomically: true, encoding: .utf8)
+        runtime.repoConfigs.reloadIfChanged()
+        try await until { model.loadIssue != nil }
+        XCTAssertEqual(model.userConfigs.map(\.repoGlobs), [["x/y"]], "a broken file keeps the config in effect")
+    }
 }
 
 private final class RecordingTransport: APIClientTransport, @unchecked Sendable {

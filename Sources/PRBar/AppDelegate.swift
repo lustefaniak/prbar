@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var actionModel: ActionQueueModel { session.actions }
     var diffModel: DiffModel { session.diffs }
     var ciLogModel: CILogModel { session.ciLogs }
+    var configModel: ConfigModel { session.config }
     var poller: PRPoller { runtime.poller }
     var notifier: Notifier { runtime.notifier }
     var queue: ReviewQueueWorker { runtime.queue }
@@ -720,6 +721,7 @@ extension View {
             .environment(app.actionModel)
             .environment(app.diffModel)
             .environment(app.ciLogModel)
+            .environment(app.configModel)
             .environment(app.poller)
             .environment(app.notifier)
             .environment(app.queue)

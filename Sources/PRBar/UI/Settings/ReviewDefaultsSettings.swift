@@ -8,7 +8,7 @@ import SwiftUI
 /// the per-subreview cost cap in particular produced "exceeded budget"
 /// failures that looked like a malfunction rather than a budget.
 struct ReviewDefaultsSettings: View {
-    @Environment(RepoConfigStore.self) private var store
+    @Environment(ConfigModel.self) private var store
 
     @AppStorage("dailyCostCapEnabled") private var dailyCapEnabled = true
     @AppStorage("dailyCostCapUsd") private var dailyCapUsd: Double = 5.0

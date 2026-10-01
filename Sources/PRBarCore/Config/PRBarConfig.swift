@@ -87,18 +87,25 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         if agents != AgentPolicy() { try c.encode(agents, forKey: .agents) }
     }
 
-    /// First matching repo rule wins, then `RepoConfig.match` supplies the
-    /// built-in fallback; unset fields resolve from `defaults`.
-    func resolver() -> @Sendable (String, String) -> ResolvedRepoConfig {
-        let repos = self.repos
-        let defaults = self.defaults
-        return { owner, repo in
-            let nameWithOwner = "\(owner)/\(repo)"
-            if let rule = repos.first(where: { $0.matches(nameWithOwner: nameWithOwner) }) {
-                return rule.resolved(with: defaults)
-            }
-            return RepoConfig.match(owner: owner, repo: repo).resolved(with: defaults)
+    /// The rule that applies to a repository, without defaults folded in:
+    /// the first matching repo rule, else the built-in fallback. Settings
+    /// needs it unresolved to show which fields are overridden.
+    func rule(owner: String, repo: String) -> RepoConfig {
+        let nameWithOwner = "\(owner)/\(repo)"
+        if let rule = repos.first(where: { $0.matches(nameWithOwner: nameWithOwner) }) {
+            return rule
         }
+        return RepoConfig.match(owner: owner, repo: repo)
+    }
+
+    func resolve(owner: String, repo: String) -> ResolvedRepoConfig {
+        rule(owner: owner, repo: repo).resolved(with: defaults)
+    }
+
+    /// `resolve` as a snapshot closure, for the worker and the poller.
+    func resolver() -> @Sendable (String, String) -> ResolvedRepoConfig {
+        let config = self
+        return { owner, repo in config.resolve(owner: owner, repo: repo) }
     }
 
     /// Push the agent defaults into a worker. Nil fields reset to the

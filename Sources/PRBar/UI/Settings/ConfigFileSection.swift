@@ -5,7 +5,7 @@ import SwiftUI
 /// edits write `prbar.yaml`; hand edits to it show up here within a couple
 /// of seconds, and so does a parse error when one breaks it.
 struct ConfigFileSection: View {
-    @Environment(RepoConfigStore.self) private var store
+    @Environment(ConfigModel.self) private var store
 
     var body: some View {
         Section {

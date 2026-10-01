@@ -113,20 +113,13 @@ final class RepoConfigStore {
     /// over built-ins; `RepoConfig.default` is the final fallback, and the
     /// app defaults fill in whatever the winning rule doesn't override.
     func resolve(owner: String, repo: String) -> ResolvedRepoConfig {
-        rule(owner: owner, repo: repo).resolved(with: defaults)
+        config.resolve(owner: owner, repo: repo)
     }
 
     /// The matching rule *without* defaults folded in — for the Settings
     /// UI, which needs to show whether a field is overridden or inherited.
     func rule(owner: String, repo: String) -> RepoConfig {
-        let nameWithOwner = "\(owner)/\(repo)"
-        if let user = userConfigs.first(where: { $0.matches(nameWithOwner: nameWithOwner) }) {
-            return user
-        }
-        for builtin in RepoConfig.builtins where builtin.matches(nameWithOwner: nameWithOwner) {
-            return builtin
-        }
-        return .default
+        config.rule(owner: owner, repo: repo)
     }
 
     /// Closure form for injection into `ReviewQueueWorker.configResolver`.
@@ -156,6 +149,11 @@ final class RepoConfigStore {
 
     func remove(id: UUID) {
         mutate { $0.repos.removeAll { $0.id == id } }
+    }
+
+    /// Replace the whole config, as a front end editing its own copy does.
+    func replace(with config: PRBarConfig) {
+        mutate { $0 = config }
     }
 
     private func mutate(_ body: (inout PRBarConfig) -> Void) {

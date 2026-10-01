@@ -150,8 +150,11 @@ final class APIServer {
 
     private func trackState() {
         let poller = runtime.poller, queue = runtime.queue, actionQueue = runtime.actionQueue
-        let diffs = runtime.diffStore, ciLogs = runtime.failureLogs
+        let diffs = runtime.diffStore, ciLogs = runtime.failureLogs, configs = runtime.repoConfigs
         trackers = [
+            StateTracker(read: { Self.configState(configs) }) { [weak self] state in
+                self?.publish(StateUpdate(config: state))
+            },
             StateTracker(read: { poller.prs }) { [weak self] prs in
                 self?.publish(StateUpdate(prs: prs))
             },
@@ -205,7 +208,17 @@ final class APIServer {
             autoReview: Self.autoReview(queue),
             actions: Self.actions(runtime.actionQueue),
             diffs: runtime.diffStore.statuses,
-            ciLogs: runtime.failureLogs.statuses)
+            ciLogs: runtime.failureLogs.statuses,
+            config: Self.configState(runtime.repoConfigs))
+    }
+
+    static func configState(_ store: RepoConfigStore) -> ConfigState {
+        ConfigState(
+            config: store.config,
+            path: store.fileURL.path,
+            loadIssue: store.loadIssue,
+            warnings: store.warnings,
+            migratedFromLegacy: store.migratedFromLegacy)
     }
 
     private static func actions(_ queue: ActionQueue) -> ActionQueueState {
@@ -335,6 +348,14 @@ final class APIServer {
                 self.runtime.actionQueue.dismissFailure(params.prNodeId)
                 return APIEmpty()
             }
+        case .setConfig:
+            return await reply(line, id, SetConfigParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.runtime.repoConfigs.replace(with: params.config)
+                // The state the write produced, so the writer can adopt it
+                // without waiting for (or racing) the state update.
+                return Self.configState(self.runtime.repoConfigs)
+            }
         case .loadDiff:
             return await reply(line, id, PRSnapshot.self) { params in
                 guard let params else { throw Self.missingParams }
@@ -442,7 +463,8 @@ final class APIServer {
             capability = .post
         case .shutdown:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
-        case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setCostCap, .checkoutUsage, .checkoutPrune:
+        case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setCostCap, .checkoutUsage, .checkoutPrune,
+             .setConfig:
             return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
         }
         switch policy[capability] {

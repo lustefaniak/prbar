@@ -27,7 +27,7 @@ struct PRDetailView: View {
     @Environment(ReviewQueueModel.self) private var queue
     @Environment(ActionQueueModel.self) private var actionQueue
     @Environment(DiffModel.self) private var diffStore
-    @Environment(RepoConfigStore.self) private var repoConfigs
+    @Environment(ConfigModel.self) private var repoConfigs
 
     /// Global "skip merge confirmation" default; a per-repo
     /// `RepoConfig.skipMergeConfirmation` overrides it.

@@ -97,6 +97,17 @@ final class APIClient: @unchecked Sendable {
     func post<P: Codable & Sendable>(
         _ method: APIMethod, _ params: P, onFailure: (@Sendable (Error) -> Void)? = nil
     ) {
+        post(method, params, as: APIEmpty.self) { result in
+            if case .failure(let error) = result { onFailure?(error) }
+        }
+    }
+
+    /// `post` with the reply decoded. `completion` runs on the connection's
+    /// read thread.
+    func post<P: Codable & Sendable, R: Codable & Sendable>(
+        _ method: APIMethod, _ params: P, as _: R.Type,
+        completion: @escaping @Sendable (Result<R, Error>) -> Void
+    ) {
         let id = lock.withLock {
             defer { nextId += 1 }
             return nextId
@@ -106,17 +117,24 @@ final class APIClient: @unchecked Sendable {
             if isClosed { return false }
             detached[id] = { reply in
                 guard let reply else {
-                    onFailure?(APIClientError.disconnected)
+                    completion(.failure(APIClientError.disconnected))
                     return
                 }
-                if let error = (try? RPCLine.decode(RPCHeader.self, from: reply))?.error {
-                    onFailure?(error)
+                do {
+                    let response = try RPCLine.decode(RPCResponse<R>.self, from: reply)
+                    if let error = response.error { throw error }
+                    guard let result = response.result else {
+                        throw RPCError(code: RPCError.internalError, message: "\(method.rawValue): empty result")
+                    }
+                    completion(.success(result))
+                } catch {
+                    completion(.failure(error))
                 }
             }
             return true
         }
         guard registered else {
-            onFailure?(APIClientError.disconnected)
+            completion(.failure(APIClientError.disconnected))
             return
         }
         if !connection.send(line) {

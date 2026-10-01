@@ -24,6 +24,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case enqueueAction = "action.enqueue"
     case retryAction = "action.retry"
     case dismissAction = "action.dismiss"
+    case setConfig = "config.set"
     case loadDiff = "diff.load"
     case invalidateDiff = "diff.invalidate"
     case loadCILog = "ciLog.load"
@@ -219,6 +220,12 @@ struct EnqueueActionParams: Codable, Sendable {
     /// the commit the user reviewed, even if the PR has moved since.
     var pr: InboxPR
     var kind: GHActionKind
+}
+
+struct SetConfigParams: Codable, Sendable {
+    /// The whole config, rule ids included (they are UI identity, kept
+    /// across the API though never written to the file).
+    var config: PRBarConfig
 }
 
 /// A PR as the client sees it, for loads keyed by its head SHA.
