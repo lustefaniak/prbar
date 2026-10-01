@@ -259,6 +259,40 @@ final class ServerSessionTests: XCTestCase {
         fallbackCount = await fallback.batches.count
         XCTAssertEqual(fallbackCount, 2, "back to the fallback once the front end is gone")
     }
+
+    /// A write the server never got is a visible failure with Retry, not a
+    /// silent drop: the UI clears the review draft and moves on only once
+    /// the server has accepted it.
+    func testWritesThatNeverReachTheServerAreShownAsFailed() async throws {
+        let (runtime, server) = makeServer(prs: [RuntimeFixtures.requestedPR()])
+        let posted = PostedHeads()
+        runtime.actionQueue.reviewExecutor = { pr, _, _, _ in await posted.record(pr.headSha) }
+        let client = server.connectInProcess()
+        let session = ServerSession(client: client)
+        try await session.start()
+        let pr = RuntimeFixtures.requestedPR()
+
+        client.close()
+        var accepted = false
+        session.actions.enqueue(pr, kind: .review(kind: .approve, body: "lgtm", comments: [])) { accepted = true }
+        try await until { session.actions.state(for: "PR_1")?.failureMessage != nil }
+        XCTAssertFalse(accepted)
+        XCTAssertTrue(session.actions.state(for: "PR_1")?.failureMessage?.contains("isn't reachable") ?? false)
+        let none = await posted.heads
+        XCTAssertEqual(none, [])
+
+        // Back on a live connection, Retry sends the same write.
+        let live = ServerSession(client: server.connectInProcess())
+        defer { live.stop() }
+        try await live.start()
+        live.actions.enqueue(pr, kind: .review(kind: .approve, body: "lgtm", comments: [])) { accepted = true }
+        try await until { accepted }
+        try await until { await posted.heads.count == 1 }
+        XCTAssertNil(live.actions.unsent["PR_1"])
+
+        session.actions.dismissFailure("PR_1")
+        XCTAssertNil(session.actions.state(for: "PR_1"), "dismiss clears a write that was never sent")
+    }
 }
 
 private actor RecordingDeliverer: NotificationDeliverer {
@@ -282,6 +316,7 @@ private final class RecordingTransport: APIClientTransport, @unchecked Sendable 
 
     func start(onLine: @escaping @Sendable (Data) -> Void, onClose: @escaping @Sendable () -> Void) {}
     func close() {}
+
 }
 
 private actor PostedHeads {

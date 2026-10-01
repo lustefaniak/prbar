@@ -316,11 +316,18 @@ final class ReviewQueueModel {
 
 /// GitHub writes as the server's action queue reports them. Same names as
 /// the parts of `ActionQueue` the views use.
+///
+/// A write is only real once the server has queued it: while the request is
+/// on its way the PR reads as busy, and if it never gets there (no server,
+/// or refused) the PR shows it as a failed write with Retry and Dismiss,
+/// like a failure on the server's side. Nothing is dropped in silence.
 @MainActor
 @Observable
 final class ActionQueueModel {
     private(set) var entries: [String: ActionEntry] = [:]
     private(set) var recentSuccess: [String: GHActionKind] = [:]
+    /// Writes not (yet) accepted by the server, keyed like `entries`.
+    private(set) var unsent: [String: ActionEntry] = [:]
 
     @ObservationIgnored
     weak var session: ServerSession?
@@ -332,25 +339,54 @@ final class ActionQueueModel {
     }
 
     func state(for nodeId: String) -> ActionRunState? {
-        entries[nodeId]?.state
+        entries[nodeId]?.state ?? unsent[nodeId]?.state
     }
 
     func isBusy(_ nodeId: String) -> Bool {
-        entries[nodeId]?.state.isBusy ?? false
+        state(for: nodeId)?.isBusy ?? false
     }
 
     /// The server applies the double-submit guard; `pr` is sent as the user
-    /// saw it, so a review lands on the commit they reviewed.
-    func enqueue(_ pr: InboxPR, kind: GHActionKind) {
-        session?.send(.enqueueAction, EnqueueActionParams(pr: pr, kind: kind))
+    /// saw it, so a review lands on the commit they reviewed. `accepted`
+    /// runs once the server has queued it, and only then.
+    func enqueue(_ pr: InboxPR, kind: GHActionKind, accepted: (@MainActor () -> Void)? = nil) {
+        let action = GHAction(pr: pr, kind: kind)
+        send(action, accepted: accepted)
     }
 
     func retry(_ nodeId: String) {
+        if let local = unsent[nodeId], entries[nodeId] == nil {
+            send(local.action, accepted: nil)
+            return
+        }
         session?.send(.retryAction, ActionTarget(prNodeId: nodeId))
     }
 
     func dismissFailure(_ nodeId: String) {
+        if unsent.removeValue(forKey: nodeId) != nil, entries[nodeId] == nil { return }
         session?.send(.dismissAction, ActionTarget(prNodeId: nodeId))
+    }
+
+    private func send(_ action: GHAction, accepted: (@MainActor () -> Void)?) {
+        let nodeId = action.pr.nodeId
+        unsent[nodeId] = ActionEntry(action: action, state: .queued)
+        guard let session else {
+            unsent[nodeId] = ActionEntry(action: action, state: .failed("Not connected to the PRBar server."))
+            return
+        }
+        session.send(.enqueueAction, EnqueueActionParams(pr: action.pr, kind: action.kind), as: APIEmpty.self) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.unsent[nodeId] = nil
+                accepted?()
+            case .failure(let error):
+                let message = (error as? APIClientError) == .disconnected
+                    ? "Not sent: the PRBar server isn't reachable. Retry once it's back."
+                    : "Not sent: \(error.localizedDescription)"
+                self.unsent[nodeId] = ActionEntry(action: action, state: .failed(message))
+            }
+        }
     }
 }
 

@@ -1678,13 +1678,18 @@ struct PRDetailView: View {
             return
         }
         let comments = includeInline ? postableInlineComments : []
+        // The draft is cleared and the next PR shown only once the server
+        // has the review: a post that never got there must not look sent.
+        // If it fails, the PR shows it with Retry, and the draft is kept.
+        let advance = onPostedAction
         actionQueue.enqueue(
             pr,
             kind: .review(kind: kind, body: bodyDraft, comments: comments)
-        )
-        bodyDraft = ""
-        bodyDraftSeededForSha = nil
-        onPostedAction()
+        ) {
+            bodyDraft = ""
+            bodyDraftSeededForSha = nil
+            advance()
+        }
     }
 
     /// Map AI verdict → the GitHub review action the primary button
