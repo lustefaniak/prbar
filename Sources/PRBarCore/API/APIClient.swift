@@ -24,18 +24,22 @@ enum APIClientError: Error, LocalizedError, Equatable {
 /// `events` once `subscribe` has been called.
 final class APIClient: @unchecked Sendable {
     let events: AsyncStream<APIEvent>
+    /// State updates, once subscribed with `state: true`.
+    let stateUpdates: AsyncStream<StateUpdate>
 
-    private let connection: LineConnection
+    private let connection: any APIClientTransport
     private let eventSink: AsyncStream<APIEvent>.Continuation
+    private let stateSink: AsyncStream<StateUpdate>.Continuation
     private let lock = NSLock()
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<Data, Error>] = [:]
     private var isClosed = false
 
-    init(connection: LineConnection) {
-        self.connection = connection
+    init(transport: any APIClientTransport) {
+        self.connection = transport
         (events, eventSink) = AsyncStream<APIEvent>.makeStream()
-        connection.startReading(
+        (stateUpdates, stateSink) = AsyncStream<StateUpdate>.makeStream(bufferingPolicy: .unbounded)
+        transport.start(
             onLine: { [weak self] line in self?.receive(line) },
             onClose: { [weak self] in self?.failAll() }
         )
@@ -43,7 +47,7 @@ final class APIClient: @unchecked Sendable {
 
     static func connect(socketURL: URL) throws -> APIClient {
         do {
-            return APIClient(connection: LineConnection(fd: try UnixSocket.connect(path: socketURL.path)))
+            return APIClient(transport: LineConnection(fd: try UnixSocket.connect(path: socketURL.path)))
         } catch let error as UnixSocketError where error.isNoListener {
             throw APIClientError.noServer(socketURL.path)
         }
@@ -94,6 +98,9 @@ final class APIClient: @unchecked Sendable {
         } else if header.method == APIMethod.event.rawValue,
                   let event = try? RPCLine.decode(RPCRequest<APIEvent>.self, from: line).params {
             eventSink.yield(event)
+        } else if header.method == APIMethod.state.rawValue,
+                  let update = try? RPCLine.decode(RPCRequest<StateUpdate>.self, from: line).params {
+            stateSink.yield(update)
         }
     }
 
@@ -105,6 +112,7 @@ final class APIClient: @unchecked Sendable {
         }
         for continuation in waiting { continuation.resume(throwing: APIClientError.disconnected) }
         eventSink.finish()
+        stateSink.finish()
     }
 }
 

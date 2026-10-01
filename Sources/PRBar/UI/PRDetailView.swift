@@ -23,7 +23,7 @@ struct PRDetailView: View {
     /// window instead of returning to the list.
     var inWindow: Bool = false
 
-    @Environment(PRPoller.self) private var poller
+    @Environment(InboxModel.self) private var poller
     @Environment(ReviewQueueWorker.self) private var queue
     @Environment(ActionQueue.self) private var actionQueue
     @Environment(DiffStore.self) private var diffStore

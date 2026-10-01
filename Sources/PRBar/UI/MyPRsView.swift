@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct MyPRsView: View {
-    @Environment(PRPoller.self) private var poller
+    @Environment(InboxModel.self) private var poller
     @Environment(ActionQueue.self) private var actionQueue
     @AppStorage(MyDraftHandling.storageKey) private var draftHandlingRaw =
         MyDraftHandling.default.rawValue

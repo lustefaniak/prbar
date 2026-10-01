@@ -59,10 +59,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     let runtime: PRBarRuntime
     private var runtimeLock: RuntimeLock?
-    /// The API socket, served while this app holds the runtime lock, so
-    /// `prbar-review status` and other clients reach the running app.
-    private var apiServer: APIServer?
+    /// The server this app's own runtime hosts, which the views reach only
+    /// through `session` (in process for now; a socket once the server
+    /// moves out of the app). Not bound to the socket unless the app holds
+    /// the runtime lock.
+    private(set) var server: APIServer!
+    private(set) var session: ServerSession!
 
+    var inbox: InboxModel { session.inbox }
     var poller: PRPoller { runtime.poller }
     var notifier: Notifier { runtime.notifier }
     var queue: ReviewQueueWorker { runtime.queue }
@@ -108,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // declaration triggers @NSApplicationDelegateAdaptor, so by the
         // time we're here we're already the only PRBar.
         let runtime: PRBarRuntime
+        var socketURL: URL?
         if ScreenshotMode.isActive {
             // Screenshot launch path: never poll, never call gh, never
             // touch the network or the user's files. Inert services seeded
@@ -147,13 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.runtimeLock = lock
             runtime = PRBarRuntime.live(env, deliverer: UNNotificationDeliverer(), ownsAutomation: owns)
             if owns && !Self.isHostingTests {
-                let server = APIServer(runtime: runtime, holder: "PRBar.app")
-                do {
-                    try server.start(socketURL: ServerLocation.socketURL(stateDirectory: env.stateDirectory))
-                    self.apiServer = server
-                } catch {
-                    PRBarLog.lifecycle.error("API socket not served: \(error.localizedDescription, privacy: .public)")
-                }
+                socketURL = ServerLocation.socketURL(stateDirectory: env.stateDirectory)
             }
             if !Self.isHostingTests {
                 let log = runtime.actionLog, rlog = runtime.reviewLog
@@ -186,6 +185,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.runtime = runtime
         super.init()
+        let server = APIServer(runtime: runtime, holder: "PRBar.app")
+        if let socketURL {
+            do {
+                try server.start(socketURL: socketURL)
+            } catch {
+                PRBarLog.lifecycle.error("API socket not served: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        self.server = server
+        let session = ServerSession(client: server.connectInProcess())
+        // Applied at once so the first frame already shows the cached
+        // inbox; `start` then subscribes and follows updates.
+        session.apply(server.snapshot())
+        self.session = session
+        Task { try? await session.start() }
         // Install the notification action router *before* requesting
         // authorization so the registered categories are visible the
         // first time macOS shows the auth prompt — otherwise the user
@@ -226,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// that can await anything; the timeout is there so a wedged SQLite
     /// write can't hold a quit open indefinitely.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        apiServer?.stop()
+        server?.stop()
         Task { @MainActor in
             let flush = Task { await self.queue.flushPendingSaves() }
             let timeout = Task { try? await Task.sleep(for: .seconds(3)) }
@@ -414,16 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openScreenshotDetailWindow(_ pr: InboxPR) {
         let root = PRDetailWindowView(nodeId: pr.nodeId)
-            .environment(poller)
-            .environment(notifier)
-            .environment(queue)
-            .environment(actionQueue)
-            .environment(diffStore)
-            .environment(failureLogs)
-            .environment(repoConfigs)
-            .environment(readiness)
-            .environment(actionLog)
-            .environment(reviewLog)
+            .prbarServices(self)
         let host = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: host)
         if let forced = ScreenshotMode.forcedAppearance {
@@ -587,16 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // sizing makes NSPopover follow the SwiftUI frame as it changes,
         // which is what drives live resize from the drag handle.
         let root = PopoverView()
-            .environment(poller)
-            .environment(notifier)
-            .environment(queue)
-            .environment(actionQueue)
-            .environment(diffStore)
-            .environment(failureLogs)
-            .environment(repoConfigs)
-            .environment(readiness)
-            .environment(actionLog)
-            .environment(reviewLog)
+            .prbarServices(self)
         let hosting = NSHostingController(rootView: root)
         hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
@@ -704,5 +700,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = rightClickMenu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+}
+
+extension View {
+    /// Every service the views read, in one place: the popover, Settings,
+    /// the detail windows and screenshot mode all inject the same set, and
+    /// a service missing from one of them only fails at runtime, when a
+    /// view's `@Environment` finds nothing.
+    @MainActor
+    func prbarServices(_ app: AppDelegate) -> some View {
+        self
+            .environment(app.inbox)
+            .environment(app.poller)
+            .environment(app.notifier)
+            .environment(app.queue)
+            .environment(app.actionQueue)
+            .environment(app.diffStore)
+            .environment(app.failureLogs)
+            .environment(app.repoConfigs)
+            .environment(app.readiness)
+            .environment(app.actionLog)
+            .environment(app.reviewLog)
     }
 }

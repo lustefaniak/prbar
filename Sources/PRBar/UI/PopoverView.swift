@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct PopoverView: View {
-    @Environment(PRPoller.self) private var poller
+    @Environment(InboxModel.self) private var poller
     @Environment(Notifier.self) private var notifier
     @Environment(ReviewQueueWorker.self) private var queue
 
@@ -357,7 +357,7 @@ struct PopoverView: View {
 
 #Preview {
     PopoverView()
-        .environment(PRPoller(fetcher: { [] }))
+        .environment(InboxModel())
         .environment(Notifier(deliverer: NoopDeliverer()))
         .environment(ReviewQueueWorker(diffFetcher: { _, _, _ in "" }))
         .environment(ActionQueue())

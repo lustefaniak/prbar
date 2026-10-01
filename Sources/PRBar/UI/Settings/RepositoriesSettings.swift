@@ -10,7 +10,7 @@ import SwiftUI
 /// which is which.
 struct RepositoriesSettings: View {
     @Environment(RepoConfigStore.self) private var store
-    @Environment(PRPoller.self) private var poller
+    @Environment(InboxModel.self) private var poller
 
     @State private var selection: String? = nil   // repoGlobs.joined(",")
     @State private var draft: RepoConfig? = nil

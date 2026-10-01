@@ -23,7 +23,9 @@ struct PRBarApp: App {
     }
 
     private static func enforceSingleInstance() {
-        if AppDelegate.isHostingTests {
+        // Screenshot mode runs on fixtures and touches neither GitHub nor
+        // the user's files, so it can run beside the real app.
+        if AppDelegate.isHostingTests || ScreenshotMode.isActive {
             return
         }
         let myBundleID = Bundle.main.bundleIdentifier ?? "dev.lustefaniak.prbar"
@@ -56,16 +58,7 @@ struct PRBarApp: App {
         // through Cmd+, or the right-click menu's "Settings…" entry.
         Settings {
             SettingsRoot()
-                .environment(delegate.poller)
-                .environment(delegate.notifier)
-                .environment(delegate.queue)
-                .environment(delegate.actionQueue)
-                .environment(delegate.diffStore)
-                .environment(delegate.failureLogs)
-                .environment(delegate.repoConfigs)
-                .environment(delegate.readiness)
-                .environment(delegate.actionLog)
-                .environment(delegate.reviewLog)
+                .prbarServices(delegate)
         }
 
         // Standalone full-size detail window. Opened from the popover's
@@ -76,16 +69,7 @@ struct PRBarApp: App {
         WindowGroup(id: PRDetailWindowID.id, for: String.self) { $nodeId in
             if let id = nodeId {
                 PRDetailWindowView(nodeId: id)
-                    .environment(delegate.poller)
-                    .environment(delegate.notifier)
-                    .environment(delegate.queue)
-                    .environment(delegate.actionQueue)
-                    .environment(delegate.diffStore)
-                    .environment(delegate.failureLogs)
-                    .environment(delegate.repoConfigs)
-                    .environment(delegate.readiness)
-                    .environment(delegate.actionLog)
-                    .environment(delegate.reviewLog)
+                    .prbarServices(delegate)
             } else {
                 SelfClosingWindow()
             }
@@ -102,16 +86,7 @@ struct PRBarApp: App {
         WindowGroup(id: HistoricalReviewWindowID.id, for: UUID.self) { $logId in
             if let id = logId {
                 HistoricalReviewWindowView(logEntryId: id)
-                    .environment(delegate.poller)
-                    .environment(delegate.queue)
-                    .environment(delegate.actionQueue)
-                    .environment(delegate.diffStore)
-                    .environment(delegate.repoConfigs)
-                    .environment(delegate.actionLog)
-                    .environment(delegate.reviewLog)
-                    .environment(delegate.failureLogs)
-                    .environment(delegate.notifier)
-                    .environment(delegate.readiness)
+                    .prbarServices(delegate)
             } else {
                 SelfClosingWindow()
             }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct InboxView: View {
-    @Environment(PRPoller.self) private var poller
+    @Environment(InboxModel.self) private var poller
     @Environment(ActionQueue.self) private var actionQueue
     @AppStorage(InboxVisibility.hideReviewedByOthersKey) private var hideReviewedByOthers = false
     let onSelect: (InboxPR) -> Void

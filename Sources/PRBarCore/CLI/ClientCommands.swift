@@ -111,7 +111,7 @@ enum ClientCommand: Equatable {
                     Self.print(records.map(Self.describe).joined(separator: "\n"))
                 }
             case .events:
-                _ = try await client.call(.subscribe, as: ServerStatus.self)
+                _ = try await client.call(.subscribe, SubscribeParams(), as: SubscribeResult.self)
                 for await event in client.events {
                     try Self.printJSONLines([event])
                 }

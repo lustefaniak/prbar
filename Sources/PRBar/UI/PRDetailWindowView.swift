@@ -5,14 +5,14 @@ import SwiftUI
 /// handles large diffs / long annotations comfortably without fighting
 /// the 560×640 menu-bar popover frame.
 ///
-/// Resolves the PR by `nodeId` against `PRPoller.prs` so the window
+/// Resolves the PR by `nodeId` against the inbox (`InboxModel.prs`) so the window
 /// stays live as the inbox refreshes — if the PR drops out (merged,
 /// closed, or filtered) we fall through to a graceful empty state
 /// rather than crashing on a stale snapshot.
 struct PRDetailWindowView: View {
     let nodeId: String
 
-    @Environment(PRPoller.self) private var poller
+    @Environment(InboxModel.self) private var poller
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {

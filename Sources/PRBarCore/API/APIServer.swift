@@ -46,16 +46,21 @@ final class APIServer {
 
     private var socketURL: URL?
     private let stopFlag = StopFlag()
-    private var connections: [ObjectIdentifier: LineConnection] = [:]
-    private var subscribers: [ObjectIdentifier: LineConnection] = [:]
+    private var connections: [ObjectIdentifier: any APIConnection] = [:]
+    /// Connections that asked for `event`s / `state` updates.
+    private var subscribers: [ObjectIdentifier: any APIConnection] = [:]
+    private var stateSubscribers: [ObjectIdentifier: any APIConnection] = [:]
     /// What each connection said about itself in `hello`.
     private var clients: [ObjectIdentifier: HelloParams] = [:]
     private var observer: UUID?
+    private var trackers: [AnyObject] = []
 
     init(runtime: PRBarRuntime, holder: String, build: String = PRBarBuild.version) {
         self.runtime = runtime
         self.holder = holder
         self.build = build
+        observer = runtime.observe { [weak self] event in self?.broadcast(event) }
+        trackState()
     }
 
     /// Binds the socket and starts accepting. The caller must hold the
@@ -65,7 +70,6 @@ final class APIServer {
             at: socketURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let listener = try UnixSocket.listen(path: socketURL.path)
         self.socketURL = socketURL
-        observer = runtime.observe { [weak self] event in self?.broadcast(event) }
 
         // The accept thread never touches the server: it hands each
         // connection to the main actor through a stream.
@@ -97,17 +101,23 @@ final class APIServer {
         stopFlag.set()
         if let observer { runtime.removeObserver(observer) }
         observer = nil
+        trackers.removeAll()
         for connection in connections.values { connection.close() }
         connections.removeAll()
         subscribers.removeAll()
+        stateSubscribers.removeAll()
         if let socketURL { unlink(socketURL.path) }
     }
 
     // MARK: - Connections
 
+    func register(_ connection: any APIConnection) {
+        connections[ObjectIdentifier(connection)] = connection
+    }
+
     private func attach(_ connection: LineConnection) {
         let key = ObjectIdentifier(connection)
-        connections[key] = connection
+        register(connection)
         connection.startReading(
             onLine: { line in
                 Task { @MainActor [weak self] in
@@ -120,6 +130,7 @@ final class APIServer {
                 Task { @MainActor [weak self] in
                     self?.connections[key] = nil
                     self?.subscribers[key] = nil
+                    self?.stateSubscribers[key] = nil
                     self?.clients[key] = nil
                 }
             }
@@ -132,6 +143,42 @@ final class APIServer {
         guard let line = try? RPCLine.encode(message) else { return }
         for (key, connection) in subscribers where !connection.send(line) {
             subscribers[key] = nil
+        }
+    }
+
+    // MARK: - State
+
+    private func trackState() {
+        let poller = runtime.poller
+        trackers = [
+            StateTracker(read: { poller.prs }) { [weak self] prs in
+                self?.publish(StateUpdate(prs: prs))
+            },
+            StateTracker(read: { Self.polling(poller) }) { [weak self] polling in
+                self?.publish(StateUpdate(polling: polling))
+            },
+        ]
+    }
+
+    /// Everything a front end renders, for a new state subscriber.
+    func snapshot() -> StateUpdate {
+        StateUpdate(prs: runtime.poller.prs, polling: Self.polling(runtime.poller))
+    }
+
+    private static func polling(_ poller: PRPoller) -> PollingState {
+        PollingState(
+            lastFetchedAt: poller.lastFetchedAt,
+            lastError: poller.lastError,
+            isFetching: poller.isFetching,
+            refreshingPRs: poller.refreshingPRs)
+    }
+
+    private func publish(_ update: StateUpdate) {
+        guard !stateSubscribers.isEmpty, !update.isEmpty else { return }
+        let message = RPCRequest(id: nil, method: APIMethod.state.rawValue, params: update)
+        guard let line = try? RPCLine.encode(message) else { return }
+        for (key, connection) in stateSubscribers where !connection.send(line) {
+            stateSubscribers[key] = nil
         }
     }
 
@@ -152,14 +199,14 @@ final class APIServer {
 
     /// The reply line for one request; nil for a notification, which gets
     /// none.
-    func handle(_ line: Data, from connection: LineConnection?) async -> Data? {
+    func handle(_ line: Data, from connection: (any APIConnection)?) async -> Data? {
         guard let header = try? RPCLine.decode(RPCHeader.self, from: line) else {
             return Self.failure(id: nil, RPCError(code: RPCError.parseError, message: "not a JSON-RPC message"))
         }
         guard let name = header.method else {
             return Self.failure(id: header.id, RPCError(code: RPCError.invalidRequest, message: "missing method"))
         }
-        guard let method = APIMethod(rawValue: name), method != .event else {
+        guard let method = APIMethod(rawValue: name), !method.isNotification else {
             return Self.failure(id: header.id, RPCError(code: RPCError.methodNotFound, message: "unknown method \(name)"))
         }
         let id = header.id
@@ -188,6 +235,14 @@ final class APIServer {
             return reply(line, id, APIEmpty.self) { _ in self.status() }
         case .inbox:
             return reply(line, id, APIEmpty.self) { _ in self.runtime.poller.prs }
+        case .refreshPR:
+            return reply(line, id, RefreshParams.self) { params in
+                guard let params, let pr = self.findPR(params.pr) else {
+                    throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
+                }
+                self.runtime.poller.refreshPR(pr, force: params.force ?? false)
+                return APIEmpty()
+            }
         case .review:
             return reply(line, id, PRReference.self) { ref in
                 guard let ref, let pr = self.findPR(ref) else {
@@ -217,8 +272,14 @@ final class APIServer {
                 return APIEmpty()
             }
         case .subscribe:
-            if let connection { subscribers[ObjectIdentifier(connection)] = connection }
-            return reply(line, id, APIEmpty.self) { _ in self.status() }
+            return reply(line, id, SubscribeParams.self) { params in
+                let wantsState = params?.state ?? false
+                if let connection {
+                    self.subscribers[ObjectIdentifier(connection)] = connection
+                    if wantsState { self.stateSubscribers[ObjectIdentifier(connection)] = connection }
+                }
+                return SubscribeResult(status: self.status(), state: wantsState ? self.snapshot() : nil)
+            }
         case .shutdown:
             guard let onShutdown else {
                 return Self.failure(id: id, RPCError(code: RPCError.refused, message: "\(holder) does not shut down on request"))
@@ -226,7 +287,7 @@ final class APIServer {
             // After the reply is on its way, so the client hears back.
             Task { @MainActor in onShutdown() }
             return reply(line, id, APIEmpty.self) { _ in APIEmpty() }
-        case .event:
+        case .event, .state:
             return nil
         }
     }
@@ -235,9 +296,9 @@ final class APIServer {
     nonisolated static func denial(of method: APIMethod, by client: HelloParams, under policy: AgentPolicy) -> RPCError? {
         let capability: AgentPolicy.Capability
         switch method {
-        case .hello, .event:
+        case .hello, .event, .state:
             return nil
-        case .status, .inbox, .review, .historyActions, .historyReviews, .poll, .subscribe:
+        case .status, .inbox, .refreshPR, .review, .historyActions, .historyReviews, .poll, .subscribe:
             capability = .read
         case .runReview:
             capability = .review

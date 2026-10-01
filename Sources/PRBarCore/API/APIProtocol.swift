@@ -18,6 +18,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case hello
     case status
     case inbox
+    case refreshPR = "inbox.refresh"
     case review
     case runReview = "review.run"
     case historyActions = "history.actions"
@@ -27,6 +28,11 @@ enum APIMethod: String, CaseIterable, Sendable {
     case shutdown
     /// Server to client, no id: one `APIEvent`.
     case event
+    /// Server to client, no id: one `StateUpdate`.
+    case state
+
+    /// Sent by the server only; a client sending one gets "unknown method".
+    var isNotification: Bool { self == .event || self == .state }
 }
 
 /// Dates as ISO 8601 with milliseconds, the same as the history files.
@@ -164,6 +170,24 @@ struct ReviewResult: Codable, Sendable {
     var pr: InboxPR
     /// Nil when PRBar has no review state for the PR.
     var review: ReviewState?
+}
+
+struct RefreshParams: Codable, Sendable {
+    var pr: PRReference
+    /// Refresh even when a refresh of this PR is already in flight.
+    var force: Bool?
+}
+
+struct SubscribeParams: Codable, Sendable {
+    /// Also send `state` updates (the data a UI renders), starting with a
+    /// full snapshot in the reply. Without it only `event`s arrive.
+    var state: Bool?
+}
+
+struct SubscribeResult: Codable, Sendable {
+    var status: ServerStatus
+    /// The full state, when subscribed with `state: true`.
+    var state: StateUpdate?
 }
 
 struct RunReviewParams: Codable, Sendable {

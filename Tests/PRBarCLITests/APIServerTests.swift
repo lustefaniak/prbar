@@ -80,7 +80,7 @@ final class APIServerTests: XCTestCase {
         let (runtime, _) = try startServer()
         let client = try await ServerConnection.connect(socketURL: socketURL, client: "tests").client
         defer { client.close() }
-        _ = try await client.call(.subscribe, as: ServerStatus.self)
+        _ = try await client.call(.subscribe, SubscribeParams(), as: SubscribeResult.self)
 
         runtime.poller.onPollSuccess?([RuntimeFixtures.requestedPR(), RuntimeFixtures.requestedPR(nodeId: "PR_2", number: 2)])
 
@@ -154,7 +154,7 @@ final class APIServerTests: XCTestCase {
         let (_, server) = try startServer()
         let client = try await ServerConnection.connect(socketURL: socketURL, client: "tests").client
         defer { client.close() }
-        _ = try await client.call(.subscribe, as: ServerStatus.self)
+        _ = try await client.call(.subscribe, SubscribeParams(), as: SubscribeResult.self)
 
         server.stop()
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketURL.path))
