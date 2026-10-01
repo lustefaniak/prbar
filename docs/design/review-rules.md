@@ -1,6 +1,7 @@
 # Review rules redesign
 
-Status: draft, working notes.
+Status: draft, working notes. Phases 1 and 2 (core split, files instead of SwiftData, `prbar.yaml`) shipped in
+v0.15.0; the client-server work below is in progress.
 
 Goal: replace the per-repo settings model with a rule-based configuration that lives in files, is shared by
 the app and the `prbar-review` CLI, can be exported/imported/versioned, and can explain for any repo + PR which
@@ -78,35 +79,75 @@ Rules for the boundary:
 
 ### Client-server
 
-Every front end (app, CLI, MCP, anything later) is a client of one server that hosts the runtime, and talks to it
-only through `PRBarAPI`. The point is the guarantee: if the app can do something, there is an API call for it,
-and any other front end can do it too. The compiler enforces it: the UI target depends on `PRBarAPI` only, never
-on `PRBarRuntime`, so a view reaching into a queue doesn't build.
+**One process does the work; every surface is a client of it.** The server owns `PRBarRuntime`: polling, the
+review queue, the action queue, history, config. It is the only process that writes the state files or GitHub.
+The app, the CLI and MCP are clients that talk to it only through `PRBarAPI`, so whatever one surface does, the
+others see at the same moment: an agent approving over MCP shows up in the popover as an action in flight, and in
+History as a row, without anything polling a file.
 
-API shape (JSON-RPC 2.0, the same framing MCP and LSP use, types defined once in Swift with a generated JSON
-schema):
+The guarantee that comes with it: if the app can do something, there is an API call for it, and any other front
+end can do it too. The compiler enforces it once the app depends on `PRBarAPI` only, never on `PRBarRuntime`, so
+a view reaching into a queue doesn't build.
+
+| Surface | Role |
+|---|---|
+| `prbar-review serve` | The server. On macOS the binary bundled in the app, started by a LaunchAgent; on Linux a systemd user unit or started on demand. |
+| PRBar.app | UI only. Renders what the server reports, sends commands, delivers macOS notifications for the server's "notify" events. |
+| `prbar-review <pr>` | Asks the server to review one PR and streams progress back as the same NDJSON on stdout. brahmanda sees no difference. |
+| `prbar-review mcp` | Translates MCP calls into API calls. |
+| `prbar-review status` / `history` / ... | Plain clients. |
+
+API shape (JSON-RPC 2.0, the framing MCP and LSP use, newline-delimited on the socket, types defined once in
+Swift):
 
 - **Queries**: inbox, PR, review (with trace and matched rules), history, config + validation, explain(pr),
   server status.
 - **Commands**: run review, cancel, post review, merge, resolve threads, undo / confirm a staged batch, retry /
   dismiss a failed action, reload config, poll now.
 - **Subscriptions**: one event stream (inbox changed, review queued / progress / completed / failed, action
-  staged / posted / failed, ready-for-review batch, cost-cap hit). A client gets a snapshot then events, so
-  reconnecting is snapshot + resume. These are the same records the server appends to the history files.
-- `hello` handshake carrying the API version, so a client and server from different builds fail clearly instead
-  of misreading each other.
+  staged / posted / failed, ready-for-review batch, cost-cap hit, config reloaded, history appended). A client
+  gets a snapshot then events; reconnecting is a fresh snapshot then the stream again, so a server restart
+  doesn't leave a surface stale.
+- **`hello`** returns the protocol version range the server speaks and its build version. A client outside the
+  range fails with "server too old" / "client too old" instead of misreading messages. The app and a brew-installed
+  CLI update on different schedules, so the check is a range, not an exact build.
+- **`status`** says whether the server is *working*, not just up: last successful poll and the last poll error,
+  whether `gh` is authenticated, config load issues, queue depth, pid, uptime, build. The app shows a degraded
+  server as a banner, the CLI exits non-zero with the message, MCP puts it in the tool result.
+
+#### Reaching the server: `ensureServer()`
+
+The app, the CLI and the MCP adapter all reach the server through one function in `PRBarCore`:
+
+1. Connect to `~/.local/state/prbar/server.sock` and send `hello`.
+2. On failure, start `prbar-review serve` detached and retry the connection with a short backoff (about 5 s).
+3. The server takes the `flock` on `runtime.lock` **before** binding the socket. Two clients starting a server at
+   once: one wins, the other server exits straight away, and both clients connect to the winner. Holding the lock
+   is also what makes it safe to unlink a socket file left behind by a crash and bind a fresh one.
+
+The socket is bound only after the runtime is wired, so accepting a connection means the server is ready. The
+socket is mode 0600: filesystem permissions are the authentication.
+
+Keeping it running:
+
+- **macOS:** the app registers the bundled server as a LaunchAgent (`SMAppService.agent`) with `KeepAlive`, so
+  launchd restarts it after a crash and it keeps working when the app quits.
+- **Linux:** `prbar-review install-service` writes a systemd user unit for `serve`.
+- **Neither** (dev builds, a CI box): `ensureServer()` starts one. A server started that way exits after a
+  stretch with no clients and no automation configured, so a one-off `prbar-review <pr>` doesn't leave a daemon
+  behind.
+
+**After an update** the old server keeps running from memory while the new app starts. The `hello` build check
+catches it: the new client asks the server to exit, waits for the lock to be released, and `ensureServer()` (or
+launchd) starts the new binary. The LaunchAgent plist path doesn't change, so nothing needs re-registering.
 
 Transports:
 
-- **In-process.** The app embeds the server (`PRBarServer` linked into a small composition-root target) and talks
-  to it through the same client interface. Default on macOS, so installing PRBar stays one `.app` with no daemon.
-- **Unix socket** (`~/.local/state/prbar/server.sock`, mode 0600, so filesystem permissions are the auth). The
-  embedded server also listens here, which is how `prbar mcp` / `prbar review` reach the running app.
-  `prbar serve` runs the same server headless, for Linux or a Mac without the app.
-- Whoever binds the socket is the server. A client that finds no server either fails (`prbar history`) or
-  starts an in-process one for the duration of the call (`prbar review`, `prbar mcp`).
-- No TCP. A loopback WebSocket can be added if a browser front end ever appears (e.g. the rule editor talking to
-  the server directly); it's another transport over the same API, not a new API.
+- **Unix socket**, the production one.
+- **In-process**, the same client interface over a server object in the same process. Used by tests, and by the
+  app during the migration (see Phasing) while it still hosts the runtime itself.
+- No TCP. A loopback WebSocket can be added if a browser front end ever appears; it's another transport over the
+  same API, not a new API.
 
 Why not the alternatives:
 
@@ -118,13 +159,37 @@ Why not the alternatives:
 
 Costs to accept:
 
-- Two processes once the app runs as a client of an external `prbar serve`: version skew (handled by `hello`)
-  and, if the server becomes a LaunchAgent (`SMAppService.agent`), restarting it after a Sparkle update.
-  Not needed for v1: the app embeds the server.
+- Two processes on a Mac: version skew (handled by `hello`) and restarting the server after a Sparkle update.
 - macOS notifications need an app bundle. The server emits "notify" events; the app delivers them. A headless
-  server has a notification sink of its own (stdout, webhook, nothing).
-- Everything the UI shows has to be in the API, including things that today are a view reading a store
-  directly. That is the intended cost, but it makes step 2 of the phasing bigger.
+  server has a notification sink of its own (stderr today).
+- Everything the UI shows has to be in the API, including things that today are a view reading a service
+  directly. That is the intended cost, and the bulk of the work.
+
+### Packaging
+
+**macOS: the CLI never exists apart from the app.**
+
+- The server and CLI are one binary, `PRBar.app/Contents/MacOS/prbar-review`, built by its own target in
+  `project.yml` from `PRBarCore` + `CLI/`. Prompts and the review schema are already in `Contents/Resources`,
+  which a binary inside the bundle reads through `Bundle.main`.
+- `bin/release-dmg` signs it with Developer ID + hardened runtime + `--timestamp` before the app, inside-out, the
+  way it re-signs Sparkle's helpers. It is notarized as part of the DMG.
+- LaunchAgent: `Contents/Library/LaunchAgents/dev.lustefaniak.prbar.server.plist`, `BundleProgram` pointing at
+  the helper with the `serve` argument. The app registers it at launch. If the user turns it off in Login Items
+  (`.requiresApproval`), Settings says so and the app falls back to `ensureServer()`. Registration needs the app
+  in `/Applications`, the same as launch at login.
+- "Install command-line tool" in Settings symlinks `~/.local/bin/prbar-review` to the bundled binary, the way VS
+  Code installs `code`. A symlink follows Sparkle updates. `claude mcp add prbar -- prbar-review mcp` is then
+  the whole MCP setup.
+
+**Linux (and a Mac without the app):**
+
+- The release workflow builds static-stdlib tarballs for linux `amd64` and `arm64` from the same tag as the DMG,
+  plus `SHA256SUMS`.
+- Prompts and the schema are compiled into the binary, so installing it is copying one file. Today it needs
+  `prbar_PRBarCore.bundle` beside it, which is a trap for anyone installing by hand.
+- A Homebrew tap: a cask for the app whose `binary` stanza exposes the bundled CLI, and a formula for the
+  standalone CLI. The release workflow bumps both.
 
 ### State in files
 
@@ -136,31 +201,34 @@ ties all history to the app.
 
 Layout (XDG paths on both platforms so the app, CLI and MCP share one tree; `$PRBAR_HOME` overrides all three):
 
+Layout as shipped in v0.15.0 (`$PRBAR_HOME`, `$XDG_*_HOME` and `$PRBAR_CONFIG` move it):
+
 ```
-~/.config/prbar/            prbar.yaml, included files cache, local overrides
+~/.config/prbar/prbar.yaml
 ~/.local/state/prbar/
-  actions/2026-10.jsonl     append-only action log, one line per attempt (post, merge, resolve, re-request)
-  reviews/2026-10.jsonl     append-only review index: PR, sha, verdict, cost, matched rules, path to full record
-  reviews/<owner>/<repo>/<number>/<sha>.json   full review record (summary, annotations, trace, prompt parts used)
-  current/<owner>/<repo>/<number>.json         live per-PR review state (queued/running/completed/failed)
-  inbox.json                last inbox snapshot
-  notified.json             (prNodeId, headSha) already notified
-  server.sock               the API socket (0600); binding it is what makes a process the server
+  history/actions/2026-10.jsonl   append-only action log, one line per attempt (post, merge, resolve, re-request)
+  history/reviews/2026-10.jsonl   append-only review index: PR, sha, verdict, cost
+  history/reviews/full/<id>.json  full AggregatedReview, loaded on demand
+  review-state.json               live per-PR review state
+  inbox.json                      last inbox snapshot
+  notified.json                   (prNodeId, headSha) already notified
+  config.last-good.yaml           fallback for a config that stops parsing
+  runtime.lock                    flock held by the process that automates
+  server.sock                     the API socket (0600), bound by the lock holder (planned)
 ~/.cache/prbar/
-  diffs/<sha>.json          parsed hunks; safe to delete
-  ci-logs/<checkRunId>.txt
-  repos/                    bare clones + worktrees (moved from Application Support)
+  diffs/, ci-logs/                one file per key; safe to delete
 ```
 
 - Appends are single `write(2)` calls on `O_APPEND` files, one JSON object per line, so concurrent writers from
   different processes don't interleave lines. Whole-file records are written temp-then-rename.
 - Monthly log files make retention a file delete and keep the daily cost cap a read of one file.
-- `ReviewCache`'s serialised-save problem (an older snapshot committing after a newer one) goes away: each PR's
-  state is its own file, and writes to it go through the single runtime owner.
+- Review state is still one file, so saves are chained (`enqueueSave`) to keep an older snapshot from committing
+  after a newer one.
 - Only the server writes the state tree. Front ends never touch these files directly; they go through the API
   (`history`, `get_review`), which keeps the file layout an implementation detail of the server.
-- Migration: one-time export of the SwiftData store into this tree on first launch of the new version; the
-  SQLite file is left in place for one release, then deleted.
+- Migration: one-time, read-only copy of the SwiftData store on first launch of v0.15.0 (config if `prbar.yaml`
+  is missing, history behind a marker, review state and inbox as fallbacks until the first save). The SQLite
+  file is left in place so an older build still finds its data.
 
 ## Review lifecycle
 
@@ -850,19 +918,41 @@ runtime call or a file read; no MCP-specific logic beyond argument parsing and t
 
 ### Transport
 
-- `prbar mcp` over stdio; `claude mcp add prbar -- prbar mcp`.
-- A plain API client: connects to the server socket, or starts an in-process server when none is running, so it
-  works on a Linux box with no app.
-- Each MCP tool is one API call plus the write gate. If a tool needs something the API lacks, the API grows;
-  MCP never reaches around it.
+- `prbar-review mcp` over stdio, started by the agent: `claude mcp add prbar -- prbar-review mcp`.
+- A plain API client: `ensureServer()` at startup, and a reconnect on every call, so a server restart in the middle
+  of an agent session costs one retry rather than a dead tool.
+- Each MCP tool is one API call. The permission check happens in the server, not in the adapter, so it holds for
+  any client that identifies as an agent. If a tool needs something the API lacks, the API grows; MCP never
+  reaches around it.
+- No HTTP MCP endpoint. A loopback port is reachable by any local process and by web pages through DNS rebinding,
+  so it would need authentication of its own; the 0600 socket gets same-user auth for free, and every client that
+  matters (Claude Code, Claude Desktop, codex) can start a stdio server.
 
 ### Tools
 
 - Read: `list_inbox`, `get_pr`, `get_review` (summary, findings, matched rules), `explain_rules(pr)`,
   `validate_config`, `get_action_log`.
 - Run: `run_review(pr, profile?, force?)` with progress notifications.
-- Write: `post_review`, `merge` through `ActionQueue` + undo window, new `ActionSource.agent(clientName)`.
-  Gated by `mcp.writes: none | comment | all`, default `none`.
+- Write: `post_review`, `merge` through `ActionQueue` + undo window, new `ActionSource.agent(clientName)`, so
+  History reads "Approved by agent" apart from manual and automated posts. Denied requests are logged too.
+
+### Agent permissions
+
+There is no MCP server to switch on: the agent starts the adapter. What a user configures is what an agent may do,
+per capability, each `off`, `allow` or `ask`:
+
+```yaml
+agents:
+  read: allow      # inbox, reviews, history
+  review: allow    # start a review
+  post: ask        # comment / approve / request changes
+  merge: off
+```
+
+- `ask` shows a PRBar notification ("Claude Code wants to approve acme/api#123", Allow / Deny). With no app
+  connected to answer it (headless), `ask` acts as `off`.
+- It lives in `prbar.yaml` because the server enforces it, including headless under `serve` on Linux. Settings →
+  Agents edits that block, shows whether Claude Code / codex have PRBar configured, and offers to add it.
 
 Main loop it enables: agent working on a PR in Claude Code calls `get_review`, fixes findings, pushes,
 `run_review`, repeats.
@@ -883,8 +973,19 @@ Main loop it enables: agent working on a PR in Claude Code calls `get_review`, f
    CLI moved to its own target. Behaviour unchanged; this is what makes every later step reusable.
 2. Move poller, action queue, readiness and stores into the runtime; replace SwiftData / UserDefaults with the
    file layout plus a one-time migration.
-3. `PRBarAPI` + `PRBarServer` with the in-process transport; move the app's views onto the API client. Then the
-   Unix socket transport and `prbar serve`.
+3. Client-server, in this order, each step shippable on its own:
+   1. `PRBarAPI` types + JSON-RPC framing, a server over `PRBarRuntime`, the Unix socket transport,
+      `ensureServer()`, `prbar-review serve` (replaces `watch`), and CLI clients (`status`, `inbox`, `history`).
+      The app keeps running its own runtime and also serves the socket, so the CLI can reach it.
+   2. `prbar-review mcp` with read and review tools; the `agents:` policy.
+   3. The bundled helper: the `prbar-review` target in `project.yml`, signing in `bin/release-dmg`, "Install
+      command-line tool". Prompts compiled into the binary; Linux tarballs on every release.
+   4. The app's views onto client-side models fed by the event stream, over the in-process transport. The app
+      still hosts the runtime; nothing about deployment changes, but every surface goes through the API.
+   5. The LaunchAgent: the app switches to the socket transport and stops hosting the runtime. The views don't
+      change, because step 4 already moved them.
+   6. `prbar-review <pr>` as a client of the server, keeping its NDJSON contract; idle exit for servers started
+      on demand. Check with the brahmanda setup first.
 4. Split observe / schedule / admit: poller emits events only, gates run at admit time on a fresh fetch.
    `Forge` protocol with the GitHub adapter; `ChangeRequest` replaces `InboxPR` in the engine.
 5. Re-review triggers: honour re-request events, `/prbar review` comment command.
