@@ -1,6 +1,8 @@
 import Foundation
 import Observation
+#if canImport(OSLog)
 import OSLog
+#endif
 
 /// What a queued GitHub write does. Captured by value so a failed
 /// action can be retried verbatim without the UI reconstructing it.

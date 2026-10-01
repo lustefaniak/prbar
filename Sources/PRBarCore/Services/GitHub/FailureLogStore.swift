@@ -35,20 +35,6 @@ final class FailureLogStore {
         self.cache = cache
     }
 
-    /// Default wiring against the shared `GHClient`. Constructing a
-    /// fresh client per call keeps the store's init non-throwing — if
-    /// `gh` isn't installed the first fetch surfaces a `.failed` state
-    /// instead of crashing the app.
-    static func live() -> FailureLogStore {
-        FailureLogStore(
-            logFetcher: { owner, repo, jobId in
-                let c = try GHClient()
-                return try await c.fetchJobLog(owner: owner, repo: repo, jobId: jobId)
-            },
-            cache: FileCache(directory: AppPaths.cache.appendingPathComponent("ci-logs"))
-        )
-    }
-
     func status(for pr: InboxPR, check: CheckSummary) -> LoadStatus {
         guard let jobId = CIFailureLogTail.parseJobId(from: check.url) else {
             return .failed("No job log available for this check.")

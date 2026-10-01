@@ -101,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Single-instance is checked from PRBarApp.init before the App
         // declaration triggers @NSApplicationDelegateAdaptor, so by the
         // time we're here we're already the only PRBar.
-        let n = Notifier()
+        let n = Notifier(deliverer: UNNotificationDeliverer())
         let p: PRPoller
         let q: ReviewQueueWorker
         let a: ActionQueue
@@ -138,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 lastGoodURL: nil
             )
             : RepoConfigStore.live()
-        let coord = ReadinessCoordinator(notifier: n)
+        let coord = ReadinessCoordinator.live(notifier: n)
         let log = Self.isHostingTests ? ActionLogStore.temporary() : ActionLogStore.live(historyDirectory: AppPaths.history)
         let rlog = Self.isHostingTests ? ReviewLogStore.temporary() : ReviewLogStore.live(historyDirectory: AppPaths.history)
         if !Self.isHostingTests {

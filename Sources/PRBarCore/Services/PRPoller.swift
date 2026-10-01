@@ -1,6 +1,8 @@
 import Foundation
 import Observation
+#if canImport(OSLog)
 import OSLog
+#endif
 
 @MainActor
 @Observable
@@ -80,34 +82,6 @@ final class PRPoller {
             self.prs = cached
             self.lastFetchedAt = Date()
         }
-    }
-
-    /// Convenience constructor backed by a real `GHClient` that auto-starts
-    /// the polling loop. Errors at fetch time (gh missing, auth, network)
-    /// are surfaced via `lastError`, never thrown from construction.
-    static func live() -> PRPoller {
-        // Cache one client across calls — instantiation only does an
-        // executable path lookup so it's cheap, but no need to repeat.
-        let client: GHClient? = try? GHClient()
-        var legacy: (@Sendable () -> [InboxPR]?)?
-        if AppPaths.readsLegacyStore {
-            legacy = { LegacyStateMigration.inboxSnapshot(PRBarModelContainer.live()) }
-        }
-        let snapshotCache = SnapshotCache(stateDirectory: AppPaths.state, fallback: legacy)
-        let poller = PRPoller(
-            fetcher: {
-                let c = try client ?? GHClient()
-                return try await c.fetchInbox()
-            },
-            prRefresher: { owner, repo, number in
-                let c = try client ?? GHClient()
-                return try await c.fetchPR(owner: owner, repo: repo, number: number)
-            },
-            cache: snapshotCache
-        )
-        poller.loadCached()
-        poller.start()
-        return poller
     }
 
     /// Start the polling loop. Idempotent — second call is a no-op.

@@ -47,13 +47,6 @@ final class DiffStore {
         self.cache = cache
     }
 
-    /// Reuse a `ReviewQueueWorker`'s injected fetcher so we don't spin up
-    /// a second `GHClient`. Production callsite — wires the on-disk
-    /// cache so the parsed diff survives relaunches.
-    static func sharing(_ worker: ReviewQueueWorker) -> DiffStore {
-        DiffStore(diffFetcher: worker.diffFetcher, cache: FileCache(directory: AppPaths.cache.appendingPathComponent("diffs")))
-    }
-
     /// In-memory read only — never touches disk. Called from view bodies,
     /// where a file read plus a multi-MB JSON decode would land on the
     /// main actor. Disk hydration happens asynchronously in `ensureLoaded`,

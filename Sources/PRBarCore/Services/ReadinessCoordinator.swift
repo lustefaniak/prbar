@@ -1,6 +1,8 @@
 import Foundation
 import Observation
+#if canImport(OSLog)
 import OSLog
+#endif
 
 /// Routes "this PR is ready for human review" signals into the Notifier
 /// according to each repo's `NotifyPolicy`. Replaces the old per-poll
@@ -52,7 +54,7 @@ final class ReadinessCoordinator {
     @ObservationIgnored
     private weak var notifier: Notifier?
 
-    init(notifier: Notifier? = nil, store: NotifiedSHAStore = UserDefaultsNotifiedSHAStore()) {
+    init(notifier: Notifier? = nil, store: NotifiedSHAStore) {
         self.notifier = notifier
         self.store = store
         self.notifiedSHAs = store.load()
@@ -167,26 +169,25 @@ final class ReadinessCoordinator {
     }
 }
 
-/// Indirection so tests can drop a fake without hitting UserDefaults.
+/// Indirection so tests can drop a fake without touching disk.
 protocol NotifiedSHAStore: Sendable {
     func load() -> [String: String]
     func save(_ map: [String: String])
 }
 
-/// UserDefaults-backed store for `(prNodeId → headSha)` of last-notified
-/// review-request banners. Caps at 500 entries (LRU-by-insertion-order
-/// since we drop oldest when over) so the dict can't grow unbounded across
+/// File-backed store for `(prNodeId → headSha)` of last-notified
+/// review-request banners: `<state>/notified.json`. Caps at 500 entries
+/// (dropping oldest-ish when over) so it can't grow unbounded across
 /// months of use.
-struct UserDefaultsNotifiedSHAStore: NotifiedSHAStore {
-    private static let key = "readinessNotifiedSHAs"
-    private static let cap = 500
+struct FileNotifiedSHAStore: NotifiedSHAStore {
+    static let cap = 500
+    let file: JSONStateFile<[String: String]>
 
-    func load() -> [String: String] {
-        guard let data = UserDefaults.standard.data(forKey: Self.key),
-              let decoded = try? JSONDecoder().decode([String: String].self, from: data)
-        else { return [:] }
-        return decoded
+    init(stateDirectory: URL, fallback: (@Sendable () -> [String: String]?)? = nil) {
+        file = JSONStateFile(url: stateDirectory.appendingPathComponent("notified.json"), fallback: fallback)
     }
+
+    func load() -> [String: String] { file.load() ?? [:] }
 
     func save(_ map: [String: String]) {
         var bounded = map
@@ -199,7 +200,6 @@ struct UserDefaultsNotifiedSHAStore: NotifiedSHAStore {
                 bounded.removeValue(forKey: key)
             }
         }
-        guard let data = try? JSONEncoder().encode(bounded) else { return }
-        UserDefaults.standard.set(data, forKey: Self.key)
+        file.save(bounded)
     }
 }

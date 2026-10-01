@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import SwiftData
 
 /// The app's handle on `prbar.yaml`: the repo rules, the app-level
 /// `ReviewDefaults` they override, and the agent defaults (provider,
@@ -106,15 +105,6 @@ final class RepoConfigStore {
         self.config = PRBarConfig()
         loadAtLaunch(legacy: legacy)
         if watch { startWatching() }
-    }
-
-    /// The production store: the user's config file, migrated from the
-    /// SwiftData + UserDefaults settings on first launch, watched for edits.
-    static func live() -> RepoConfigStore {
-        RepoConfigStore(
-            legacy: { LegacyConfigMigration.read(container: PRBarModelContainer.live(), userDefaults: .standard) },
-            watch: true
-        )
     }
 
     // MARK: - lookups
