@@ -1,0 +1,170 @@
+{
+  "$id" : "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/decide.schema.json",
+  "$schema" : "http://json-schema.org/draft-07/schema#",
+  "additionalProperties" : false,
+  "definitions" : {
+    "match" : {
+      "additionalProperties" : false,
+      "oneOf" : [
+        {
+          "required" : [
+            "output"
+          ]
+        },
+        {
+          "required" : [
+            "rule"
+          ]
+        }
+      ],
+      "properties" : {
+        "condition" : {
+          "description" : "A CEL expression that is true or false. The first match whose condition holds decides; a match without one always does. Facts and functions: https://github.com/lustefaniak/prbar/blob/main/docs/rules.md#reference-facts",
+          "type" : "string"
+        },
+        "explanation" : {
+          "type" : "string"
+        },
+        "output" : {
+          "description" : "What this rule decides, as YAML fields, or as a quoted CEL expression for an output that has to be computed.",
+          "oneOf" : [
+            {
+              "$ref" : "#/definitions/output"
+            },
+            {
+              "description" : "A CEL map with the same fields, for an output that has to be computed: '{\"rule\": \"x\", \"action\": <a CEL expression>}'.",
+              "type" : "string"
+            }
+          ]
+        },
+        "rule" : {
+          "$ref" : "#/definitions/rule",
+          "description" : "Rules that apply only when this match's condition holds; when none of them matches, evaluation goes on after this match."
+        }
+      },
+      "type" : "object"
+    },
+    "output" : {
+      "additionalProperties" : false,
+      "description" : "What this rule decides.",
+      "properties" : {
+        "action" : {
+          "description" : "What PRBar posts on its own once the review is in. approve: A GitHub approval, with an empty body unless `attribution`. request_changes: A \"request changes\" review with the summary as its body. comment: A comment review with the summary, no verdict. share: The findings as inline comments, no verdict and no body, and the review request restored so the next push is reviewed again. Posts nothing when no finding reaches `min_severity`. flag: Shown in PRBar as a request for changes; nothing is posted. none: Nothing is posted.",
+          "enum" : [
+            "approve",
+            "request_changes",
+            "comment",
+            "share",
+            "flag",
+            "none"
+          ],
+          "type" : "string"
+        },
+        "attribution" : {
+          "description" : "With approve: a one-line body naming PRBar and the review's confidence.",
+          "type" : "boolean"
+        },
+        "inline" : {
+          "description" : "Post the findings as inline comments. Default: off for approve, on otherwise.",
+          "type" : "boolean"
+        },
+        "max_comments" : {
+          "description" : "At most this many inline comments, worst first. Default: 20 for share, no cap otherwise.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "min_severity" : {
+          "description" : "Only findings at or above this severity go inline. Default: info.",
+          "enum" : [
+            "info",
+            "suggestion",
+            "warning",
+            "blocker",
+            "severity.info",
+            "severity.suggestion",
+            "severity.warning",
+            "severity.blocker"
+          ],
+          "type" : "string"
+        },
+        "rule" : {
+          "description" : "The rule's id: shown in PRBar with the decision, in `rules history` and in `rules explain`. Make it say what the rule is for.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "rule",
+        "action"
+      ],
+      "type" : "object"
+    },
+    "rule" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "description" : {
+          "type" : "string"
+        },
+        "id" : {
+          "type" : "string"
+        },
+        "match" : {
+          "description" : "Tried top to bottom; the first whose condition holds decides.",
+          "items" : {
+            "$ref" : "#/definitions/match"
+          },
+          "type" : "array"
+        },
+        "variables" : {
+          "description" : "Named sub-expressions, read in conditions as variables.<name>.",
+          "items" : {
+            "$ref" : "#/definitions/variable"
+          },
+          "type" : "array"
+        }
+      },
+      "required" : [
+        "match"
+      ],
+      "type" : "object"
+    },
+    "variable" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "description" : {
+          "type" : "string"
+        },
+        "expression" : {
+          "description" : "A CEL expression.",
+          "type" : "string"
+        },
+        "name" : {
+          "pattern" : "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "name",
+        "expression"
+      ],
+      "type" : "object"
+    }
+  },
+  "description" : "A policy in rules/decide/: what PRBar posts once a review is in. The stage's files run in name order and the first match decides; with no match, the prbar.yaml settings do. Guide: https://github.com/lustefaniak/prbar/blob/main/docs/rules.md",
+  "properties" : {
+    "description" : {
+      "type" : "string"
+    },
+    "name" : {
+      "description" : "The policy's name.",
+      "type" : "string"
+    },
+    "rule" : {
+      "$ref" : "#/definitions/rule"
+    }
+  },
+  "required" : [
+    "rule"
+  ],
+  "title" : "PRBar decide rules",
+  "type" : "object"
+}

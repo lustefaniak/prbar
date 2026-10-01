@@ -181,13 +181,15 @@ struct Rules: Sendable {
     /// - Throws: `ValidationError` with every problem, positioned in its file.
     static func compile(select: [Source], decide: [Source], lists: [String: [String]] = [:]) throws -> Rules {
         let env = try environment()
-        func load<F, O>(_ source: Source) throws -> TypedProgram<F, O?> {
-            try TypedProgram<F, O?>(
-                policy: PolicySource(source.text, description: source.path), environment: env,
+        func load<F, O>(_ source: Source, _ fields: [RuleOutputs.Field]) throws -> TypedProgram<F, O?> {
+            let text = try RuleOutputs.expand(source.text, path: source.path, fields: fields)
+            return try TypedProgram<F, O?>(
+                policy: PolicySource(text, description: source.path), environment: env,
                 options: coding, programOptions: programOptions)
         }
         return Rules(
-            select: try select.map(load), decide: try decide.map(load), lists: lists,
+            select: try select.map { try load($0, RuleOutputs.select) },
+            decide: try decide.map { try load($0, RuleOutputs.decide) }, lists: lists,
             sources: select + decide, digest: digest(select + decide, lists: lists), failure: nil)
     }
 

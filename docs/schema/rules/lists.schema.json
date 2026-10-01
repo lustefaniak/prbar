@@ -1,0 +1,16 @@
+{
+  "$id" : "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/lists.schema.json",
+  "$schema" : "http://json-schema.org/draft-07/schema#",
+  "additionalProperties" : {
+    "items" : {
+      "type" : "string"
+    },
+    "type" : "array"
+  },
+  "description" : "rules/lists.yaml: named lists of logins, repositories or anything else the rules compare against, read as lists.<name>. Guide: https://github.com/lustefaniak/prbar/blob/main/docs/rules.md",
+  "propertyNames" : {
+    "pattern" : "^[A-Za-z_][A-Za-z0-9_]*$"
+  },
+  "title" : "PRBar rule lists",
+  "type" : "object"
+}

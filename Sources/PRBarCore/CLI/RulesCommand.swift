@@ -13,6 +13,8 @@ enum RulesCommand: Equatable {
     case history(Filter, limit: Int, json: Bool)
     /// One recorded evaluation (by id prefix), or every one the filter keeps.
     case replay(id: String?, Filter, watch: Bool, configPath: String?)
+    /// The JSON schema of a rules file, for editors.
+    case schema(RuleSchema.File)
 
     struct Filter: Equatable {
         /// `owner/repo#number`, or a checkout's root for local reviews.
@@ -68,6 +70,9 @@ enum RulesCommand: Equatable {
         case "explain" where positional.count == 1:
             guard let target = Invocation.parseTarget(positional[0]) else { return nil }
             self = .explain(PRReference(owner: target.owner, repo: target.repo, number: target.number), configPath: configPath)
+        case "schema" where positional.count == 1:
+            guard let file = RuleSchema.File(rawValue: positional[0]) else { return nil }
+            self = .schema(file)
         case "history" where positional.isEmpty:
             self = .history(filter, limit: limit, json: json)
         case "replay" where positional.count <= 1:
@@ -82,6 +87,7 @@ enum RulesCommand: Equatable {
            prbar-review rules explain <pr-url|owner/repo#number> [--config <path>]
            prbar-review rules history [--pr <pr>] [--days <n>] [--limit <n>] [--json]
            prbar-review rules replay [<id>] [--pr <pr>] [--days <n>] [--watch] [--config <path>]
+           prbar-review rules schema select|decide|lists
 
     The rules live in `rules/` beside prbar.yaml (or $PRBAR_RULES):
 
@@ -104,6 +110,9 @@ enum RulesCommand: Equatable {
                 whether the answer changed since. Without one: every
                 evaluation in the last --days (7), listing the answers your
                 edits would change. --watch replays again on every save
+      schema    the JSON schema of a rules file, which editors use to
+                complete and check it; also published at
+                \(RuleSchema.baseURL)<file>.schema.json
 
     """
 
@@ -135,6 +144,10 @@ enum RulesCommand: Equatable {
                 fail(error.localizedDescription)
                 return 1
             }
+
+        case .schema(let file):
+            print(String(RuleSchema.json(file).dropLast()))
+            return 0
 
         case let .history(filter, limit, json):
             let records = Array(Self.evaluations(filter, environment: environment).prefix(limit))

@@ -187,7 +187,9 @@ rule:
     - condition: >-
         pr.author in lists.trusted && review.verdict == "approve"
         && review.max_severity <= severity.suggestion && pr.additions <= 200
-      output: '{"rule": "trusted-approve", "action": "approve"}'
+      output:
+        rule: trusted-approve
+        action: approve
 ```
 
 The first rule that matches decides; when none does, the settings above decide
@@ -197,7 +199,8 @@ mistake. `prbar-review rules check` validates them, `prbar-review rules explain
 decision is recorded with its facts so `prbar-review rules replay <id> --watch`
 can rerun it against your edits as you save them.
 [docs/rules.md](docs/rules.md) is the guide: a first rule, the workflow, a
-cookbook, and every fact and function.
+cookbook, and every fact and function. JSON schemas for the files
+([docs/schema/rules](docs/schema/rules)) give editors completion and checking.
 
 ### Reviewing work before it's a PR
 

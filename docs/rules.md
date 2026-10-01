@@ -15,6 +15,7 @@ rules, PRBar does exactly what `prbar.yaml` says.
 - [Your first rule](#your-first-rule)
 - [How a decision is made](#how-a-decision-is-made)
 - [Writing conditions](#writing-conditions)
+- [Editor support: the JSON schemas](#editor-support-the-json-schemas)
 - [Working on rules: check, explain, history, replay](#working-on-rules-check-explain-history-replay)
 - [Cookbook](#cookbook)
 - [Pitfalls](#pitfalls)
@@ -36,7 +37,10 @@ name: docs
 rule:
   match:
     - condition: only(pr.files, "docs/**")
-      output: '{"rule": "skip-docs", "action": "skip", "reason": "documentation only"}'
+      output:
+        rule: skip-docs
+        action: skip
+        reason: documentation only
 ```
 
 `select/` is the stage (whether to review), `10-` orders it among that stage's
@@ -163,9 +167,13 @@ rule:
       expression: review.max_severity <= severity.suggestion
   match:
     - condition: variables.small && variables.clean && review.confidence >= 0.9
-      output: '{"rule": "small-and-clean", "action": "approve"}'
+      output:
+        rule: small-and-clean
+        action: approve
     - condition: variables.small && !variables.clean
-      output: '{"rule": "small-with-findings", "action": "share"}'
+      output:
+        rule: small-with-findings
+        action: share
 ```
 
 ### YAML around the expression
@@ -184,9 +192,70 @@ Conditions and outputs are YAML strings, and YAML has opinions:
       && review.verdict == "approve"
   ```
 
-- **Outputs are CEL too**: a map written like JSON. Put it in single quotes so
-  the double quotes inside survive. Values can be expressions:
-  `'{"rule": "x", "action": "share", "min_severity": severity.warning}'`.
+
+### Outputs
+
+An `output` is what the rule decides when its condition holds: a `rule` id and
+an `action`, plus the stage's optional fields
+([select](#select-review-or-not), [decide](#decide-what-to-post)):
+
+```yaml
+# rules/decide/60-docs-share.yaml
+name: docs-share
+rule:
+  match:
+    - condition: only(pr.files, "docs/**")
+      output:
+        rule: share-docs-findings
+        action: share
+        min_severity: warning
+        max_comments: 5
+```
+
+Each field is checked when the rules load: a misspelt field (`acton`), a value
+that isn't allowed (`action: sahre`) or a missing `action` is refused with its
+line. Short outputs fit on one line: `output: {rule: drafts, action: skip}`.
+
+When a value has to be computed, write the whole output as a quoted CEL map
+instead; its fields are the same, and are checked the same way:
+
+```yaml
+# rules/decide/70-big.yaml
+name: big
+rule:
+  match:
+    - condition: review.max_severity >= severity.warning
+      output: '{"rule": "big-or-small", "action": pr.additions > 500 ? "flag" : "share"}'
+```
+
+## Editor support: the JSON schemas
+
+Each kind of file in the rules directory has a JSON schema, so an editor with
+YAML support (VS Code's YAML extension, JetBrains IDEs, Neovim's yaml-language-server)
+completes the keys, lists the allowed `action`s and severities with what each
+does, and underlines a mistake as you type. Start each file with the line for
+its kind:
+
+```
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/select.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/decide.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/lists.schema.json
+```
+
+Or map them once in VS Code's settings and skip the line:
+
+```json
+"yaml.schemas": {
+  "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/select.schema.json": "**/prbar/rules/select/*.yaml",
+  "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/decide.schema.json": "**/prbar/rules/decide/*.yaml",
+  "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/lists.schema.json": "**/prbar/rules/lists.yaml"
+}
+```
+
+`prbar-review rules schema select|decide|lists` prints the schema of the
+version you run, for offline use. The schema covers the file's shape and the
+outputs; the conditions are CEL, which it can't check, so `rules check` stays
+the final word.
 
 ## Working on rules: check, explain, history, replay
 
@@ -267,7 +336,10 @@ rule:
   match:
     - condition: >-
         pr.author_is_bot && pr.title.startsWith("chore(deps)")
-      output: '{"rule": "skip-dependency-bumps", "action": "skip", "reason": "dependency bump"}'
+      output:
+        rule: skip-dependency-bumps
+        action: skip
+        reason: dependency bump
 ```
 
 Review drafts in one repository:
@@ -278,7 +350,9 @@ name: drafts
 rule:
   match:
     - condition: pr.draft && pr.repo == "acme/api"
-      output: '{"rule": "review-api-drafts", "action": "review"}'
+      output:
+        rule: review-api-drafts
+        action: review
 ```
 
 Skip documentation-only changes:
@@ -289,7 +363,10 @@ name: docs
 rule:
   match:
     - condition: only(pr.files, "**.md") || only(pr.files, "docs/**")
-      output: '{"rule": "skip-docs", "action": "skip", "reason": "documentation only"}'
+      output:
+        rule: skip-docs
+        action: skip
+        reason: documentation only
 ```
 
 Leave first-time contributors and stale PRs to people:
@@ -300,9 +377,15 @@ name: people
 rule:
   match:
     - condition: pr.author_association in ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER"]
-      output: '{"rule": "first-timers", "action": "skip", "reason": "first contribution, a person reviews it"}'
+      output:
+        rule: first-timers
+        action: skip
+        reason: 'first contribution, a person reviews it'
     - condition: has(pr.idle) && pr.idle > duration("720h")
-      output: '{"rule": "stale", "action": "skip", "reason": "untouched for 30 days"}'
+      output:
+        rule: stale
+        action: skip
+        reason: untouched for 30 days
 ```
 
 Review only what your team was asked about, not requests through other teams:
@@ -314,7 +397,10 @@ rule:
   match:
     - condition: >-
         !(viewer in pr.requested_reviewers) && !("platform" in pr.requested_teams)
-      output: '{"rule": "not-platform", "action": "skip", "reason": "requested through another team"}'
+      output:
+        rule: not-platform
+        action: skip
+        reason: requested through another team
 ```
 
 Approve small changes from trusted people:
@@ -330,7 +416,9 @@ rule:
         && review.confidence >= 0.85
         && review.max_severity <= severity.suggestion
         && pr.additions <= 200
-      output: '{"rule": "trusted-approve", "action": "approve"}'
+      output:
+        rule: trusted-approve
+        action: approve
 ```
 
 ```yaml
@@ -351,7 +439,9 @@ rule:
         && pr.checks_state == "passed"
         && pr.committers.all(c, c in lists.trusted)
         && !pr.files.exists(f, f.sensitive && f.kind == "source")
-      output: '{"rule": "trusted-commits-approve", "action": "approve"}'
+      output:
+        rule: trusted-commits-approve
+        action: approve
 ```
 
 Never act on infrastructure on its own:
@@ -362,7 +452,9 @@ name: infra
 rule:
   match:
     - condition: touches(pr.files, "infra/**") || pr.repo.endsWith("-infra")
-      output: '{"rule": "hands-off-infra", "action": "flag"}'
+      output:
+        rule: hands-off-infra
+        action: flag
 ```
 
 Say so when a push fixed the blockers an earlier review found:
@@ -375,7 +467,9 @@ rule:
     - condition: >-
         review.prior.exists(p, p.max_severity == severity.blocker)
         && review.max_severity <= severity.suggestion
-      output: '{"rule": "blockers-fixed", "action": "comment"}'
+      output:
+        rule: blockers-fixed
+        action: comment
 ```
 
 Share warnings and blockers with the author, at most ten, for everything else:
@@ -386,9 +480,11 @@ name: share
 rule:
   match:
     - condition: review.confidence >= 0.5
-      output: >-
-        {"rule": "share-warnings", "action": "share",
-         "min_severity": severity.warning, "max_comments": 10}
+      output:
+        rule: share-warnings
+        action: share
+        min_severity: warning
+        max_comments: 10
 ```
 
 ## Pitfalls
@@ -418,7 +514,7 @@ Runs for each PR where you are a requested reviewer, before any money is spent;
 also for `prbar-review <pr>` without `--force` and for a coding agent's
 `run_review`.
 
-| Output field | Values |
+| `output` field | Values |
 |---|---|
 | `rule` | the rule's id, shown in PRBar and in the history |
 | `action` | `review` or `skip` |
@@ -428,12 +524,12 @@ also for `prbar-review <pr>` without `--force` and for a coding agent's
 
 Runs once a review completes, with the review's result as facts.
 
-| Output field | Values | Default |
+| `output` field | Values | Default |
 |---|---|---|
 | `rule` | the rule's id | |
 | `action` | `approve`, `request_changes`, `comment`, `share`, `flag`, `none` | |
-| `inline` | post findings as inline comments | off for `approve`, on otherwise |
-| `min_severity` | only findings at or above this go inline, e.g. `severity.warning` | `severity.info` |
+| `inline` | post findings as inline comments: `true` or `false` | off for `approve`, on otherwise |
+| `min_severity` | only findings at or above this go inline: `info`, `suggestion`, `warning`, `blocker` | `info` |
 | `max_comments` | at most this many inline comments, worst first | 20 for `share`, no cap otherwise |
 | `attribution` | `approve` with a one-line body naming PRBar | off |
 
