@@ -124,12 +124,24 @@ actor MCPSession {
                 return ToolResult(text: try await listInbox(filter: args?.filter ?? .all))
             case "get_review":
                 let args = try arguments(GetReviewArgs.self, line)
+                if let problem = Self.onePRorPath(args?.pr, args?.path) { return ToolResult(error: problem) }
+                if let path = args?.path {
+                    return try await getLocalReview(path, full: args?.full ?? false)
+                }
                 guard let ref = try Self.reference(args?.pr) else {
                     return ToolResult(error: "pr is required: a PR URL or owner/repo#number")
                 }
                 return try await getReview(ref, full: args?.full ?? false)
             case "run_review":
                 let args = try arguments(RunReviewArgs.self, line)
+                if let problem = Self.onePRorPath(args?.pr, args?.path) { return ToolResult(error: problem) }
+                if let path = args?.path {
+                    let params = LocalReviewParams(path: path, base: args?.base, force: args?.force)
+                    let result = try await api { try await $0.call(.reviewLocal, params, as: ReviewResult.self) }
+                    if let ignored = result.ignored { return ToolResult(text: "Not reviewed: \(ignored).") }
+                    return ToolResult(text: MCPText.started(result, forced: args?.force ?? false))
+                }
+                if args?.base != nil { return ToolResult(error: "base goes with path, not pr: a PR's base is its target branch.") }
                 guard let ref = try Self.reference(args?.pr) else {
                     return ToolResult(error: "pr is required: a PR URL or owner/repo#number")
                 }
@@ -147,9 +159,12 @@ actor MCPSession {
                 return ToolResult(text: records.isEmpty ? "No reviews recorded." : records.map(ClientCommand.describe).joined(separator: "\n"))
             case "watch":
                 let args = try arguments(WatchArgs.self, line)
-                let pr = try Self.reference(args?.pr)
+                if args?.pr != nil, args?.path != nil { return ToolResult(error: "pass pr or path, not both.") }
+                var subject: String?
+                if let ref = try Self.reference(args?.pr) { subject = MCPText.name(ref) }
+                if let path = args?.path { subject = try await LocalChanges.root(of: path) }
                 let timeout = min(max(args?.timeoutSeconds ?? 60, 1), MCPTools.watchMaxSeconds)
-                return try await watch(since: args?.since, pr: pr, timeout: TimeInterval(timeout))
+                return try await watch(since: args?.since, subject: subject, timeout: TimeInterval(timeout))
             default:
                 return ToolResult(error: "unknown tool \(name)")
             }
@@ -200,6 +215,23 @@ actor MCPSession {
         }
     }
 
+    private func getLocalReview(_ path: String, full: Bool) async throws -> ToolResult {
+        do {
+            let result = try await api { try await $0.call(.review, PRReference(path: path), as: ReviewResult.self) }
+            return ToolResult(text: MCPText.review(result, full: full))
+        } catch let error as RPCError where error.code == RPCError.notFound {
+            return ToolResult(text: "PRBar hasn't reviewed the changes in \(path) since it started. run_review with path \(path) starts a review.")
+        }
+    }
+
+    static func onePRorPath(_ pr: String?, _ path: String?) -> String? {
+        switch (pr, path) {
+        case (nil, nil): return "pass pr (a PR URL or owner/repo#number) or path (a local checkout)."
+        case (.some, .some): return "pass pr or path, not both."
+        default: return nil
+        }
+    }
+
     // MARK: - Watching
 
     /// Events from the server, numbered in arrival order for `watch`
@@ -209,17 +241,17 @@ actor MCPSession {
     private var subscribed: ObjectIdentifier?
     static let eventBufferLimit = 1000
 
-    private func watch(since: Int?, pr: PRReference?, timeout: TimeInterval) async throws -> ToolResult {
+    private func watch(since: Int?, subject: String?, timeout: TimeInterval) async throws -> ToolResult {
         try await api { try await self.subscribe($0) }
         let cursor = since ?? lastSeq
         let deadline = Date().addingTimeInterval(timeout)
         while true {
-            let found = events.filter { $0.seq > cursor && Self.concerns($0.event, pr) }
+            let found = events.filter { $0.seq > cursor && Self.concerns($0.event, subject) }
             if !found.isEmpty || Date() >= deadline || Task.isCancelled || subscribed == nil {
                 let dropped = since.map { $0 < (events.first?.seq ?? lastSeq + 1) - 1 } ?? false
                 return ToolResult(text: MCPText.watched(
                     found.map(\.event), cursor: lastSeq, dropped: dropped,
-                    serverGone: subscribed == nil, pr: pr, waited: timeout))
+                    serverGone: subscribed == nil, subject: subject, waited: timeout))
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
@@ -254,10 +286,11 @@ actor MCPSession {
         if subscribed == key { subscribed = nil }
     }
 
-    private static func concerns(_ event: APIEvent, _ pr: PRReference?) -> Bool {
-        guard let pr else { return true }
+    /// `subject` is `owner/repo#number`, or a checkout's root for a local review.
+    private static func concerns(_ event: APIEvent, _ subject: String?) -> Bool {
+        guard let subject else { return true }
         guard let name = event.pr else { return false }
-        return name.caseInsensitiveCompare(MCPText.name(pr)) == .orderedSame
+        return name.caseInsensitiveCompare(subject) == .orderedSame
     }
 
     // MARK: - Plumbing
@@ -360,25 +393,26 @@ enum MCPTools {
             annotations: .init(readOnlyHint: true)),
         MCPTool(
             name: "get_review",
-            description: "PRBar's AI review of a pull request: verdict, summary and every finding with its file and lines. Works for PRs PRBar no longer tracks too, from its history. Use it on the PR you are working on, fix the findings, push, then call run_review to check again.",
+            description: "PRBar's AI review of a pull request, or of local changes reviewed with run_review and a path: verdict, summary and every finding with its file and lines. Works for PRs PRBar no longer tracks too, from its history. Use it on what you are working on, fix the findings, then call run_review to check again.",
             inputSchema: .init(
                 properties: [
                     "pr": .init(type: "string", description: "PR URL or owner/repo#number"),
+                    "path": .init(type: "string", description: "Instead of pr: a directory in a local checkout reviewed with run_review."),
                     "full": .init(type: "boolean", description: "Show long summaries and findings whole instead of cut short."),
-                ],
-                required: ["pr"]),
+                ]),
             annotations: .init(readOnlyHint: true)),
         MCPTool(
             name: "run_review",
-            description: "Start PRBar's AI review of a pull request at its current head commit. Returns at once; a review usually takes a few minutes. Wait with watch (pass the pr), then read it with get_review. Costs money: only call it after pushing changes, not to poll.",
+            description: "Start PRBar's AI review of a pull request at its current head commit, or, with path, of the uncommitted and unpushed work in a local checkout against where its branch forked (nothing is posted for that; the repo's review rules still apply). Returns at once; a review usually takes a few minutes. Wait with watch (pass the same pr or path), then read it with get_review. Costs money: only call it once there is something new to review, not to poll.",
             inputSchema: .init(
                 properties: [
                     "pr": .init(type: "string", description: "PR URL or owner/repo#number"),
+                    "path": .init(type: "string", description: "Instead of pr: a directory in a local git checkout, e.g. the one you are working in."),
+                    "base": .init(type: "string", description: "With path: the branch or commit to compare with (default: where the branch forked from origin's default branch)."),
                     "force": .init(
                         type: "boolean",
-                        description: "Review again even when this commit was already reviewed, or a repo rule would skip it."),
-                ],
-                required: ["pr"]),
+                        description: "Review again even when these exact changes were already reviewed, or a repo rule would skip it."),
+                ]),
             annotations: .init(readOnlyHint: false, idempotentHint: true)),
         MCPTool(
             name: "get_history",
@@ -393,6 +427,7 @@ enum MCPTools {
             description: "Wait for something to happen in PRBar: a review finishing, a GitHub action completing, the inbox or prbar.yaml changing. Returns as soon as there is news, or after timeout_seconds with nothing. Every reply ends with a cursor; pass it as since next time so nothing is missed between calls.",
             inputSchema: .init(properties: [
                 "pr": .init(type: "string", description: "Only news about this PR (URL or owner/repo#number), e.g. the one you just called run_review on."),
+                "path": .init(type: "string", description: "Only news about the local review of this checkout."),
                 "since": .init(type: "integer", description: "The cursor from the previous watch. Omit to wait for what happens from now on."),
                 "timeout_seconds": .init(type: "integer", description: "How long to wait, 1-\(watchMaxSeconds) (default 60)."),
             ]),
@@ -456,21 +491,31 @@ enum MCPText {
         }
     }
 
+    /// How to name `pr` as a tool argument: `pr o/r#1`, or `path <root>`.
+    static func argument(_ pr: InboxPR) -> String {
+        pr.local.map { "path \($0.root)" } ?? "pr \(pr.nameWithOwner)#\(pr.number)"
+    }
+
     static func review(_ result: ReviewResult, full: Bool = false) -> String {
         let pr = result.pr
         let name = "\(pr.nameWithOwner)#\(pr.number)"
-        var out = "\(name): \(pr.title)\n\(pr.url.absoluteString)\n\n"
+        var out: String
+        if let local = pr.local {
+            out = "Local changes in \(local.root) on \(local.branch), against \(local.baseRef) (\(local.changedFiles) files, +\(local.additions) -\(local.deletions))\n\n"
+        } else {
+            out = "\(name): \(pr.title)\n\(pr.url.absoluteString)\n\n"
+        }
         guard let state = result.review else {
-            return out + "PRBar has not reviewed this PR. Call run_review to start one."
+            return out + "PRBar has not reviewed this. Call run_review with \(argument(pr)) to start one."
         }
         if state.headSha != pr.headSha {
             out += "Note: this review is of \(state.headSha.prefix(7)); the PR is now at \(pr.headSha.prefix(7)).\n\n"
         }
         switch state.status {
         case .queued:
-            return out + "A review is queued. watch with pr \(name) waits for it to finish."
+            return out + "A review is queued. watch with \(argument(pr)) waits for it to finish."
         case .running:
-            return out + "A review is running. watch with pr \(name) waits for it to finish."
+            return out + "A review is running. watch with \(argument(pr)) waits for it to finish."
         case .failed(let message):
             return out + "The last review failed: \(message)"
         case .skipped(let reason):
@@ -478,7 +523,9 @@ enum MCPText {
         case .completed(let review):
             out += "Review of \(state.headSha.prefix(7)) by \(state.providerId.rawValue): "
             return out + completed(review, full: full)
-                + "\nNext: fix what applies, push, then run_review to check the new commit."
+                + (pr.local == nil
+                    ? "\nNext: fix what applies, push, then run_review to check the new commit."
+                    : "\nNext: fix what applies, then run_review with \(argument(pr)) to check again.")
         }
     }
 
@@ -495,7 +542,7 @@ enum MCPText {
         return out + "Verdict: \(record.verdict?.displayName ?? "none"). The full review wasn't kept."
     }
 
-    private static func completed(_ review: AggregatedReview, full: Bool) -> String {
+    static func completed(_ review: AggregatedReview, full: Bool) -> String {
         var cut = false
         func limited(_ text: String, _ limit: Int) -> String {
             guard !full, text.count > limit else { return text }
@@ -525,15 +572,15 @@ enum MCPText {
 
     static func started(_ result: ReviewResult, forced: Bool) -> String {
         let pr = result.pr
-        let name = "\(pr.nameWithOwner)#\(pr.number)"
+        let name = pr.local.map { "the local changes in \($0.root)" } ?? "\(pr.nameWithOwner)#\(pr.number)"
         guard let state = result.review, state.headSha == pr.headSha else {
             return "\(name) was not queued for review. Call status to check PRBar."
         }
         switch state.status {
         case .queued, .running:
-            return "Review of \(name) at \(pr.headSha.prefix(7)) is \(state.status.isInFlight && !forced ? "queued or running" : "queued"). It usually takes a few minutes.\n\nNext: watch with pr \(name) waits for it to finish; then call get_review."
+            return "Review of \(name)\(pr.local == nil ? " at \(pr.headSha.prefix(7))" : "") is \(state.status.isInFlight && !forced ? "queued or running" : "queued"). It usually takes a few minutes.\n\nNext: watch with \(argument(pr)) waits for it to finish; then call get_review with \(argument(pr))."
         case .completed:
-            return "\(name) was already reviewed at \(pr.headSha.prefix(7)); pass force true to review it again.\n\n" + review(result)
+            return "\(name) was already reviewed \(pr.local == nil ? "at \(pr.headSha.prefix(7))" : "with exactly these changes"); pass force true to review it again.\n\n" + review(result)
         case .skipped(let reason):
             return "\(name) was not reviewed: \(reason.detail) Pass force true to review it anyway."
         case .failed(let message):
@@ -542,14 +589,14 @@ enum MCPText {
     }
 
     static func watched(
-        _ events: [APIEvent], cursor: Int, dropped: Bool, serverGone: Bool, pr: PRReference?, waited: TimeInterval
+        _ events: [APIEvent], cursor: Int, dropped: Bool, serverGone: Bool, subject: String?, waited: TimeInterval
     ) -> String {
         var lines: [String] = []
         if dropped { lines.append("Some events were dropped: more arrived since that cursor than PRBar keeps.") }
         if events.isEmpty {
             lines.append(serverGone
                 ? "The PRBar server went away. Call watch again once it's back (status says whether it is)."
-                : "Nothing happened\(pr.map { " to \(name($0))" } ?? "") in \(Int(waited))s.")
+                : "Nothing happened\(subject.map { " to \($0)" } ?? "") in \(Int(waited))s.")
         }
         for event in events {
             let subject = event.pr ?? event.prNodeId ?? "a PR"
@@ -733,16 +780,18 @@ struct InboxArgs: Decodable, Sendable {
 
 struct GetReviewArgs: Decodable, Sendable {
     var pr: String?
+    var path: String?
     var full: Bool?
 }
 
 struct WatchArgs: Decodable, Sendable {
     var pr: String?
+    var path: String?
     var since: Int?
     var timeoutSeconds: Int?
 
     enum CodingKeys: String, CodingKey {
-        case pr, since
+        case pr, path, since
         case timeoutSeconds = "timeout_seconds"
     }
 }
@@ -773,6 +822,8 @@ enum MCPArgumentValue: Decodable, Sendable, Equatable {
 
 struct RunReviewArgs: Decodable, Sendable {
     var pr: String?
+    var path: String?
+    var base: String?
     var force: Bool?
 }
 

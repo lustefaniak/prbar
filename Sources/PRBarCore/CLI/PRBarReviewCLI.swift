@@ -38,6 +38,17 @@ public enum PRBarReviewCLI {
             return await command.run()
         }
         guard let invocation = Invocation(args: args) else {
+            if let local = LocalReviewCommand.Options(args: args) {
+                let configFile: URL?
+                do {
+                    configFile = try CLIConfig.locate(path: local.configPath)
+                    _ = try CLIConfig.load(path: local.configPath)
+                } catch {
+                    FileHandle.standardError.write(Data("prbar-review: \(error.localizedDescription)\n".utf8))
+                    return 2
+                }
+                return await reviewLocal(local, configFile: configFile)
+            }
             FileHandle.standardError.write(Data(Self.usage.utf8))
             return 2
         }
@@ -55,6 +66,14 @@ public enum PRBarReviewCLI {
             return await client(invocation, configFile: configFile)
         }
         return await standalone(invocation)
+    }
+
+    @MainActor
+    static func reviewLocal(_ options: LocalReviewCommand.Options, configFile: URL?) async -> Int32 {
+        await LocalReviewCommand(
+            options: options, configFile: configFile,
+            connect: ClientReview.launcher(configFile: configFile)
+        ).run()
     }
 
     @MainActor
@@ -202,6 +221,11 @@ public enum PRBarReviewCLI {
     of the inbox alone. Emits brahmanda NDJSON on stdout, one event per
     line. Logs go to stderr.
 
+    prbar-review [--base <ref>] [--provider claude|codex] [--force] [--json] <dir>
+                                   review the uncommitted and unpushed work in
+                                   a checkout against where its branch forked,
+                                   under that repo's rules; prints the review
+                                   (one JSON line with --json), posts nothing
     prbar-review serve [options]   run the PRBar server headless;
                                    see `prbar-review serve --help`
     prbar-review status | inbox | history | events

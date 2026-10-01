@@ -158,6 +158,10 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     /// Drives the default value of --delete-branch on `gh pr merge`.
     let deleteBranchOnMerge: Bool
 
+    /// Set when this is not a PR but a working directory under review
+    /// (`LocalChanges`): the snapshot the review reads, never posted.
+    var local: LocalChanges.Snapshot? = nil
+
     var nameWithOwner: String { "\(owner)/\(repo)" }
 
     /// Plain string form of the PR number — avoids SwiftUI's
@@ -262,6 +266,7 @@ extension InboxPR {
         case allowedMergeMethods, autoMergeAllowed, deleteBranchOnMerge
         case humanReviews, issueComments, viewerLogin
         case hasPRBarVerdictAtHead
+        case local
     }
 
     /// Explicit decode so payloads cached before `humanReviews` /
@@ -305,6 +310,7 @@ extension InboxPR {
         self.viewerLogin = try c.decodeIfPresent(String.self, forKey: .viewerLogin) ?? ""
         self.hasPRBarVerdictAtHead =
             try c.decodeIfPresent(Bool.self, forKey: .hasPRBarVerdictAtHead) ?? false
+        self.local = try c.decodeIfPresent(LocalChanges.Snapshot.self, forKey: .local)
     }
 
     init(node: InboxResponse.PullRequestNode, viewerLogin: String) {

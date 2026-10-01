@@ -59,7 +59,8 @@ enum ContextAssembler {
             workdir: workdir,
             prNodeId: pr.nodeId,
             subpath: subdiff.subpath,
-            sessionLabel: "prbar: \(pr.nameWithOwner)#\(pr.number) (\(subpathTag))",
+            sessionLabel: pr.local.map { "prbar: \(pr.nameWithOwner) local \($0.branch) (\(subpathTag))" }
+                ?? "prbar: \(pr.nameWithOwner)#\(pr.number) (\(subpathTag))",
             baseSha: baseSha
         )
     }
@@ -276,6 +277,16 @@ enum ContextAssembler {
     }
 
     private static func prSection(pr: InboxPR) -> String {
+        if let local = pr.local {
+            // Not a PR yet: the author asked for a review of work in
+            // progress, before pushing it anywhere.
+            var s = "## Change\n\n"
+            s += "Work in progress in a local checkout, not a pull request yet: the author's uncommitted and unpushed changes, captured as one commit for this review.\n\n"
+            s += "- **Repo**: \(pr.nameWithOwner)\n"
+            s += "- **Branch**: `\(local.branch)`, compared with `\(local.baseRef)` (where it forked)\n"
+            s += "- **Size**: +\(pr.totalAdditions) / -\(pr.totalDeletions) across \(pr.changedFiles) file\(pr.changedFiles == 1 ? "" : "s")\n"
+            return s
+        }
         var s = "## PR\n\n"
         s += "- **Repo**: \(pr.nameWithOwner)\n"
         s += "- **Number**: #\(pr.number)\n"

@@ -836,7 +836,12 @@ final class ReviewQueueWorker {
                 )
                 return
             }
-            let diffText = try await diffFetcher(pr.owner, pr.repo, pr.number)
+            let diffText: String
+            if let local = pr.local {
+                diffText = try await LocalChanges.diff(local)
+            } else {
+                diffText = try await diffFetcher(pr.owner, pr.repo, pr.number)
+            }
             // Provider resolution: per-run override > repo override > app default.
             let chosenProviderId = item.providerOverride
                 ?? config.providerOverride
@@ -870,7 +875,15 @@ final class ReviewQueueWorker {
             // The worktree is a full checkout (no sparse cone) so the agent
             // can read any referenced file with plain Read/Grep.
             var sharedHandle: RepoCheckoutManager.Handle? = nil
-            if effectiveToolMode == .minimal || effectiveToolMode == .sandboxed,
+            if let local = pr.local, effectiveToolMode == .minimal || effectiveToolMode == .sandboxed {
+                do {
+                    sharedHandle = try await LocalChanges.checkout(
+                        local, under: checkoutManager?.worktreesDir ?? FileManager.default.temporaryDirectory)
+                } catch {
+                    PRBarLog.triage.error("local checkout failed root=\(local.root, privacy: .public) — falling back to inline diff: \(String(describing: error), privacy: .public)")
+                    effectiveToolMode = .none
+                }
+            } else if effectiveToolMode == .minimal || effectiveToolMode == .sandboxed,
                let mgr = checkoutManager {
                 do {
                     sharedHandle = try await mgr.provision(
@@ -892,8 +905,12 @@ final class ReviewQueueWorker {
                 effectiveToolMode = .none
             }
             defer {
-                if let h = sharedHandle, let mgr = checkoutManager {
-                    Task { await mgr.release(h) }
+                if let h = sharedHandle {
+                    if pr.local != nil {
+                        Task { await LocalChanges.release(h) }
+                    } else if let mgr = checkoutManager {
+                        Task { await mgr.release(h) }
+                    }
                 }
             }
 
@@ -919,7 +936,7 @@ final class ReviewQueueWorker {
             // the prompt, so it must never fail the review — the same
             // reason `resolveAddressedThreads` swallows its own.
             var priorThreads: [ReviewThread] = []
-            if let fetcher = reviewThreadFetcher {
+            if let fetcher = reviewThreadFetcher, pr.local == nil {
                 do {
                     priorThreads = try await fetcher(pr.owner, pr.repo, pr.number).threads
                 } catch {
@@ -1040,11 +1057,14 @@ final class ReviewQueueWorker {
                 pr: pr, headSha: pr.headSha, providerId: provId,
                 triggeredAt: triggeredAt, completedAt: Date(), review: aggregated
             )
-            stageAutoReviewIfEligible(
-                pr: pr, review: aggregated, config: config,
-                providerId: chosenProviderId, diffText: diffText
-            )
-            await resolveAddressedThreads(pr: pr, review: aggregated, config: config)
+            // A working directory has nowhere to post to.
+            if pr.local == nil {
+                stageAutoReviewIfEligible(
+                    pr: pr, review: aggregated, config: config,
+                    providerId: chosenProviderId, diffText: diffText
+                )
+                await resolveAddressedThreads(pr: pr, review: aggregated, config: config)
+            }
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
             reviews[pr.nodeId]?.status = .failed(error.localizedDescription)

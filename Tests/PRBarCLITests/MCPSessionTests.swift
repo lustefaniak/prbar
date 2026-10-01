@@ -84,7 +84,7 @@ final class MCPSessionTests: XCTestCase {
         XCTAssertTrue(inbox.text.contains("AI review: none"), inbox.text)
 
         let none = try await call(session, "get_review", #"{"pr":"https://github.com/o/r/pull/1"}"#)
-        XCTAssertTrue(none.text.contains("has not reviewed this PR"), none.text)
+        XCTAssertTrue(none.text.contains("has not reviewed this. Call run_review with pr o/r#1"), none.text)
 
         let started = try await call(session, "run_review", #"{"pr":"o/r#1"}"#)
         XCTAssertFalse(started.isError, started.text)

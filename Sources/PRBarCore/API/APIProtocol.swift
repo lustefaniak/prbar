@@ -22,6 +22,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case review
     case runReview = "review.run"
     case reviewOutcome = "review.outcome"
+    case reviewLocal = "review.local"
     case enqueueAction = "action.enqueue"
     case retryAction = "action.retry"
     case dismissAction = "action.dismiss"
@@ -200,6 +201,20 @@ struct PRReference: Codable, Sendable, Equatable {
     var owner: String?
     var repo: String?
     var number: Int?
+    /// A directory in a checkout reviewed with `review.local`.
+    var path: String?
+}
+
+/// Review a working directory: its uncommitted and unpushed changes
+/// against where its branch forked. Never posts anything.
+struct LocalReviewParams: Codable, Sendable {
+    var path: String
+    /// What to compare with; by default the merge base with `origin/HEAD`
+    /// (else `origin/main`, `origin/master`, `main`, `master`).
+    var base: String?
+    var provider: ProviderID?
+    /// Review again even when these exact changes were reviewed already.
+    var force: Bool?
 }
 
 struct ReviewResult: Codable, Sendable {

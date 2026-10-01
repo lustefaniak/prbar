@@ -334,10 +334,10 @@ final class APIServer {
         case .inboxChanged(let prs):
             return APIEvent(kind: .inboxChanged, count: prs.count)
         case .reviewSettled(let nodeId):
-            let pr = runtime.poller.prs.first { $0.nodeId == nodeId }
+            let pr = runtime.poller.prs.first { $0.nodeId == nodeId } ?? fetched[nodeId]
             return APIEvent(
                 kind: .reviewSettled, prNodeId: nodeId,
-                pr: pr.map { "\($0.nameWithOwner)#\($0.number)" },
+                pr: pr.map(Self.displayName),
                 detail: runtime.queue.reviews[nodeId].map { Self.outcome($0.status) })
         case .actionCompleted(let pr):
             return APIEvent(kind: .actionCompleted, prNodeId: pr.nodeId, pr: "\(pr.nameWithOwner)#\(pr.number)")
@@ -413,7 +413,7 @@ final class APIServer {
             }
         case .review:
             return await reply(line, id, PRReference.self) { ref in
-                guard let ref, let pr = self.findPR(ref) else {
+                guard let ref, let pr = self.findPR(try await Self.resolvingPath(ref)) else {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
                 return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId])
@@ -439,10 +439,41 @@ final class APIServer {
             }
         case .reviewOutcome:
             return await reply(line, id, ReviewOutcomeParams.self) { params in
-                guard let params, let pr = self.findPR(params.pr) else {
+                guard let params else { throw Self.missingParams }
+                guard let pr = self.findPR(try await Self.resolvingPath(params.pr)) else {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
                 return self.outcome(of: pr, since: params.since)
+            }
+        case .reviewLocal:
+            return await reply(line, id, LocalReviewParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                let snapshot: LocalChanges.Snapshot
+                do {
+                    snapshot = try await LocalChanges.snapshot(at: params.path, base: params.base)
+                } catch {
+                    throw RPCError(code: RPCError.invalidParams, message: error.localizedDescription)
+                }
+                let pr = LocalChanges.pr(for: snapshot)
+                let config = self.runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
+                if self.isAgent(connection), !config.aiReviewEnabled {
+                    throw RPCError(code: RPCError.refused, message: "AI review is turned off for \(pr.nameWithOwner) in prbar.yaml. Coding agents can't override that; the user can in prbar.yaml.")
+                }
+                guard snapshot.changedFiles > 0 else {
+                    return ReviewResult(pr: pr, review: nil, ignored: "no changes against \(snapshot.baseRef)")
+                }
+                self.fetched[pr.nodeId] = pr
+                var ignored: String?
+                if config.excluded {
+                    ignored = "\(pr.nameWithOwner) is excluded by config"
+                } else {
+                    self.runtime.queue.enqueue(pr, force: params.force ?? false, providerOverride: params.provider)
+                }
+                let all = self.runtime.repoConfigs.config
+                let provider = params.provider
+                    ?? all.resolver()(pr.owner, pr.repo).providerOverride
+                    ?? all.defaultProvider.resolve()
+                return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId], ignored: ignored, provider: provider)
             }
         case .enqueueAction:
             return await reply(line, id, EnqueueActionParams.self) { params in
@@ -634,7 +665,7 @@ final class APIServer {
         case .status, .inbox, .refreshPR, .review, .reviewOutcome, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
              .loadDiff, .invalidateDiff, .loadCILog, .invalidateCILog:
             capability = .read
-        case .runReview:
+        case .runReview, .reviewLocal:
             capability = .review
         case .enqueueAction, .retryAction, .dismissAction:
             // Post or merge depends on the action, so the handler decides
@@ -745,6 +776,17 @@ final class APIServer {
             && !runtime.queue.reviews.values.contains { $0.status.isInFlight }
             && runtime.queue.pendingAutoActions.isEmpty
             && !runtime.actionQueue.entries.values.contains { $0.state.isBusy }
+    }
+
+    /// A reference by `path` names the checkout's review slot.
+    nonisolated static func resolvingPath(_ ref: PRReference) async throws -> PRReference {
+        guard let path = ref.path else { return ref }
+        return PRReference(nodeId: LocalChanges.Snapshot.nodeId(root: try await LocalChanges.root(of: path)))
+    }
+
+    /// How events and logs name a PR, or a checkout for a local review.
+    nonisolated static func displayName(_ pr: InboxPR) -> String {
+        pr.local?.root ?? "\(pr.nameWithOwner)#\(pr.number)"
     }
 
     private func resolvePR(_ ref: PRReference, fetch: Bool) async throws -> InboxPR {

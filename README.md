@@ -172,6 +172,26 @@ Like the app, **it posts nothing until you turn on `shareFindings`, `autoApprove
 or `autoDeny`**. `shareFindings` is the one to start with when you *do* want it on
 the PR: it posts findings as a comment and never casts a verdict.
 
+### Reviewing work before it's a PR
+
+Point it at a checkout instead of a PR and it reviews what you haven't pushed:
+uncommitted changes, untracked files (minus what `.gitignore` excludes) and
+unpushed commits, against where your branch forked from `origin`'s default branch.
+The rules in `prbar.yaml` for that repository (found from the `origin` remote)
+apply, per subfolder in a monorepo, as they would to the PR. Nothing is posted;
+the review is printed:
+
+```sh
+prbar-review .                          # the checkout you're in
+prbar-review --base origin/release ~/src/app
+prbar-review --json . | jq .review.annotations
+```
+
+The working tree is captured as a commit first, through a temporary index, so
+your index, branch and files are never touched and you can keep editing while it
+runs. Reviewing the same changes again is answered from the first review. Coding
+agents get the same through MCP (`run_review` with `path`).
+
 ### Running it continuously
 
 `prbar-review serve` is the menu-bar app without the menu bar: it polls your
@@ -214,7 +234,8 @@ claude mcp add prbar -- prbar-review mcp
 ```
 
 The agent gets `status`, `list_inbox`, `get_review` (verdict, summary and every
-finding with file and lines, also for PRs PRBar no longer tracks), `run_review`,
+finding with file and lines, also for PRs PRBar no longer tracks), `run_review`
+(a PR, or with `path` the uncommitted work in a checkout),
 `get_history` and `watch` (waits until a review finishes or something else
 changes, with a cursor so nothing is missed between calls). The loop it is for:
 on the PR you're working on, the agent reads PRBar's findings, fixes them, pushes,
