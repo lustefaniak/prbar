@@ -139,8 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             : RepoConfigStore.live()
         let coord = ReadinessCoordinator(notifier: n)
-        let log = Self.isHostingTests ? ActionLogStore.temporary() : ActionLogStore.live()
-        let rlog = Self.isHostingTests ? ReviewLogStore.temporary() : ReviewLogStore.live()
+        let log = Self.isHostingTests ? ActionLogStore.temporary() : ActionLogStore.live(historyDirectory: AppPaths.history)
+        let rlog = Self.isHostingTests ? ReviewLogStore.temporary() : ReviewLogStore.live(historyDirectory: AppPaths.history)
         q.actionLog = log
         q.reviewLog = rlog
         a.actionLog = log
@@ -316,11 +316,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let preShown = Self.findExistingSettingsWindow() {
             preShown.orderOut(nil)
         }
-        // Evict aged-out log/cache rows before anything reads the store.
-        // Detached because it deletes thousands of rows on a store that has
-        // never been swept.
+        // Evict aged-out history and cache files. The cache sweep is a
+        // directory walk, so it runs detached.
         if !ScreenshotMode.isActive {
-            Task.detached { StoreRetention.sweep(PRBarModelContainer.live()) }
+            let cacheDirectory = AppPaths.cache
+            Task.detached { StoreRetention.sweepCaches(in: cacheDirectory) }
             let now = Date()
             actionLog.prune(before: now.addingTimeInterval(-StoreRetention.actionLog))
             reviewLog.prune(before: now.addingTimeInterval(-StoreRetention.reviewLog))

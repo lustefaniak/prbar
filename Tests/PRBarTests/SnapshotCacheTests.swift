@@ -4,13 +4,13 @@ import XCTest
 final class SnapshotCacheTests: XCTestCase {
 
     func testLoadReturnsEmptyOnFreshContainer() async {
-        let cache = SnapshotCache(container: PRBarModelContainer.inMemory())
+        let cache = SnapshotCache(stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)"))
         let prs = await cache.load()
         XCTAssertTrue(prs.isEmpty)
     }
 
     func testRoundtripPreservesPRs() async {
-        let cache = SnapshotCache(container: PRBarModelContainer.inMemory())
+        let cache = SnapshotCache(stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)"))
         let pr = makePR(nodeId: "P1", title: "Fix bug")
         await cache.save([pr])
 
@@ -21,7 +21,7 @@ final class SnapshotCacheTests: XCTestCase {
     }
 
     func testSaveOverwritesExistingPR() async {
-        let cache = SnapshotCache(container: PRBarModelContainer.inMemory())
+        let cache = SnapshotCache(stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)"))
         let v1 = makePR(nodeId: "P1", title: "v1")
         let v2 = makePR(nodeId: "P1", title: "v2")
         await cache.save([v1])
@@ -33,7 +33,7 @@ final class SnapshotCacheTests: XCTestCase {
     }
 
     func testSaveDropsRowsForPRsThatLeftTheInbox() async {
-        let cache = SnapshotCache(container: PRBarModelContainer.inMemory())
+        let cache = SnapshotCache(stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)"))
         let a = makePR(nodeId: "A", title: "a")
         let b = makePR(nodeId: "B", title: "b")
         await cache.save([a, b])
@@ -44,7 +44,7 @@ final class SnapshotCacheTests: XCTestCase {
     }
 
     func testClearRemovesAllRows() async {
-        let cache = SnapshotCache(container: PRBarModelContainer.inMemory())
+        let cache = SnapshotCache(stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)"))
         await cache.save([makePR(nodeId: "P1", title: "x")])
         await cache.clear()
 
@@ -54,7 +54,7 @@ final class SnapshotCacheTests: XCTestCase {
 
     @MainActor
     func testPRPollerLoadCachedSeedsPRs() async throws {
-        let cache = SnapshotCache(container: PRBarModelContainer.inMemory())
+        let cache = SnapshotCache(stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)"))
         let pr = makePR(nodeId: "P1", title: "from disk")
         await cache.save([pr])
 
@@ -68,7 +68,7 @@ final class SnapshotCacheTests: XCTestCase {
 
     @MainActor
     func testPRPollerLoadCachedNoOpWhenAlreadyPopulated() async throws {
-        let cache = SnapshotCache(container: PRBarModelContainer.inMemory())
+        let cache = SnapshotCache(stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)"))
         await cache.save([makePR(nodeId: "P1", title: "from disk")])
 
         let fresh = makePR(nodeId: "P2", title: "fresh")

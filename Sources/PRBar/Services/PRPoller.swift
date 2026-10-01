@@ -69,8 +69,8 @@ final class PRPoller {
 
     /// Load the last persisted snapshot (if any) into `prs`. Idempotent —
     /// no-op if `prs` is already populated. Synchronous because
-    /// `SnapshotCache.load()` is `nonisolated` (read-only, fresh
-    /// `ModelContext` per call); call this *before* `start()` so the
+    /// `SnapshotCache.load()` is `nonisolated` (a plain file read); call
+    /// this *before* `start()` so the
     /// popover renders cached PRs the first time it opens instead of
     /// the empty / "Fetching…" state until the first poll lands.
     func loadCached() {
@@ -89,7 +89,11 @@ final class PRPoller {
         // Cache one client across calls — instantiation only does an
         // executable path lookup so it's cheap, but no need to repeat.
         let client: GHClient? = try? GHClient()
-        let snapshotCache = SnapshotCache.live()
+        var legacy: (@Sendable () -> [InboxPR]?)?
+        if AppPaths.readsLegacyStore {
+            legacy = { LegacyStateMigration.inboxSnapshot(PRBarModelContainer.live()) }
+        }
+        let snapshotCache = SnapshotCache(stateDirectory: AppPaths.state, fallback: legacy)
         let poller = PRPoller(
             fetcher: {
                 let c = try client ?? GHClient()

@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import SwiftData
 
 /// On-demand cache of failed Actions job logs. Mirrors `DiffStore`'s
 /// shape so `PRDetailView` can show inline expandable failure logs
@@ -8,7 +7,7 @@ import SwiftData
 /// Keyed by `(prNodeId, headSha, jobId)` so a force-push or job re-run
 /// (which mints a fresh jobId) auto-invalidates the cache.
 ///
-/// Hits hydrate from SwiftData on first lookup; only `.loaded` results
+/// Hits hydrate from `~/.cache/prbar/ci-logs` on first lookup; only `.loaded` results
 /// are persisted (transient `.loading` / `.failed` stay in memory).
 @MainActor
 @Observable
@@ -26,14 +25,14 @@ final class FailureLogStore {
     var logFetcher: @Sendable (_ owner: String, _ repo: String, _ jobId: Int64) async throws -> String
 
     @ObservationIgnored
-    private let container: ModelContainer?
+    private let cache: FileCache?
 
     init(
         logFetcher: @escaping @Sendable (_ owner: String, _ repo: String, _ jobId: Int64) async throws -> String,
-        container: ModelContainer? = nil
+        cache: FileCache? = nil
     ) {
         self.logFetcher = logFetcher
-        self.container = container
+        self.cache = cache
     }
 
     /// Default wiring against the shared `GHClient`. Constructing a
@@ -46,7 +45,7 @@ final class FailureLogStore {
                 let c = try GHClient()
                 return try await c.fetchJobLog(owner: owner, repo: repo, jobId: jobId)
             },
-            container: PRBarModelContainer.live()
+            cache: FileCache(directory: AppPaths.cache.appendingPathComponent("ci-logs"))
         )
     }
 
@@ -157,41 +156,17 @@ final class FailureLogStore {
         "\(prNodeId)@\(headSha)#\(jobId)"
     }
 
-    // MARK: - SwiftData
+    // MARK: - disk
 
     private func readPersisted(cacheKey: String) -> String? {
-        guard let container else { return nil }
-        let context = ModelContext(container)
-        let descriptor = FetchDescriptor<FailureLogCacheEntry>(
-            predicate: #Predicate { $0.cacheKey == cacheKey }
-        )
-        return (try? context.fetch(descriptor))?.first?.tail
+        cache?.read(cacheKey).flatMap { String(data: $0, encoding: .utf8) }
     }
 
     private func writePersisted(cacheKey: String, tail: String) {
-        guard let container else { return }
-        let context = ModelContext(container)
-        let descriptor = FetchDescriptor<FailureLogCacheEntry>(
-            predicate: #Predicate { $0.cacheKey == cacheKey }
-        )
-        if let row = (try? context.fetch(descriptor))?.first {
-            row.tail = tail
-            row.savedAt = Date()
-        } else {
-            context.insert(FailureLogCacheEntry(cacheKey: cacheKey, tail: tail, savedAt: Date()))
-        }
-        try? context.save()
+        cache?.write(cacheKey, Data(tail.utf8))
     }
 
     private func deletePersisted(cacheKey: String) {
-        guard let container else { return }
-        let context = ModelContext(container)
-        let descriptor = FetchDescriptor<FailureLogCacheEntry>(
-            predicate: #Predicate { $0.cacheKey == cacheKey }
-        )
-        if let row = (try? context.fetch(descriptor))?.first {
-            context.delete(row)
-            try? context.save()
-        }
+        cache?.delete(cacheKey)
     }
 }

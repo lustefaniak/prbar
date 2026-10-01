@@ -12,8 +12,29 @@ enum AppReset {
     static func wipeEverythingAndRelaunch() {
         wipeSwiftData()
         wipeUserDefaults()
+        wipeStateFiles()
         moveConfigAside()
         relaunch()
+    }
+
+    /// History, review state, the inbox snapshot and the caches now live in
+    /// files rather than SwiftData, so they go the same way the store does.
+    /// Bare clones are under Application Support and stay.
+    static func wipeStateFiles(state: URL = AppPaths.state, cache: URL = AppPaths.cache) {
+        let fm = FileManager.default
+        for url in [
+            state.appendingPathComponent("history"),
+            state.appendingPathComponent("review-state.json"),
+            state.appendingPathComponent("inbox.json"),
+            cache.appendingPathComponent("diffs"),
+            cache.appendingPathComponent("ci-logs"),
+        ] where fm.fileExists(atPath: url.path) {
+            do {
+                try fm.removeItem(at: url)
+            } catch {
+                NSLog("AppReset.wipeStateFiles: %@", String(describing: error))
+            }
+        }
     }
 
     /// `prbar.yaml` is renamed, not deleted: it is a file the user may

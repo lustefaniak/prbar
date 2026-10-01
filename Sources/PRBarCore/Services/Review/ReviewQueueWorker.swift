@@ -531,9 +531,9 @@ final class ReviewQueueWorker {
 
     /// Chain each save behind the previous one.
     ///
-    /// `ReviewCache.save` is a whole-table fetch/update/delete against its
-    /// own `ModelContext`. Two of them in flight together are unordered, so
-    /// an older snapshot can commit *after* a newer one and regress a
+    /// A save replaces the whole review-state file from a detached task.
+    /// Two of them in flight together are unordered, so an older snapshot
+    /// can land *after* a newer one and regress a
     /// completed review back to queued — which the next launch then reports
     /// as "Interrupted by previous app exit", losing a verdict that was
     /// already paid for. Debounce cancellation alone doesn't prevent it: it

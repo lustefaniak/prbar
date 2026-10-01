@@ -18,8 +18,14 @@ final class ReviewCacheTests: XCTestCase {
         )
     }
 
+    private func stateDirectory() -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prbar-state-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
     func testRoundTripPreservesEntries() {
-        let cache = ReviewCache(container: PRBarModelContainer.inMemory())
+        let cache = ReviewStateFile(stateDirectory: stateDirectory())
         let state = ReviewState(
             prNodeId: "PR_X", headSha: "abc",
             triggeredAt: Date(timeIntervalSince1970: 1_700_000_000),
@@ -39,7 +45,7 @@ final class ReviewCacheTests: XCTestCase {
     }
 
     func testSaveReplacesAndDeletesMissingKeys() {
-        let cache = ReviewCache(container: PRBarModelContainer.inMemory())
+        let cache = ReviewStateFile(stateDirectory: stateDirectory())
         let s1 = ReviewState(prNodeId: "A", headSha: "1", triggeredAt: Date(), status: .queued, costUsd: 0)
         let s2 = ReviewState(prNodeId: "B", headSha: "2", triggeredAt: Date(), status: .queued, costUsd: 0)
         cache.save(["A": s1, "B": s2])
@@ -53,8 +59,20 @@ final class ReviewCacheTests: XCTestCase {
         XCTAssertNil(after["B"])
     }
 
-    func testEmptyLoadOnFreshContainer() {
-        let cache = ReviewCache(container: PRBarModelContainer.inMemory())
-        XCTAssertEqual(cache.load().count, 0)
+    func testEmptyLoadWithNoFile() {
+        XCTAssertEqual(ReviewStateFile(stateDirectory: stateDirectory()).load().count, 0)
+    }
+
+    /// The fallback stands in for the pre-file store until the first save,
+    /// so a completed review survives the storage move instead of being
+    /// re-run and re-billed; after that the file wins.
+    func testFallbackUntilTheFirstSave() {
+        let legacy = ReviewState(prNodeId: "OLD", headSha: "1", triggeredAt: Date(),
+                                 status: .completed(makeAgg()), costUsd: 0.05)
+        let cache = ReviewStateFile(stateDirectory: stateDirectory(), fallback: { ["OLD": legacy] })
+        XCTAssertEqual(cache.load().keys.sorted(), ["OLD"])
+
+        cache.save([:])
+        XCTAssertTrue(cache.load().isEmpty)
     }
 }

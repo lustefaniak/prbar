@@ -33,11 +33,11 @@ final class DiffStoreHydrationTests: XCTestCase {
     /// `.idle`, so the mapping produces zero comments for annotations that
     /// map cleanly once the same diff is loaded.
     func testCachedDiffIsNotVisibleUntilHydrationCompletes() async throws {
-        let container = PRBarModelContainer.inMemory()
+        let container = FileCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-diffs-\(UUID().uuidString)"))
         let pr = makePR()
 
         // First session: fetch once so the parsed diff is written through.
-        let warm = DiffStore(diffFetcher: { _, _, _ in hydrationFixtureDiff }, container: container)
+        let warm = DiffStore(diffFetcher: { _, _, _ in hydrationFixtureDiff }, cache: container)
         warm.ensureLoaded(for: pr)
         try await waitUntil { if case .loaded = warm.status(for: pr) { return true }; return false }
 
@@ -54,7 +54,7 @@ final class DiffStoreHydrationTests: XCTestCase {
         let cold = DiffStore(diffFetcher: { _, _, _ in
             XCTFail("hydration should come off disk, not a refetch")
             return ""
-        }, container: container)
+        }, cache: container)
 
         XCTAssertEqual(cold.status(for: pr), .idle, "the cold window this test exists for")
 
@@ -117,14 +117,14 @@ final class DiffStoreHydrationTests: XCTestCase {
 final class DiffStoreInvalidationTests: XCTestCase {
 
     func testReloadAfterInvalidateRefetchesInsteadOfRehydrating() async throws {
-        let container = PRBarModelContainer.inMemory()
+        let container = FileCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-diffs-\(UUID().uuidString)"))
         let pr = makeInvalidationPR()
         let fetches = FetchCounter()
 
         let store = DiffStore(diffFetcher: { _, _, _ in
             await fetches.bump()
             return hydrationFixtureDiff
-        }, container: container)
+        }, cache: container)
 
         store.ensureLoaded(for: pr)
         try await waitForLoaded(store, pr)
@@ -143,17 +143,17 @@ final class DiffStoreInvalidationTests: XCTestCase {
     /// An ordinary cold load still comes off disk — the bypass is scoped to
     /// the invalidated key and cleared once consumed.
     func testUninvalidatedKeyStillHydratesFromDisk() async throws {
-        let container = PRBarModelContainer.inMemory()
+        let container = FileCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-diffs-\(UUID().uuidString)"))
         let pr = makeInvalidationPR()
 
-        let warm = DiffStore(diffFetcher: { _, _, _ in hydrationFixtureDiff }, container: container)
+        let warm = DiffStore(diffFetcher: { _, _, _ in hydrationFixtureDiff }, cache: container)
         warm.ensureLoaded(for: pr)
         try await waitForLoaded(warm, pr)
 
         let cold = DiffStore(diffFetcher: { _, _, _ in
             XCTFail("should have hydrated from disk")
             return ""
-        }, container: container)
+        }, cache: container)
         cold.ensureLoaded(for: pr)
         try await waitForLoaded(cold, pr)
     }
