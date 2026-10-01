@@ -149,7 +149,7 @@ final class APIServer {
     // MARK: - State
 
     private func trackState() {
-        let poller = runtime.poller, queue = runtime.queue
+        let poller = runtime.poller, queue = runtime.queue, actionQueue = runtime.actionQueue
         var sentReviews = queue.reviews
         trackers = [
             StateTracker(read: { poller.prs }) { [weak self] prs in
@@ -172,6 +172,9 @@ final class APIServer {
             StateTracker(read: { Self.autoReview(queue) }) { [weak self] autoReview in
                 self?.publish(StateUpdate(autoReview: autoReview))
             },
+            StateTracker(read: { Self.actions(actionQueue) }) { [weak self] actions in
+                self?.publish(StateUpdate(actions: actions))
+            },
         ]
     }
 
@@ -183,7 +186,12 @@ final class APIServer {
             polling: Self.polling(runtime.poller),
             reviews: queue.reviews,
             progress: queue.liveProgress,
-            autoReview: Self.autoReview(queue))
+            autoReview: Self.autoReview(queue),
+            actions: Self.actions(runtime.actionQueue))
+    }
+
+    private static func actions(_ queue: ActionQueue) -> ActionQueueState {
+        ActionQueueState(entries: queue.entries, recentSuccess: queue.recentSuccess)
     }
 
     private static func autoReview(_ queue: ReviewQueueWorker) -> AutoReviewState {
@@ -287,6 +295,28 @@ final class APIServer {
                 self.runtime.queue.enqueue(pr, force: params.force ?? false, providerOverride: params.provider)
                 return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId])
             }
+        case .enqueueAction:
+            return await reply(line, id, EnqueueActionParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                if let connection, let client = self.clients[ObjectIdentifier(connection)], client.agent == true,
+                   let denial = Self.denial(of: params.kind, under: self.runtime.repoConfigs.config.agents) {
+                    throw denial
+                }
+                self.runtime.actionQueue.enqueue(params.pr, kind: params.kind, source: .manual)
+                return APIEmpty()
+            }
+        case .retryAction:
+            return await reply(line, id, ActionTarget.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.runtime.actionQueue.retry(params.prNodeId)
+                return APIEmpty()
+            }
+        case .dismissAction:
+            return await reply(line, id, ActionTarget.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.runtime.actionQueue.dismissFailure(params.prNodeId)
+                return APIEmpty()
+            }
         case .autoReviewUndo:
             return await reply(line, id, APIEmpty.self) { _ in
                 self.runtime.queue.cancelAutoReviewBatch()
@@ -361,6 +391,12 @@ final class APIServer {
             capability = .read
         case .runReview:
             capability = .review
+        case .enqueueAction:
+            // Post or merge depends on the action, so the handler decides
+            // with `denial(of:under:)` once it has read the params.
+            return nil
+        case .retryAction, .dismissAction:
+            capability = .post
         case .shutdown:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
         case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setCostCap, .checkoutUsage, .checkoutPrune:
@@ -378,6 +414,19 @@ final class APIServer {
                 code: RPCError.notPermitted,
                 message: "PRBar's agents.\(capability.rawValue) is `ask`, and approving agent requests in PRBar isn't available yet; set it to `allow` to let agents do this")
         }
+    }
+
+    /// Merges need `agents.merge`; every other write `agents.post`.
+    nonisolated static func denial(of kind: GHActionKind, under policy: AgentPolicy) -> RPCError? {
+        let capability: AgentPolicy.Capability
+        switch kind {
+        case .merge, .enableAutoMerge, .disableAutoMerge: capability = .merge
+        case .review, .resolveThreads, .requestReviewer: capability = .post
+        }
+        guard policy[capability] != .allow else { return nil }
+        return RPCError(
+            code: RPCError.notPermitted,
+            message: "PRBar's agents.\(capability.rawValue) is \(policy[capability].rawValue) in prbar.yaml, so coding agents can't do this")
     }
 
     func status() -> ServerStatus {

@@ -25,7 +25,7 @@ struct PRDetailView: View {
 
     @Environment(InboxModel.self) private var poller
     @Environment(ReviewQueueModel.self) private var queue
-    @Environment(ActionQueue.self) private var actionQueue
+    @Environment(ActionQueueModel.self) private var actionQueue
     @Environment(DiffStore.self) private var diffStore
     @Environment(RepoConfigStore.self) private var repoConfigs
 
@@ -1680,8 +1680,7 @@ struct PRDetailView: View {
         let comments = includeInline ? postableInlineComments : []
         actionQueue.enqueue(
             pr,
-            kind: .review(kind: kind, body: bodyDraft, comments: comments),
-            source: .manual
+            kind: .review(kind: kind, body: bodyDraft, comments: comments)
         )
         bodyDraft = ""
         bodyDraftSeededForSha = nil

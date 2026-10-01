@@ -359,7 +359,7 @@ struct PopoverView: View {
         .environment(InboxModel())
         .environment(Notifier(deliverer: NoopDeliverer()))
         .environment(ReviewQueueModel())
-        .environment(ActionQueue())
+        .environment(ActionQueueModel())
 }
 
 private struct NoopDeliverer: NotificationDeliverer {

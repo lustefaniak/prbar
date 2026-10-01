@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     var inbox: InboxModel { session.inbox }
     var reviewModel: ReviewQueueModel { session.reviews }
+    var actionModel: ActionQueueModel { session.actions }
     var poller: PRPoller { runtime.poller }
     var notifier: Notifier { runtime.notifier }
     var queue: ReviewQueueWorker { runtime.queue }
@@ -714,6 +715,7 @@ extension View {
         self
             .environment(app.inbox)
             .environment(app.reviewModel)
+            .environment(app.actionModel)
             .environment(app.poller)
             .environment(app.notifier)
             .environment(app.queue)

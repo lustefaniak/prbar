@@ -69,4 +69,42 @@ final class ServerSessionTests: XCTestCase {
             XCTAssertEqual(APIServer.denial(of: method, by: agent, under: AgentPolicy())?.code, RPCError.notPermitted, method.rawValue)
         }
     }
+
+    /// A write runs against the PR as the client saw it: a review must be
+    /// posted on the commit the user reviewed, even if the server's copy of
+    /// the PR has moved on since.
+    func testWritesUseTheClientsSnapshot() async throws {
+        let (runtime, server) = makeServer(prs: [RuntimeFixtures.requestedPR()])
+        let posted = PostedHeads()
+        runtime.actionQueue.reviewExecutor = { pr, _, _, _ in await posted.record(pr.headSha) }
+        let session = ServerSession(client: server.connectInProcess())
+        defer { session.stop() }
+        try await session.start()
+
+        let seen = RuntimeFixtures.requestedPR(headSha: "reviewed-sha")
+        session.actions.enqueue(seen, kind: .review(kind: .approve, body: "", comments: []))
+        try await until { session.actions.recentSuccess["PR_1"] != nil }
+        let heads = await posted.heads
+        XCTAssertEqual(heads, ["reviewed-sha"])
+        XCTAssertFalse(session.actions.isBusy("PR_1"))
+    }
+
+    func testAgentWritesNeedTheirCapability() {
+        var policy = AgentPolicy()
+        XCTAssertNotNil(APIServer.denial(of: .review(kind: .approve, body: "", comments: []), under: policy), "post is `ask` by default")
+        XCTAssertNotNil(APIServer.denial(of: .merge(method: .squash), under: policy))
+        policy.post = .allow
+        XCTAssertNil(APIServer.denial(of: .review(kind: .comment, body: "x", comments: []), under: policy))
+        XCTAssertNotNil(APIServer.denial(of: .enableAutoMerge(method: .squash), under: policy), "merge stays off")
+        policy.merge = .allow
+        policy.post = .off
+        XCTAssertNil(APIServer.denial(of: .merge(method: .rebase), under: policy))
+        XCTAssertNil(APIServer.denial(of: .enqueueAction, by: HelloParams(client: "a", protocolVersion: 1, agent: true), under: policy),
+                     "enqueue is decided per action, not refused for the method")
+    }
+}
+
+private actor PostedHeads {
+    var heads: [String] = []
+    func record(_ sha: String) { heads.append(sha) }
 }

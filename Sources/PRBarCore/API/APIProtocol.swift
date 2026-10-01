@@ -21,6 +21,9 @@ enum APIMethod: String, CaseIterable, Sendable {
     case refreshPR = "inbox.refresh"
     case review
     case runReview = "review.run"
+    case enqueueAction = "action.enqueue"
+    case retryAction = "action.retry"
+    case dismissAction = "action.dismiss"
     case autoReviewUndo = "autoReview.undo"
     case autoReviewPostNow = "autoReview.postNow"
     case autoReviewDismissFlagged = "autoReview.dismissFlagged"
@@ -203,6 +206,19 @@ struct RunReviewParams: Codable, Sendable {
     /// Review even when a repo gate (draft, already reviewed, a verdict
     /// already at this SHA) would skip it, or a review is cached.
     var force: Bool?
+}
+
+/// A GitHub write, for the server's action queue.
+struct EnqueueActionParams: Codable, Sendable {
+    /// The PR as the client saw it when the user acted. Sent whole, not as
+    /// a reference: a review is posted against this snapshot's head SHA,
+    /// the commit the user reviewed, even if the PR has moved since.
+    var pr: InboxPR
+    var kind: GHActionKind
+}
+
+struct ActionTarget: Codable, Sendable {
+    var prNodeId: String
 }
 
 /// The daily cost cap is a machine-local preference the front end owns and

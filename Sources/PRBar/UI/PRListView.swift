@@ -14,7 +14,7 @@ struct PRListView: View {
     let onSelect: (InboxPR) -> Void
 
     @Environment(DiffStore.self) private var diffStore
-    @Environment(ActionQueue.self) private var actionQueue
+    @Environment(ActionQueueModel.self) private var actionQueue
     @Environment(RepoConfigStore.self) private var repoConfigs
     @Environment(ReviewQueueModel.self) private var reviewQueue
     @AppStorage("skipMergeConfirmation") private var skipMergeConfirmationGlobal = false

@@ -19,11 +19,19 @@ struct StateUpdate: Codable, Sendable, Equatable {
     /// Reviews in flight; small, and replaced whole.
     var progress: [String: ReviewProgress]?
     var autoReview: AutoReviewState?
+    var actions: ActionQueueState?
 
     var isEmpty: Bool {
         prs == nil && polling == nil && reviews == nil && removedReviews == nil
-            && progress == nil && autoReview == nil
+            && progress == nil && autoReview == nil && actions == nil
     }
+}
+
+/// GitHub writes queued, running, retrying or failed, per PR, and the ones
+/// that just succeeded (for the confirmation flash).
+struct ActionQueueState: Codable, Sendable, Equatable {
+    var entries: [String: ActionEntry]
+    var recentSuccess: [String: GHActionKind]
 }
 
 /// Auto reviews staged behind the undo window, and denials flagged for the

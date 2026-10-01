@@ -6,7 +6,7 @@ import OSLog
 
 /// What a queued GitHub write does. Captured by value so a failed
 /// action can be retried verbatim without the UI reconstructing it.
-enum GHActionKind: Sendable, Equatable {
+enum GHActionKind: Sendable, Hashable, Codable {
     case review(kind: ReviewActionKind, body: String, comments: [GHClient.InlineComment])
     case merge(method: MergeMethod)
     /// Queue a merge to run server-side once the PR becomes mergeable
@@ -26,7 +26,7 @@ enum GHActionKind: Sendable, Equatable {
 
 /// One captured GitHub write, fully self-describing so the queue can run
 /// or re-run it on its own. `attempts` increments on each retry.
-struct GHAction: Sendable, Identifiable, Equatable {
+struct GHAction: Sendable, Identifiable, Hashable, Codable {
     let id: UUID
     let pr: InboxPR
     let kind: GHActionKind
@@ -58,7 +58,7 @@ struct GHAction: Sendable, Identifiable, Equatable {
 /// Lifecycle of a queued action as the UI sees it. Terminal success
 /// removes the entry entirely; `.failed` is retained so the user can
 /// retry or dismiss.
-enum ActionRunState: Sendable, Equatable {
+enum ActionRunState: Sendable, Hashable, Codable {
     case queued
     case running
     /// A write failed and is waiting out its backoff before re-running.
@@ -94,7 +94,7 @@ enum ActionRunState: Sendable, Equatable {
     }
 }
 
-struct ActionEntry: Sendable, Equatable {
+struct ActionEntry: Sendable, Hashable, Codable {
     var action: GHAction
     var state: ActionRunState
 }

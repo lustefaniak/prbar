@@ -10,6 +10,7 @@ import Observation
 final class ServerSession {
     let inbox: InboxModel
     let reviews: ReviewQueueModel
+    let actions: ActionQueueModel
 
     private let client: APIClient
     private var listener: Task<Void, Never>?
@@ -18,8 +19,10 @@ final class ServerSession {
         self.client = client
         inbox = InboxModel()
         reviews = ReviewQueueModel()
+        actions = ActionQueueModel()
         inbox.session = self
         reviews.session = self
+        actions.session = self
     }
 
     /// Subscribes, applies the snapshot, then follows updates until the
@@ -44,6 +47,7 @@ final class ServerSession {
     func apply(_ update: StateUpdate) {
         inbox.apply(update)
         reviews.apply(update)
+        actions.apply(update)
     }
 
     /// A request whose answer the caller needs.
@@ -162,5 +166,45 @@ final class ReviewQueueModel {
     /// Deletes the bare clones; returns what is left.
     func pruneCheckouts() async -> Int64 {
         (try? await session?.call(.checkoutPrune, APIEmpty(), as: CheckoutUsage.self).bytes) ?? 0
+    }
+}
+
+/// GitHub writes as the server's action queue reports them. Same names as
+/// the parts of `ActionQueue` the views use.
+@MainActor
+@Observable
+final class ActionQueueModel {
+    private(set) var entries: [String: ActionEntry] = [:]
+    private(set) var recentSuccess: [String: GHActionKind] = [:]
+
+    @ObservationIgnored
+    weak var session: ServerSession?
+
+    func apply(_ update: StateUpdate) {
+        guard let actions = update.actions else { return }
+        entries = actions.entries
+        recentSuccess = actions.recentSuccess
+    }
+
+    func state(for nodeId: String) -> ActionRunState? {
+        entries[nodeId]?.state
+    }
+
+    func isBusy(_ nodeId: String) -> Bool {
+        entries[nodeId]?.state.isBusy ?? false
+    }
+
+    /// The server applies the double-submit guard; `pr` is sent as the user
+    /// saw it, so a review lands on the commit they reviewed.
+    func enqueue(_ pr: InboxPR, kind: GHActionKind) {
+        session?.send(.enqueueAction, EnqueueActionParams(pr: pr, kind: kind))
+    }
+
+    func retry(_ nodeId: String) {
+        session?.send(.retryAction, ActionTarget(prNodeId: nodeId))
+    }
+
+    func dismissFailure(_ nodeId: String) {
+        session?.send(.dismissAction, ActionTarget(prNodeId: nodeId))
     }
 }
