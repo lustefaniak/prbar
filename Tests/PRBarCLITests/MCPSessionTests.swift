@@ -136,6 +136,64 @@ final class MCPSessionTests: XCTestCase {
         await session.close()
     }
 
+    /// A PR leaves the inbox once it's merged or the user reviewed it, but
+    /// PRBar's review of it is still in the history.
+    func testGetReviewFindsAReviewOfAPRNoLongerInTheInbox() async throws {
+        let runtime = try startServer(prs: [])
+        let pr = RuntimeFixtures.requestedPR()
+        runtime.reviewLog.recordCompleted(
+            pr: pr, headSha: pr.headSha, providerId: .claude, triggeredAt: Date(),
+            review: Self.review(annotations: [
+                DiffAnnotation(path: "a.swift", lineStart: 10, lineEnd: 12, severity: .blocker, title: "Crash", body: "Force unwrap."),
+            ]))
+        let session = MCPSession(socketURL: socketURL)
+        let found = try await call(session, "get_review", #"{"pr":"o/r#1"}"#)
+        XCTAssertFalse(found.isError, found.text)
+        XCTAssertTrue(found.text.contains("[blocker] a.swift:10-12 Crash"), found.text)
+        await session.close()
+    }
+
+    func testUnknownArgumentsAreRefused() async throws {
+        try startServer()
+        let session = MCPSession(socketURL: socketURL)
+        let typo = try await call(session, "list_inbox", #"{"filtr":"mine"}"#)
+        XCTAssertTrue(typo.isError, typo.text)
+        XCTAssertTrue(typo.text.contains("filtr"), typo.text)
+        XCTAssertTrue(typo.text.contains("filter"), "names the arguments it takes: \(typo.text)")
+        await session.close()
+    }
+
+    func testABadValueSaysWhatIsAllowed() async throws {
+        try startServer()
+        let session = MCPSession(socketURL: socketURL)
+        let bad = try await call(session, "list_inbox", #"{"filter":"bogus"}"#)
+        XCTAssertTrue(bad.isError, bad.text)
+        XCTAssertTrue(bad.text.contains("all, review_requested, mine"), bad.text)
+        XCTAssertFalse(bad.text.contains("CodingKeys"), bad.text)
+        let wrongType = try await call(session, "get_history", #"{"limit":"ten"}"#)
+        XCTAssertTrue(wrongType.isError, wrongType.text)
+        XCTAssertTrue(wrongType.text.contains("limit must be an integer"), wrongType.text)
+        await session.close()
+    }
+
+    /// Without a title the headline is the body's first sentence, so
+    /// printing both said it twice.
+    func testAFindingWithoutATitleIsNotRepeated() {
+        let pr = RuntimeFixtures.requestedPR()
+        let review = Self.review(annotations: [
+            DiffAnnotation(path: "a.swift", lineStart: 1, lineEnd: 1, severity: .warning, title: nil, body: "Leaks the handle"),
+        ])
+        let state = ReviewState(prNodeId: pr.nodeId, headSha: pr.headSha, triggeredAt: Date(), status: .completed(review), costUsd: 0)
+        let text = MCPText.review(ReviewResult(pr: pr, review: state))
+        XCTAssertEqual(text.components(separatedBy: "Leaks the handle").count - 1, 1, text)
+    }
+
+    static func review(annotations: [DiffAnnotation]) -> AggregatedReview {
+        AggregatedReview(
+            verdict: .requestChanges, confidence: 0.9, summaryMarkdown: "Problems.", annotations: annotations,
+            costUsd: 0.1, toolCallCount: 0, toolNamesUsed: [], perSubreview: [], isSubscriptionAuth: false)
+    }
+
     func testReviewTextListsFindings() {
         let pr = RuntimeFixtures.requestedPR()
         let review = AggregatedReview(
