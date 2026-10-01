@@ -18,12 +18,17 @@ struct Invocation: Equatable {
     /// everything but the summary line in the terminal event.
     var reviewJsonPath: String?
 
+    /// Review in this process instead of through the PRBar server: the
+    /// pre-server behaviour, with no shared queue, history or state.
+    var standalone: Bool = false
+
     init?(args: [String]) {
         var positional: String?
         var force = false
         var provider: ProviderID?
         var configPath: String?
         var reviewJsonPath: String?
+        var standalone = false
 
         var i = args.startIndex
         while i < args.endIndex {
@@ -31,6 +36,8 @@ struct Invocation: Equatable {
             switch arg {
             case "--force":
                 force = true
+            case "--standalone":
+                standalone = true
             case "--provider":
                 i += 1
                 guard i < args.endIndex, let p = ProviderID(rawValue: args[i]) else { return nil }
@@ -56,6 +63,7 @@ struct Invocation: Equatable {
         self.providerOverride = provider
         self.configPath = configPath
         self.reviewJsonPath = reviewJsonPath
+        self.standalone = standalone
     }
 
     /// Accepts a PR URL (`https://github.com/o/r/pull/12`, trailing path

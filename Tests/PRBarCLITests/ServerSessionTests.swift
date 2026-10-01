@@ -351,7 +351,7 @@ private final class RecordingTransport: APIClientTransport, @unchecked Sendable 
 
 }
 
-private actor PostedHeads {
+actor PostedHeads {
     var heads: [String] = []
     func record(_ sha: String) { heads.append(sha) }
 }

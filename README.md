@@ -120,6 +120,17 @@ and hand them over one at a time:
 prbar-review https://github.com/owner/repo/pull/123
 ```
 
+The review runs in the PRBar server: the app's, or a `prbar-review serve`. With
+neither running, the command starts one for the purpose. That server reviews only
+what it is asked to (it leaves the rest of your inbox alone), keeps the cost cap
+off as the standalone run always did, and exits after five minutes with no client
+and nothing in flight. Concurrent invocations share it, so they share one queue
+(two reviews at a time) and the same review state: the same PR at the same commit
+is answered from the first review, at no cost. The app adopts such a server when
+it starts. `--standalone` reviews in the calling process instead, with nothing
+shared; it is also what to use when the running server reads a different
+`prbar.yaml`, which `prbar-review` refuses rather than review by other rules.
+
 Getting it:
 
 - **With the app:** it ships inside PRBar. Settings → General → Command-line tool

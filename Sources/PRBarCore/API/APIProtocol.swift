@@ -21,6 +21,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case refreshPR = "inbox.refresh"
     case review
     case runReview = "review.run"
+    case reviewOutcome = "review.outcome"
     case enqueueAction = "action.enqueue"
     case retryAction = "action.retry"
     case dismissAction = "action.dismiss"
@@ -45,6 +46,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case poll
     case subscribe
     case shutdown
+    case adopt = "server.adopt"
     /// Server to client, no id: one `APIEvent`.
     case event
     /// Server to client, no id: one `StateUpdate`.
@@ -147,6 +149,10 @@ struct HelloResult: Codable, Sendable, Equatable {
     /// Set when the server lives and dies with that process (one the app
     /// started); nil for a server someone started on purpose.
     var exitsWith: Int32?
+    /// Set for a server a one-off `prbar-review <pr>` started: it reviews
+    /// only what it's asked to and exits after this many seconds without
+    /// clients. The app adopts such a server rather than starting another.
+    var idleExitSeconds: Int?
 
     var protocolVersions: ClosedRange<Int> { minProtocolVersion...maxProtocolVersion }
 }
@@ -176,6 +182,8 @@ struct ServerStatus: Codable, Sendable, Equatable {
     var configWarnings: [String]
     /// What `agents:` lets coding agents do. Nil from an older server.
     var agents: AgentPolicy?
+    /// Set for a server started on demand by `prbar-review <pr>`.
+    var idleExitSeconds: Int?
 
     /// Problems a client should surface, empty when everything is fine.
     var problems: [String] {
@@ -198,6 +206,38 @@ struct ReviewResult: Codable, Sendable {
     var pr: InboxPR
     /// Nil when PRBar has no review state for the PR.
     var review: ReviewState?
+    /// From `review.run`: why nothing was queued, when the request was
+    /// dropped without a review state (not requested, excluded, failed at
+    /// this commit already).
+    var ignored: String?
+    /// From `review.run`: the provider the review runs with.
+    var provider: ProviderID?
+}
+
+struct ReviewOutcomeParams: Codable, Sendable {
+    var pr: PRReference
+    /// GitHub writes for the PR logged from this moment on are reported.
+    var since: Date
+}
+
+/// Where one review stands, posts included: what a client waiting for a
+/// review to be completely done needs.
+struct ReviewOutcome: Codable, Sendable {
+    var pr: InboxPR
+    var review: ReviewState?
+    /// The review is terminal and nothing it set off is still going: no
+    /// staged post waiting out the undo window, no write queued, running
+    /// or retrying.
+    var settled: Bool
+    /// The auto-deny gate flagged the PR without posting.
+    var flagged: Bool
+    /// GitHub writes for the PR since `since`, oldest first.
+    var actions: [ActionRecord]
+}
+
+struct AdoptParams: Codable, Sendable {
+    /// The adopting app's pid: the server now exits with it.
+    var exitWith: Int32
 }
 
 struct RefreshParams: Codable, Sendable {
@@ -232,6 +272,12 @@ struct RunReviewParams: Codable, Sendable {
     /// Review even when a repo gate (draft, already reviewed, a verdict
     /// already at this SHA) would skip it, or a review is cached.
     var force: Bool?
+    /// Fetch the PR from GitHub first, so one outside the inbox can be
+    /// reviewed, and at its current head.
+    var fetch: Bool?
+    /// Without `force`, apply every repo gate an incoming review request
+    /// meets, the review request itself included (`prbar-review <pr>`).
+    var gated: Bool?
 }
 
 /// A GitHub write, for the server's action queue.

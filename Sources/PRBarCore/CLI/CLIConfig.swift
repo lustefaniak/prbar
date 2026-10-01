@@ -19,6 +19,21 @@ enum CLIConfig {
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         warn: (String) -> Void = { FileHandle.standardError.write(Data("prbar-review: \($0)\n".utf8)) }
     ) throws -> PRBarConfig {
+        guard let url = try locate(path: explicit, environment: environment, workingDirectory: workingDirectory, home: home) else {
+            return PRBarConfig()
+        }
+        let loaded = try ConfigFile.load(url: url)
+        loaded.warnings.forEach(warn)
+        return loaded.config
+    }
+
+    /// The file `load` reads, or nil when there is none.
+    static func locate(
+        path explicit: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        workingDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) throws -> URL? {
         let fm = FileManager.default
         let required: URL?
         if let explicit {
@@ -42,13 +57,10 @@ enum CLIConfig {
                 ConfigLocation.userConfigURL(environment: environment, home: home),
             ]
             guard let found = candidates.first(where: { fm.fileExists(atPath: $0.path) }) else {
-                return PRBarConfig()
+                return nil
             }
             url = found
         }
-
-        let loaded = try ConfigFile.load(url: url)
-        loaded.warnings.forEach(warn)
-        return loaded.config
+        return url
     }
 }

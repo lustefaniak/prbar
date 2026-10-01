@@ -192,7 +192,7 @@ final class APIClient: @unchecked Sendable {
 enum ServerConnection {
     struct Connected: Sendable {
         let client: APIClient
-        let hello: HelloResult
+        var hello: HelloResult
     }
 
     static func connect(

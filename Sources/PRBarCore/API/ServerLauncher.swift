@@ -39,17 +39,28 @@ enum ServerLauncher {
     /// Connects, starting `executable` first when nobody listens. With
     /// `expectedBuild`, a server an app started from another build (the old
     /// one, after an update) is asked to exit and replaced. A server someone
-    /// started on purpose is used as it is, whatever its build.
+    /// started on purpose is used as it is, whatever its build. With
+    /// `adoptAs`, a server a one-off review started on demand is adopted
+    /// instead: automation on, exiting with that pid. Not replaced, even
+    /// from another build, since that would cut short the review it runs.
     static func connect(
         socketURL: URL,
         client: String,
         executable: Executable,
         expectedBuild: String? = nil,
+        adoptAs: Int32? = nil,
         holder: String = serveHolder,
         timeout: Duration = .seconds(15)
     ) async throws -> ServerConnection.Connected {
         do {
-            let connected = try await ServerConnection.connect(socketURL: socketURL, client: client)
+            var connected = try await ServerConnection.connect(socketURL: socketURL, client: client)
+            if let adoptAs, connected.hello.idleExitSeconds != nil {
+                _ = try await connected.client.call(.adopt, AdoptParams(exitWith: adoptAs), as: APIEmpty.self)
+                connected.hello.exitsWith = adoptAs
+                connected.hello.idleExitSeconds = nil
+                PRBarLog.lifecycle.notice("adopted the on-demand PRBar server pid \(connected.hello.pid, privacy: .public)")
+                return connected
+            }
             guard let expectedBuild, connected.hello.build != expectedBuild,
                   connected.hello.holder == holder, connected.hello.exitsWith != nil
             else {

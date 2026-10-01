@@ -45,6 +45,17 @@ final class APIServer {
     var onShutdown: (@MainActor () -> Void)?
     /// The process this server exits with, reported in `hello`.
     var exitsWith: Int32?
+    /// For a server started on demand: how long it waits without clients
+    /// before exiting, reported in `hello`.
+    var idleExitSeconds: Int?
+    /// How `server.adopt` is carried out: the server stops being on-demand
+    /// and exits with the adopting app instead. Nil refuses it.
+    var onAdopt: (@MainActor (Int32) -> Void)?
+    /// Whether any client is connected, in process included.
+    var hasClients: Bool { !connections.isEmpty }
+    /// PRs fetched for `review.run` that aren't in the inbox, so later
+    /// requests about them still resolve.
+    private var fetched: [String: InboxPR] = [:]
     /// Tests only: runs at the start of every request, so a test can make
     /// one request slower than the next.
     var _beforeHandling: (@MainActor (APIMethod) async -> Void)?
@@ -385,7 +396,8 @@ final class APIServer {
                 return HelloResult(
                     minProtocolVersion: APIVersion.supported.lowerBound,
                     maxProtocolVersion: APIVersion.supported.upperBound,
-                    holder: self.holder, build: self.build, pid: getpid(), exitsWith: self.exitsWith)
+                    holder: self.holder, build: self.build, pid: getpid(), exitsWith: self.exitsWith,
+                    idleExitSeconds: self.idleExitSeconds)
             }
         case .status:
             return await reply(line, id, APIEmpty.self) { _ in self.status() }
@@ -408,18 +420,29 @@ final class APIServer {
             }
         case .runReview:
             return await reply(line, id, RunReviewParams.self) { params in
-                guard let params, let pr = self.findPR(params.pr) else {
-                    throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
-                }
+                guard let params else { throw Self.missingParams }
+                let pr = try await self.resolvePR(params.pr, fetch: params.fetch ?? false)
+                let force = params.force ?? false
+                let config = self.runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
                 if self.isAgent(connection) {
-                    let config = self.runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
                     if let refusal = Self.agentReviewRefusal(
-                        pr: pr, config: config, existing: self.runtime.queue.reviews[pr.nodeId], force: params.force ?? false) {
+                        pr: pr, config: config, existing: self.runtime.queue.reviews[pr.nodeId], force: force) {
                         throw refusal
                     }
                 }
-                self.runtime.queue.enqueue(pr, force: params.force ?? false, providerOverride: params.provider)
-                return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId])
+                let ignored = self.queueReview(pr, config: config, params: params)
+                let all = self.runtime.repoConfigs.config
+                let provider = params.provider
+                    ?? all.resolver()(pr.owner, pr.repo).providerOverride
+                    ?? all.defaultProvider.resolve()
+                return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId], ignored: ignored, provider: provider)
+            }
+        case .reviewOutcome:
+            return await reply(line, id, ReviewOutcomeParams.self) { params in
+                guard let params, let pr = self.findPR(params.pr) else {
+                    throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
+                }
+                return self.outcome(of: pr, since: params.since)
             }
         case .enqueueAction:
             return await reply(line, id, EnqueueActionParams.self) { params in
@@ -576,6 +599,20 @@ final class APIServer {
                 }
                 return SubscribeResult(status: self.status(), state: wantsState ? self.snapshot() : nil)
             }
+        case .adopt:
+            guard let onAdopt else {
+                return Self.failure(id: id, RPCError(code: RPCError.refused, message: "\(holder) wasn't started on demand"))
+            }
+            return await reply(line, id, AdoptParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.exitsWith = params.exitWith
+                self.idleExitSeconds = nil
+                self.runtime.ownsAutomation = true
+                onAdopt(params.exitWith)
+                // Picks up the review requests it left alone until now.
+                self.runtime.poller.pollNow()
+                return APIEmpty()
+            }
         case .shutdown:
             guard let onShutdown else {
                 return Self.failure(id: id, RPCError(code: RPCError.refused, message: "\(holder) does not shut down on request"))
@@ -594,7 +631,7 @@ final class APIServer {
         switch method {
         case .hello, .event, .state, .notify:
             return nil
-        case .status, .inbox, .refreshPR, .review, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
+        case .status, .inbox, .refreshPR, .review, .reviewOutcome, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
              .loadDiff, .invalidateDiff, .loadCILog, .invalidateCILog:
             capability = .read
         case .runReview:
@@ -603,8 +640,8 @@ final class APIServer {
             // Post or merge depends on the action, so the handler decides
             // with `denial(of:under:)` once it knows which action it is.
             return nil
-        case .shutdown:
-            return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
+        case .shutdown, .adopt:
+            return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop or adopt the PRBar server")
         case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setPreferences, .checkoutUsage, .checkoutPrune,
              .setConfig, .clearReviewHistory, .setPopoverVisible, .reportHistoryImport, .reloadHistory:
             return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
@@ -696,8 +733,65 @@ final class APIServer {
             configPath: runtime.repoConfigs.fileURL.path,
             configIssue: runtime.repoConfigs.loadIssue,
             configWarnings: runtime.repoConfigs.warnings,
-            agents: runtime.repoConfigs.config.agents
+            agents: runtime.repoConfigs.config.agents,
+            idleExitSeconds: idleExitSeconds
         )
+    }
+
+    /// Whether nothing is going on that exiting would cut short: no client,
+    /// no review queued or running, no post staged or being written.
+    var isIdle: Bool {
+        !hasClients
+            && !runtime.queue.reviews.values.contains { $0.status.isInFlight }
+            && runtime.queue.pendingAutoActions.isEmpty
+            && !runtime.actionQueue.entries.values.contains { $0.state.isBusy }
+    }
+
+    private func resolvePR(_ ref: PRReference, fetch: Bool) async throws -> InboxPR {
+        if fetch, let owner = ref.owner, let repo = ref.repo, let number = ref.number {
+            let pr = try await runtime.poller.fetchPR(owner: owner, repo: repo, number: number)
+            if !runtime.poller.prs.contains(where: { $0.nodeId == pr.nodeId }) { fetched[pr.nodeId] = pr }
+            return pr
+        }
+        guard let pr = findPR(ref) else {
+            throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
+        }
+        return pr
+    }
+
+    /// Queues `pr` for review, or says why not when nothing gets recorded
+    /// for it. `gated` applies what an incoming review request meets: the
+    /// worker's own gates, plus the request itself.
+    private func queueReview(_ pr: InboxPR, config: ResolvedRepoConfig, params: RunReviewParams) -> String? {
+        let queue = runtime.queue
+        if config.excluded {
+            return "\(pr.nameWithOwner) is excluded by config"
+        }
+        guard params.gated ?? false, !(params.force ?? false) else {
+            queue.enqueue(pr, force: params.force ?? false, providerOverride: params.provider)
+            return nil
+        }
+        switch ReviewAdmission.evaluate(pr: pr, config: config, existing: queue.reviews[pr.nodeId]) {
+        case .ignore(.notRequested):
+            return "no review request for the authenticated user (pass --force to review anyway)"
+        case .ignore(.failedAtCurrentSha):
+            return "PRBar's review of this commit already failed (pass --force to try again)"
+        case .review, .skip:
+            queue.enqueueNewReviewRequests(from: [pr], providerOverride: params.provider)
+            return nil
+        }
+    }
+
+    func outcome(of pr: InboxPR, since: Date) -> ReviewOutcome {
+        let state = runtime.queue.reviews[pr.nodeId]
+        let staged = runtime.queue.pendingAutoActions[pr.nodeId] != nil
+        let writing = runtime.actionQueue.entries[pr.nodeId]?.state.isBusy ?? false
+        return ReviewOutcome(
+            pr: pr,
+            review: state,
+            settled: !(state?.status.isInFlight ?? false) && !staged && !writing,
+            flagged: runtime.queue.flaggedDenials[pr.nodeId] != nil,
+            actions: runtime.actionLog.entries.filter { $0.prNodeId == pr.nodeId && $0.timestamp >= since }.reversed())
     }
 
     nonisolated static func matches(_ owner: String, _ repo: String, _ number: Int, _ ref: PRReference) -> Bool {
@@ -708,7 +802,7 @@ final class APIServer {
     }
 
     private func findPR(_ ref: PRReference) -> InboxPR? {
-        let prs = runtime.poller.prs
+        let prs = runtime.poller.prs + fetched.values
         if let nodeId = ref.nodeId { return prs.first { $0.nodeId == nodeId } }
         return prs.first { Self.matches($0.owner, $0.repo, $0.number, ref) }
     }

@@ -41,7 +41,33 @@ public enum PRBarReviewCLI {
             FileHandle.standardError.write(Data(Self.usage.utf8))
             return 2
         }
+        if !invocation.standalone {
+            // Loaded here only to fail fast on a broken file; the server
+            // reads it itself.
+            let configFile: URL?
+            do {
+                configFile = try CLIConfig.locate(path: invocation.configPath)
+                _ = try CLIConfig.load(path: invocation.configPath)
+            } catch {
+                FileHandle.standardError.write(Data("prbar-review: \(error.localizedDescription)\n".utf8))
+                return 2
+            }
+            return await client(invocation, configFile: configFile)
+        }
+        return await standalone(invocation)
+    }
 
+    @MainActor
+    static func client(_ invocation: Invocation, configFile: URL?) async -> Int32 {
+        await ClientReview(
+            invocation: invocation, configFile: configFile,
+            connect: ClientReview.launcher(configFile: configFile)
+        ).run()
+    }
+
+    /// The review in this process, as before the server existed.
+    @MainActor
+    static func standalone(_ invocation: Invocation) async -> Int32 {
         let config: PRBarConfig
         do {
             config = try CLIConfig.load(path: invocation.configPath)
@@ -167,8 +193,14 @@ public enum PRBarReviewCLI {
                               cost) as one JSON line; - means stdout.
                               Without it, only the verdict and a finding
                               count reach the event stream
+      --standalone            review in this process instead of through the
+                              PRBar server
 
-    Emits brahmanda NDJSON on stdout, one event per line. Logs go to stderr.
+    Reviews through the running PRBar server (the app or `prbar-review
+    serve`), so the app shows it and its history keeps it. With none
+    running, starts one that exits after 5 idle minutes and leaves the rest
+    of the inbox alone. Emits brahmanda NDJSON on stdout, one event per
+    line. Logs go to stderr.
 
     prbar-review serve [options]   run the PRBar server headless;
                                    see `prbar-review serve --help`

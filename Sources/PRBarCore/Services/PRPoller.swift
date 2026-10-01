@@ -112,6 +112,14 @@ final class PRPoller {
     /// in `prs` in place; the row only "blinks" if the snapshot actually
     /// changed. No-op (with optional fallback to pollNow) if no per-PR
     /// refresher is configured (e.g. in tests using the simpler init).
+    /// One PR as GitHub has it now, whether or not it is in the inbox.
+    func fetchPR(owner: String, repo: String, number: Int) async throws -> InboxPR {
+        guard let prRefresher else {
+            throw RPCError(code: RPCError.refused, message: "this PRBar can't fetch single PRs")
+        }
+        return try await prRefresher(owner, repo, number)
+    }
+
     /// `force` skips the in-flight de-dup so two refreshes in quick
     /// succession (e.g. the optimistic + 1.2s-delayed pair after a
     /// review post) actually both run.

@@ -62,6 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `prbar-review serve` in a process of its own.
     let runtime: PRBarRuntime?
     private var runtimeLock: RuntimeLock?
+    /// Where to serve the socket once the lock frees up, while another
+    /// PRBar holds it.
+    private var deferredSocketURL: URL?
     /// The server over `runtime`, which the views reach only through
     /// `session`. Not bound to the socket unless the app holds the runtime
     /// lock.
@@ -141,6 +144,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let owns = Self.isHostingTests || lock.acquire(holder: "PRBar.app")
             if !owns {
                 PRBarLog.lifecycle.notice("runtime lock held by \(lock.currentHolder() ?? "?", privacy: .public); automation off")
+                if !Self.isHostingTests {
+                    deferredSocketURL = ServerLocation.socketURL(stateDirectory: env.stateDirectory)
+                }
             }
             self.runtimeLock = lock
             // Notifications go to whichever front end subscribes for them
@@ -165,7 +171,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let build = PRBarBuild.version
             session = ServerSession(connect: {
                 try await ServerLauncher.connect(
-                    socketURL: socket, client: "PRBar.app", executable: external, expectedBuild: build)
+                    socketURL: socket, client: "PRBar.app", executable: external, expectedBuild: build,
+                    adoptAs: getpid())
             })
         } else if let runtime {
             let server = APIServer(runtime: runtime, holder: "PRBar.app")
@@ -177,6 +184,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             self.server = server
+            if let deferredSocketURL, let runtimeLock {
+                takeOverAutomation(lock: runtimeLock, socketURL: deferredSocketURL)
+            }
             if let notificationRelay { server.relayNotifications(from: notificationRelay) }
             session = ServerSession(client: server.connectInProcess())
             // Applied at once so the first frame already shows the cached
@@ -226,6 +236,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // capture).
         if let deliverer {
             Task { await deliverer.requestAuthorization() }
+        }
+    }
+
+    /// While another PRBar holds the lock (a `serve`, or one a one-off
+    /// review started on demand, which exits once idle), checks now and
+    /// then whether it's gone, and takes over automation and the socket.
+    private func takeOverAutomation(lock: RuntimeLock, socketURL: URL) {
+        Task { @MainActor [weak self] in
+            while let runtime = self?.runtime, !runtime.ownsAutomation {
+                try? await Task.sleep(for: .seconds(10))
+                guard lock.acquire(holder: "PRBar.app") else { continue }
+                PRBarLog.lifecycle.notice("runtime lock is free again; automation on")
+                runtime.ownsAutomation = true
+                do {
+                    try self?.server?.start(socketURL: socketURL)
+                } catch {
+                    PRBarLog.lifecycle.error("API socket not served: \(error.localizedDescription, privacy: .public)")
+                }
+                runtime.poller.pollNow()
+            }
         }
     }
 

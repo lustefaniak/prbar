@@ -130,7 +130,7 @@ enum ClientCommand: Equatable {
     static func describe(_ status: ServerStatus, now: Date) -> String {
         var lines = [
             "server:     \(status.holder), build \(status.build), pid \(status.pid), up \(duration(now.timeIntervalSince(status.startedAt)))",
-            "automation: \(status.ownsAutomation ? "on" : "off (another PRBar reviews and posts)")",
+            "automation: \(status.ownsAutomation ? "on" : status.idleExitSeconds.map { "off (started on demand for one-off reviews; exits after \($0)s idle)" } ?? "off (another PRBar reviews and posts)")",
         ]
         if let at = status.lastPollAt {
             lines.append("last poll:  \(timestamp(at)) (\(duration(now.timeIntervalSince(at))) ago), \(status.prCount) PRs, \(status.awaitingReview) awaiting your review")

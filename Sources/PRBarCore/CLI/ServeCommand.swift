@@ -22,6 +22,10 @@ enum ServeCommand {
         /// Exit when this process does: how the app ties a server it
         /// started to its own lifetime, crash included.
         var exitWith: Int32?
+        /// Started on demand by `prbar-review <pr>`: review only what
+        /// clients ask for, and exit after this many seconds with no
+        /// clients and nothing in flight.
+        var idleExitSeconds: Int?
 
         init?(args: [String]) {
             var i = args.startIndex
@@ -35,6 +39,10 @@ enum ServeCommand {
                     i += 1
                     guard i < args.endIndex, let pid = Int32(args[i]), pid > 0 else { return nil }
                     exitWith = pid
+                case "--idle-exit":
+                    i += 1
+                    guard i < args.endIndex, let seconds = Int(args[i]), seconds > 0 else { return nil }
+                    idleExitSeconds = seconds
                 case "--daily-cap":
                     i += 1
                     guard i < args.endIndex else { return nil }
@@ -56,6 +64,7 @@ enum ServeCommand {
 
     static let usage = """
     usage: prbar-review serve [--config <path>] [--daily-cap <usd>|off] [--exit-with <pid>]
+                              [--idle-exit <seconds>]
 
     Runs the PRBar server headless: polls your GitHub inbox, reviews
     requested PRs, posts what prbar.yaml allows, records history in the
@@ -70,6 +79,11 @@ enum ServeCommand {
                           this; `off` disables it (default: 5.00)
       --exit-with <pid>   stop when that process exits (PRBar.app passes its
                           own pid for a server it starts)
+      --idle-exit <secs>  review only what clients ask for, and stop once
+                          no client has been connected and nothing has
+                          been in flight for that long (how a one-off
+                          `prbar-review <pr>` starts one); the app adopts
+                          such a server when it starts
 
     """
 
@@ -99,6 +113,9 @@ enum ServeCommand {
         let runtime = PRBarRuntime.live(env, deliverer: relay)
         // Nobody is watching an undo banner.
         runtime.queue.undoWindow = 0
+        // A one-off review must not turn into a reviewer of the whole inbox
+        // for as long as the server waits to exit.
+        if options.idleExitSeconds != nil { runtime.ownsAutomation = false }
         if let cap = options.dailyCapUsd {
             runtime.queue.dailyCostCapEnabled = cap > 0
             if cap > 0 { runtime.queue.dailyCostCap = cap }
@@ -132,6 +149,7 @@ enum ServeCommand {
         let stop = StopSignal()
         let server = APIServer(runtime: runtime, holder: holder)
         server.exitsWith = options.exitWith
+        server.idleExitSeconds = options.idleExitSeconds
         server.relayNotifications(from: relay)
         server.onShutdown = {
             log("shutdown requested by a client")
@@ -147,13 +165,37 @@ enum ServeCommand {
         }
 
         runtime.startMaintenance(cacheDirectory: env.cacheDirectory)
-        if let owner = options.exitWith {
+        func exit(with owner: Int32) {
             Task { @MainActor in
                 while Self.isRunning(owner) {
                     try? await Task.sleep(for: .seconds(1))
                 }
                 log("process \(owner) exited; stopping with it")
                 stop.fire()
+            }
+        }
+        if let owner = options.exitWith { exit(with: owner) }
+        if let seconds = options.idleExitSeconds {
+            server.onAdopt = { owner in
+                log("adopted by process \(owner); automation on, exiting with it")
+                exit(with: owner)
+            }
+            Task { @MainActor [weak server] in
+                var idleSince: Date?
+                while let server, server.idleExitSeconds != nil {
+                    if server.isIdle {
+                        let since = idleSince ?? Date()
+                        idleSince = since
+                        if Date().timeIntervalSince(since) >= Double(seconds) {
+                            log("idle for \(seconds)s; stopping")
+                            stop.fire()
+                            return
+                        }
+                    } else {
+                        idleSince = nil
+                    }
+                    try? await Task.sleep(for: .seconds(1))
+                }
             }
         }
         log("serving \(socketURL.path); config \(configURL.path); state in \(env.stateDirectory.path)")

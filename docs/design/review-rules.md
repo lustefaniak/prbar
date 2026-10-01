@@ -1,8 +1,9 @@
 # Review rules redesign
 
 Status: draft, working notes. Phases 1 and 2 (core split, files instead of SwiftData, `prbar.yaml`) shipped in
-v0.15.0. Client-server (phase 3) on `main` since: 3.1 to 3.5 done (the app can run against a separate
-`prbar-review serve` it starts and stops itself, opt-in), 3.6 next.
+v0.15.0. Client-server (phase 3) on `main` since: 3.1 to 3.6 done (the app can run against a separate
+`prbar-review serve` it starts and stops itself, opt-in; `prbar-review <pr>` reviews through the server,
+starting one on demand).
 
 Goal: replace the per-repo settings model with a rule-based configuration that lives in files, is shared by
 the app and the `prbar-review` CLI, can be exported/imported/versioned, and can explain for any repo + PR which
@@ -139,8 +140,10 @@ no second login item, no "keeps reviewing after you quit the app" by default.
 - **On purpose:** `prbar-review serve` from a shell, a systemd user unit on Linux, a tmux pane. The app connects
   to such a server and leaves it alone: never asks it to exit, never replaces it, whatever its build. `hello`
   says which kind a server is (`exitsWith`).
-- **On demand from the CLI** (3.6): a one-off `prbar-review <pr>` with nothing running starts one that exits
-  after a stretch with no clients, so it doesn't leave a daemon behind.
+- **On demand from the CLI** (3.6): a one-off `prbar-review <pr>` with nothing running starts one
+  (`serve --idle-exit 300`) that exits after five minutes with no client and nothing in flight, so it doesn't
+  leave a daemon behind. It reviews only what clients ask for (automation off), so a one-off command doesn't
+  review the rest of the inbox meanwhile. The app adopts it (`server.adopt`) instead of starting another.
 
 **After an update** the old server keeps running while the new app starts. The `hello` build check catches it for
 a server an app started: the new app asks it to exit, waits for the socket to go quiet, and starts the new
