@@ -179,7 +179,7 @@ final class ActionQueueTests: XCTestCase {
     func testTransientFailureIsRetriedAutomatically() async throws {
         let pr = makePR(nodeId: "PR_a", number: 7, title: "blip")
         let attempts = AsyncCounter()
-        let log = ActionLogStore(container: PRBarModelContainer.inMemory())
+        let log = ActionLogStore.temporary()
 
         let q = ActionQueue()
         q.autoRetryDelays = [.milliseconds(1), .milliseconds(1)]
@@ -204,7 +204,7 @@ final class ActionQueueTests: XCTestCase {
     /// of the write the user asked for.
     func testFailureIsRecordedBeforeTheRetryIsScheduled() async throws {
         let pr = makePR(nodeId: "PR_a", number: 7, title: "blip")
-        let log = ActionLogStore(container: PRBarModelContainer.inMemory())
+        let log = ActionLogStore.temporary()
 
         let q = ActionQueue()
         q.autoRetryDelays = [.seconds(30)]   // long enough that it never fires
@@ -514,7 +514,7 @@ final class ActionQueueTests: XCTestCase {
     /// what a human wrote, not the plumbing.
     func testHistoryDetailKeepsTheUnmarkedBody() async throws {
         let pr = makePR(nodeId: "PR_a", number: 7, title: "auto")
-        let log = ActionLogStore(container: PRBarModelContainer.inMemory())
+        let log = ActionLogStore.temporary()
 
         let q = ActionQueue()
         q.actionLog = log

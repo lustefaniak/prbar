@@ -38,7 +38,7 @@ final class ReviewLogStoreTests: XCTestCase {
     }
 
     func testRecordCompletedRoundTripsAggregated() {
-        let store = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let store = ReviewLogStore.temporary()
         let pr = makePR()
         let agg = makeAggregated(verdict: .comment, cost: 0.07)
         let t0 = Date(timeIntervalSince1970: 1_000_000)
@@ -55,12 +55,16 @@ final class ReviewLogStoreTests: XCTestCase {
         XCTAssertEqual(row.costUsd ?? 0, 0.07, accuracy: 1e-9)
         XCTAssertEqual(row.providerId, .claude)
         XCTAssertEqual(row.prNumber, 42)
-        let decoded = row.decodeAggregated()
-        XCTAssertEqual(decoded?.summaryMarkdown, "ok")
+        XCTAssertTrue(row.hasReview)
+        XCTAssertEqual(store.review(for: row.id)?.summaryMarkdown, "ok")
+        // A fresh store reads it back from disk, not the in-memory cache.
+        let reread = ReviewLogStore(history: store.history)
+        XCTAssertEqual(reread.fetchAll().first?.id, row.id)
+        XCTAssertEqual(reread.review(for: row.id)?.summaryMarkdown, "ok")
     }
 
     func testRecordFailedKeepsErrorAndOptionalCost() {
-        let store = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let store = ReviewLogStore.temporary()
         store.recordFailed(
             pr: makePR(), headSha: "deadbeef", providerId: .codex,
             triggeredAt: Date(),
@@ -80,7 +84,7 @@ final class ReviewLogStoreTests: XCTestCase {
     }
 
     func testSpendSinceWindowSumsCostUsd() {
-        let store = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let store = ReviewLogStore.temporary()
         let pr = makePR()
         let now = Date()
         let yesterday = now.addingTimeInterval(-86_400 - 60)
@@ -105,7 +109,7 @@ final class ReviewLogStoreTests: XCTestCase {
     }
 
     func testSpendIgnoresNilCosts() {
-        let store = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let store = ReviewLogStore.temporary()
         store.recordCompleted(
             pr: makePR(), headSha: "h", providerId: .claude,
             triggeredAt: Date(), review: makeAggregated(cost: 0.10)
@@ -131,7 +135,7 @@ final class ReviewLogStoreTests: XCTestCase {
     }
 
     func testClearAllWipesEntries() {
-        let store = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let store = ReviewLogStore.temporary()
         store.recordCompleted(
             pr: makePR(), headSha: "h", providerId: .claude,
             triggeredAt: Date(), review: makeAggregated(cost: 0.10)

@@ -131,15 +131,3 @@ final class ReviewLogEntry {
         return try? decoder.decode(AggregatedReview.self, from: payload)
     }
 }
-
-enum ReviewLogStatus: String, Sendable, CaseIterable {
-    case completed
-    case failed
-
-    var displayName: String {
-        switch self {
-        case .completed: return "Completed"
-        case .failed:    return "Failed"
-        }
-    }
-}

@@ -139,8 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             : RepoConfigStore.live()
         let coord = ReadinessCoordinator(notifier: n)
-        let log = ActionLogStore.live()
-        let rlog = ReviewLogStore.live()
+        let log = Self.isHostingTests ? ActionLogStore.temporary() : ActionLogStore.live()
+        let rlog = Self.isHostingTests ? ReviewLogStore.temporary() : ReviewLogStore.live()
         q.actionLog = log
         q.reviewLog = rlog
         a.actionLog = log
@@ -321,6 +321,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // never been swept.
         if !ScreenshotMode.isActive {
             Task.detached { StoreRetention.sweep(PRBarModelContainer.live()) }
+            let now = Date()
+            actionLog.prune(before: now.addingTimeInterval(-StoreRetention.actionLog))
+            reviewLog.prune(before: now.addingTimeInterval(-StoreRetention.reviewLog))
         }
 
         installStatusItem()

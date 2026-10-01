@@ -4,7 +4,7 @@ import XCTest
 @MainActor
 final class ReviewQueueWorkerLoggingTests: XCTestCase {
     func testCompletedTriageAppendsToReviewLog() async throws {
-        let log = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let log = ReviewLogStore.temporary()
         let worker = makeWorker(reviewLog: log, diffText: makeDiff())
         worker.provider = StubProvider(verdict: .comment, summary: "ok", cost: 0.07)
 
@@ -17,11 +17,11 @@ final class ReviewQueueWorkerLoggingTests: XCTestCase {
         XCTAssertEqual(rows[0].verdict, .comment)
         XCTAssertEqual(rows[0].costUsd ?? 0, 0.07, accuracy: 1e-9)
         XCTAssertEqual(rows[0].providerId, .claude)
-        XCTAssertEqual(rows[0].decodeAggregated()?.summaryMarkdown, "ok")
+        XCTAssertEqual(log.review(for: rows[0].id)?.summaryMarkdown, "ok")
     }
 
     func testFailedTriageAppendsFailureRow() async throws {
-        let log = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let log = ReviewLogStore.temporary()
         let worker = makeWorker(reviewLog: log, diffText: makeDiff())
         worker.provider = ThrowingStubProvider(error: TestError.boom)
 
@@ -36,7 +36,7 @@ final class ReviewQueueWorkerLoggingTests: XCTestCase {
     }
 
     func testEmptyDiffAppendsFailureRow() async throws {
-        let log = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let log = ReviewLogStore.temporary()
         let worker = makeWorker(reviewLog: log, diffText: "")
         worker.provider = StubProvider(verdict: .approve, summary: "x", cost: 0)
 
@@ -50,7 +50,7 @@ final class ReviewQueueWorkerLoggingTests: XCTestCase {
     }
 
     func testCapBlockedEnqueueAppendsFailureRow() async throws {
-        let log = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let log = ReviewLogStore.temporary()
         let worker = makeWorker(reviewLog: log, diffText: makeDiff())
         worker.provider = StubProvider(verdict: .approve, summary: "x", cost: 5.0)
         worker.dailyCostCap = 5.0
@@ -70,7 +70,7 @@ final class ReviewQueueWorkerLoggingTests: XCTestCase {
     }
 
     func testCumulativeSpendUsesLogWhenWired() async throws {
-        let log = ReviewLogStore(container: PRBarModelContainer.inMemory())
+        let log = ReviewLogStore.temporary()
         let worker = makeWorker(reviewLog: log, diffText: makeDiff())
         worker.provider = StubProvider(verdict: .approve, summary: "x", cost: 0.10)
 

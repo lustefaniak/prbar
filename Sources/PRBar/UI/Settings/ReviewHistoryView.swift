@@ -1,20 +1,17 @@
 import SwiftUI
-import SwiftData
 
 /// Settings → Review History tab. Browse every AI triage that reached a
 /// terminal state (completed or failed). Filterable by status, provider,
 /// repo (substring), and time window. Expand a row for the persisted
 /// `AggregatedReview` summary, cost, head SHA, and failure reason.
 ///
-/// Read path uses `@Query` so a freshly-recorded triage shows up live
-/// without needing the user to flip to another tab and back. Writes
-/// (clear-all) go through the `ReviewLogStore` env to stay on the
-/// same `ModelContext` the rest of the app uses.
+/// Reads `ReviewLogStore.entries`, which is observable, so a freshly
+/// recorded triage shows up live. The full review behind a row is loaded
+/// from its own file when the row is expanded.
 struct ReviewHistoryView: View {
     @Environment(ReviewLogStore.self) private var store
 
-    @Query(sort: [SortDescriptor(\ReviewLogEntry.triggeredAt, order: .reverse)])
-    private var allEntries: [ReviewLogEntry]
+    private var allEntries: [ReviewRecord] { store.entries }
 
     @State private var statusFilter: StatusFilter = .all
     @State private var providerFilter: ProviderFilter = .all
@@ -172,7 +169,7 @@ struct ReviewHistoryView: View {
         }
     }
 
-    private func formattedSpend(_ rows: [ReviewLogEntry]) -> String {
+    private func formattedSpend(_ rows: [ReviewRecord]) -> String {
         let total = rows.reduce(0.0) { $0 + ($1.costUsd ?? 0) }
         return String(format: "$%.2f", total)
     }
@@ -192,7 +189,7 @@ struct ReviewHistoryView: View {
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
     }
 
-    private var filtered: [ReviewLogEntry] {
+    private var filtered: [ReviewRecord] {
         let cutoff = window.cutoff()
         let needle = repoFilter.trimmingCharacters(in: .whitespaces).lowercased()
         return allEntries.filter { e in
@@ -216,7 +213,8 @@ struct ReviewHistoryView: View {
 }
 
 private struct EntryRow: View {
-    let entry: ReviewLogEntry
+    @Environment(ReviewLogStore.self) private var store
+    let entry: ReviewRecord
     let isExpanded: Bool
     let onToggle: () -> Void
 
@@ -310,7 +308,7 @@ private struct EntryRow: View {
                     .font(.callout)
                     .textSelection(.enabled)
             }
-        } else if let agg = entry.decodeAggregated() {
+        } else if let agg = store.review(for: entry.id) {
             VStack(alignment: .leading, spacing: 8) {
                 if !agg.summaryMarkdown.isEmpty {
                     MarkdownText(raw: agg.summaryMarkdown)

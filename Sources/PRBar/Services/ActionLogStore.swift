@@ -1,41 +1,38 @@
 import Foundation
 import Observation
-import SwiftData
 
-/// Thin `@MainActor @Observable` wrapper around the shared SwiftData
-/// `ModelContext` for `ActionLogEntry`. Owns the write-side API used by
-/// PRPoller / AutoApprovePolicy fire path; the read-side is direct
-/// `@Query` from views.
-///
-/// Using a store wrapper (instead of plumbing `ModelContext` through
-/// every service) keeps the concurrency story simple — all writes go
-/// through the main actor, matching the rest of the UI layer's wiring.
+/// The History tab's data: every PR action PRBar took or tried, newest
+/// first. Backed by `history/actions/*.jsonl` in the state directory
+/// (shared with the CLI); the whole log is held in memory, since it is a
+/// few hundred small rows and every view reads it whole.
 @MainActor
 @Observable
 final class ActionLogStore {
-    @ObservationIgnored
-    let container: ModelContainer
+    private(set) var entries: [ActionRecord]
 
     @ObservationIgnored
-    private let context: ModelContext
+    let history: ActionHistory
 
-    /// Bumps on every successful write so SwiftUI views observing this
-    /// store re-render even when they aren't using `@Query` directly.
-    private(set) var revision: Int = 0
-
-    init(container: ModelContainer) {
-        self.container = container
-        self.context = ModelContext(container)
+    init(history: ActionHistory) {
+        self.history = history
+        self.entries = history.readAll().sorted { $0.timestamp > $1.timestamp }
     }
 
-    /// Convenience for production code paths that don't already have a
-    /// container wired through.
-    static func live() -> ActionLogStore {
-        ActionLogStore(container: PRBarModelContainer.live())
+    /// The user's history directory, after a one-time copy of the rows the
+    /// SwiftData store held before history moved to files.
+    static func live(historyDirectory: URL = HistoryLocation.directory()) -> ActionLogStore {
+        LegacyHistoryMigration.migrateIfNeeded(historyDirectory: historyDirectory)
+        return ActionLogStore(history: .actions(in: historyDirectory))
     }
 
-    /// Insert an action record. Logs (but doesn't throw) on save failures
-    /// — losing a history row should never block the underlying action.
+    /// A store over a fresh temporary directory, for tests and the XCTest host.
+    static func temporary() -> ActionLogStore {
+        ActionLogStore(history: .actions(in: FileManager.default.temporaryDirectory
+            .appendingPathComponent("prbar-history-\(UUID().uuidString)")))
+    }
+
+    /// Append an action. Logs (but doesn't throw) on write failures —
+    /// losing a history row should never block the underlying action.
     func record(
         kind: ActionLogKind,
         outcome: ActionLogOutcome,
@@ -46,7 +43,7 @@ final class ActionLogStore {
         costUsd: Double? = nil,
         timestamp: Date = Date()
     ) {
-        let entry = ActionLogEntry(
+        let record = ActionRecord(
             timestamp: timestamp,
             kind: kind,
             outcome: outcome,
@@ -60,29 +57,27 @@ final class ActionLogStore {
             detail: detail,
             costUsd: costUsd
         )
-        context.insert(entry)
         do {
-            try context.save()
-            revision &+= 1
+            try history.append(record)
         } catch {
-            NSLog("ActionLogStore.save failed: %@", String(describing: error))
+            PRBarLog.actions.error("action log write failed: \(error.localizedDescription, privacy: .public)")
         }
+        let at = entries.firstIndex { $0.timestamp <= record.timestamp } ?? entries.endIndex
+        entries.insert(record, at: at)
     }
 
-    /// Read-side helper for non-`@Query` callers (e.g. tests).
-    func fetchAll(limit: Int? = nil) -> [ActionLogEntry] {
-        var descriptor = FetchDescriptor<ActionLogEntry>(
-            sortBy: [SortDescriptor(\ActionLogEntry.timestamp, order: .reverse)]
-        )
-        if let limit { descriptor.fetchLimit = limit }
-        return (try? context.fetch(descriptor)) ?? []
+    func fetchAll(limit: Int? = nil) -> [ActionRecord] {
+        guard let limit else { return entries }
+        return Array(entries.prefix(limit))
     }
 
-    /// Wipe all history. Exposed for a future Settings → "Clear history"
-    /// button; also handy in tests.
     func clearAll() {
-        try? context.delete(model: ActionLogEntry.self)
-        try? context.save()
-        revision &+= 1
+        history.clear()
+        entries = []
+    }
+
+    func prune(before cutoff: Date) {
+        history.prune(before: cutoff)
+        entries.removeAll { $0.timestamp < cutoff }
     }
 }

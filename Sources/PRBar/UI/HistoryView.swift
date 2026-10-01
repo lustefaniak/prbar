@@ -1,5 +1,5 @@
 import SwiftUI
-import SwiftData
+
 import AppKit
 
 /// Chronological list of PR actions taken through PRBar — manual review
@@ -49,14 +49,14 @@ struct HistoryView: View {
         .padding(.vertical, 16)
     }
 
-    private func open(_ entry: ActionLogEntry) {
+    private func open(_ entry: ActionRecord) {
         let url = URL(string: "https://github.com/\(entry.owner)/\(entry.repo)/pull/\(entry.prNumber)")!
         NSWorkspace.shared.open(url)
     }
 
-    struct DayGroup { let day: Date; let entries: [ActionLogEntry] }
+    struct DayGroup { let day: Date; let entries: [ActionRecord] }
 
-    static func groupByDay(_ entries: [ActionLogEntry]) -> [DayGroup] {
+    static func groupByDay(_ entries: [ActionRecord]) -> [DayGroup] {
         let cal = Calendar.current
         let dict = Dictionary(grouping: entries) { cal.startOfDay(for: $0.timestamp) }
         return dict.keys.sorted(by: >).map { day in
@@ -86,7 +86,7 @@ private struct DayHeader: View {
 }
 
 private struct HistoryRow: View {
-    let entry: ActionLogEntry
+    let entry: ActionRecord
     var onOpen: () -> Void
 
     private static let timeFormatter: DateFormatter = {

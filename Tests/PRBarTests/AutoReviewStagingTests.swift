@@ -243,7 +243,7 @@ final class AutoReviewStagingTests: XCTestCase {
             path: "a", lineStart: 1, lineEnd: 1, severity: .warning,
             title: "Unchecked nil", body: "this can crash"
         )
-        let log = ActionLogStore(container: PRBarModelContainer.inMemory())
+        let log = ActionLogStore.temporary()
         let worker = makeWorker(
             provider: StubProvider(
                 verdict: .approve, summary: "one thing to fix", cost: 0.02,

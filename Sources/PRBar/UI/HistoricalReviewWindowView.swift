@@ -1,11 +1,10 @@
 import SwiftUI
-import SwiftData
 
 enum HistoricalReviewWindowID {
     static let id = "historical-review"
 }
 
-/// Read-only view of a `ReviewLogEntry`. Opened from Settings → Review
+/// Read-only view of a `ReviewRecord`. Opened from Settings → Review
 /// History, shows the cached `AggregatedReview` in the same detail
 /// shape PRDetailView uses (verdict + summary + annotations) and tries
 /// to fetch the live PR alongside so the diff renders with the same
@@ -13,7 +12,7 @@ enum HistoricalReviewWindowID {
 ///
 /// Failure modes handled explicitly so a closed/deleted/forbidden PR
 /// doesn't blow up the window:
-///   - Log entry not found in SwiftData → "Review entry missing".
+///   - Log entry not found in the review history → "Review entry missing".
 ///   - PR fetch succeeds → live PR header + diff above the cached review.
 ///   - PR fetch fails (404, no access, gh missing) → cached review
 ///     only, with a banner explaining what's missing.
@@ -23,7 +22,11 @@ struct HistoricalReviewWindowView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(ReviewLogStore.self) private var reviewLog
 
-    @Query private var entries: [ReviewLogEntry]
+    /// Looked up in the store rather than captured, so the window
+    /// re-renders if the user clears history out from under it.
+    private var entries: [ReviewRecord] {
+        reviewLog.entries.filter { $0.id == logEntryId }
+    }
 
     @State private var freshPR: InboxPR? = nil
     @State private var fetchError: String? = nil
@@ -31,10 +34,6 @@ struct HistoricalReviewWindowView: View {
 
     init(logEntryId: UUID) {
         self.logEntryId = logEntryId
-        // Filter the @Query down to the single row we care about so the
-        // view re-renders if the user clears history out from under us.
-        let predicate = #Predicate<ReviewLogEntry> { $0.id == logEntryId }
-        self._entries = Query(filter: predicate)
     }
 
     var body: some View {
@@ -58,7 +57,7 @@ struct HistoricalReviewWindowView: View {
     }
 
     @ViewBuilder
-    private func content(for entry: ReviewLogEntry) -> some View {
+    private func content(for entry: ReviewRecord) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 contextBanner(for: entry)
@@ -70,7 +69,7 @@ struct HistoricalReviewWindowView: View {
                 if entry.status == .failed {
                     Divider()
                     failureSection(entry)
-                } else if let agg = entry.decodeAggregated() {
+                } else if let agg = reviewLog.review(for: entry.id) {
                     Divider()
                     cachedReviewSection(agg, entry: entry)
                 } else {
@@ -88,7 +87,7 @@ struct HistoricalReviewWindowView: View {
     // MARK: - sections
 
     @ViewBuilder
-    private func contextBanner(for entry: ReviewLogEntry) -> some View {
+    private func contextBanner(for entry: ReviewRecord) -> some View {
         // Three states. Loading: yellow / progress. Live: green / link.
         // Missing: gray / explanation. Each is one row so the user can
         // glance the PR availability without reading paragraphs.
@@ -156,7 +155,7 @@ struct HistoricalReviewWindowView: View {
     }
 
     @ViewBuilder
-    private func header(for entry: ReviewLogEntry) -> some View {
+    private func header(for entry: ReviewRecord) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(entry.prTitle)
                 .font(.title3.bold())
@@ -186,7 +185,7 @@ struct HistoricalReviewWindowView: View {
     }
 
     @ViewBuilder
-    private func cachedReviewSection(_ agg: AggregatedReview, entry: ReviewLogEntry) -> some View {
+    private func cachedReviewSection(_ agg: AggregatedReview, entry: ReviewRecord) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 verdictBadge(agg.verdict)
@@ -217,7 +216,7 @@ struct HistoricalReviewWindowView: View {
     }
 
     @ViewBuilder
-    private func failureSection(_ entry: ReviewLogEntry) -> some View {
+    private func failureSection(_ entry: ReviewRecord) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Review run failed", systemImage: "xmark.circle.fill")
                 .foregroundStyle(.red)

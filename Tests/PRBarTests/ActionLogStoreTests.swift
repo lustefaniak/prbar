@@ -21,7 +21,7 @@ final class ActionLogStoreTests: XCTestCase {
     }
 
     func testRecordPersistsAndFetchOrdersByTimestamp() {
-        let store = ActionLogStore(container: PRBarModelContainer.inMemory())
+        let store = ActionLogStore.temporary()
         let pr = makePR()
         let t0 = Date(timeIntervalSince1970: 1_000_000)
         let t1 = t0.addingTimeInterval(60)
@@ -39,7 +39,7 @@ final class ActionLogStoreTests: XCTestCase {
     }
 
     func testFailureOutcomeCarriesErrorMessage() {
-        let store = ActionLogStore(container: PRBarModelContainer.inMemory())
+        let store = ActionLogStore.temporary()
         store.record(
             kind: .merge, outcome: .failure, pr: makePR(),
             errorMessage: "merge blocked: not approved", detail: "squash"
@@ -51,7 +51,7 @@ final class ActionLogStoreTests: XCTestCase {
     }
 
     func testClearAllRemovesEntries() {
-        let store = ActionLogStore(container: PRBarModelContainer.inMemory())
+        let store = ActionLogStore.temporary()
         store.record(kind: .approve, outcome: .success, pr: makePR())
         XCTAssertEqual(store.fetchAll().count, 1)
         store.clearAll()

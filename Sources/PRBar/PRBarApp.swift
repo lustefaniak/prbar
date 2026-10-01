@@ -66,7 +66,6 @@ struct PRBarApp: App {
                 .environment(delegate.readiness)
                 .environment(delegate.actionLog)
                 .environment(delegate.reviewLog)
-                .modelContainer(delegate.reviewLog.container)
         }
 
         // Standalone full-size detail window. Opened from the popover's
@@ -96,7 +95,7 @@ struct PRBarApp: App {
         // Historical-review window: opened from Settings → Review
         // History to look at a cached AggregatedReview in the same
         // detail layout (verdict + summary + annotations + diff). Keyed
-        // by the ReviewLogEntry's UUID so each row gets its own window;
+        // by the ReviewRecord's id so each row gets its own window;
         // the view re-fetches the PR fresh from gh to surface live
         // diff/CI/body when the PR still exists, and falls back to the
         // cached review only when it doesn't.
@@ -113,7 +112,6 @@ struct PRBarApp: App {
                     .environment(delegate.failureLogs)
                     .environment(delegate.notifier)
                     .environment(delegate.readiness)
-                    .modelContainer(delegate.reviewLog.container)
             } else {
                 SelfClosingWindow()
             }
