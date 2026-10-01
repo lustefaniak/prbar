@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the runtime lock.
     private(set) var server: APIServer!
     private(set) var session: ServerSession!
+    private var notificationRelay: RelayDeliverer?
 
     var inbox: InboxModel { session.inbox }
     var reviewModel: ReviewQueueModel { session.reviews }
@@ -157,7 +158,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 PRBarLog.lifecycle.notice("runtime lock held by \(lock.currentHolder() ?? "?", privacy: .public); automation off")
             }
             self.runtimeLock = lock
-            runtime = PRBarRuntime.live(env, deliverer: UNNotificationDeliverer(), ownsAutomation: owns)
+            // Notifications go to whichever front end subscribes for them
+            // (this app's own session, below); macOS delivery directly is
+            // the fallback until it has.
+            let relay = RelayDeliverer(fallback: UNNotificationDeliverer())
+            notificationRelay = relay
+            runtime = PRBarRuntime.live(env, deliverer: relay, ownsAutomation: owns)
             if owns && !Self.isHostingTests {
                 socketURL = ServerLocation.socketURL(stateDirectory: env.stateDirectory)
             }
@@ -190,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         self.server = server
+        if let notificationRelay { server.relayNotifications(from: notificationRelay) }
         let session = ServerSession(client: server.connectInProcess())
         // Applied at once so the first frame already shows the cached
         // inbox; `start` then subscribes and follows updates.
@@ -204,7 +211,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dailyCostCapEnabled: defaults.object(forKey: "dailyCostCapEnabled").map { _ in defaults.bool(forKey: "dailyCostCapEnabled") },
             dailyCostCapUsd: storedCap > 0 ? storedCap : nil,
             notifyAuthoredDrafts: !MyDraftHandling.current(defaults).silencesAuthoredDrafts))
-        Task { try? await session.start() }
+        let showsNotifications = !ScreenshotMode.isActive
+        Task { try? await session.start(deliverer: showsNotifications ? UNNotificationDeliverer() : nil) }
         // Install the notification action router *before* requesting
         // authorization so the registered categories are visible the
         // first time macOS shows the auth prompt — otherwise the user

@@ -22,6 +22,8 @@ final class ServerSession {
     private let client: APIClient
     @ObservationIgnored
     private var listener: Task<Void, Never>?
+    @ObservationIgnored
+    private var notificationListener: Task<Void, Never>?
 
     init(client: APIClient) {
         self.client = client
@@ -43,9 +45,11 @@ final class ServerSession {
     }
 
     /// Subscribes, applies the snapshot, then follows updates until the
-    /// connection closes.
-    func start() async throws {
-        let result = try await client.call(.subscribe, SubscribeParams(state: true), as: SubscribeResult.self)
+    /// connection closes. With `deliverer`, this front end shows the
+    /// server's notifications.
+    func start(deliverer: (any NotificationDeliverer)? = nil) async throws {
+        let params = SubscribeParams(state: true, notifications: deliverer != nil)
+        let result = try await client.call(.subscribe, params, as: SubscribeResult.self)
         if let snapshot = result.state { apply(snapshot) }
         let updates = client.stateUpdates
         listener = Task { [weak self] in
@@ -53,11 +57,21 @@ final class ServerSession {
                 self?.apply(update)
             }
         }
+        if let deliverer {
+            let batches = client.notifications
+            notificationListener = Task {
+                for await batch in batches {
+                    await deliverer.deliver(batch.events)
+                }
+            }
+        }
     }
 
     func stop() {
         listener?.cancel()
         listener = nil
+        notificationListener?.cancel()
+        notificationListener = nil
         client.close()
     }
 

@@ -91,3 +91,31 @@ protocol NotificationDeliverer: Sendable {
     func requestAuthorization() async
     func deliver(_ events: [NotificationEvent]) async
 }
+
+/// Hands notifications to whichever front end asked for them over the API
+/// (the app delivers them as macOS notifications), and to `fallback` when
+/// none is connected: the server decides what to notify about, but only a
+/// front end can show it.
+final class RelayDeliverer: NotificationDeliverer, @unchecked Sendable {
+    private let lock = NSLock()
+    private let fallback: (any NotificationDeliverer)?
+    private var relay: (@Sendable ([NotificationEvent]) async -> Bool)?
+
+    init(fallback: (any NotificationDeliverer)?) {
+        self.fallback = fallback
+    }
+
+    /// `relay` returns whether any client took the events.
+    func attach(_ relay: @escaping @Sendable ([NotificationEvent]) async -> Bool) {
+        lock.withLock { self.relay = relay }
+    }
+
+    func requestAuthorization() async {
+        await fallback?.requestAuthorization()
+    }
+
+    func deliver(_ events: [NotificationEvent]) async {
+        if let relay = lock.withLock({ relay }), await relay(events) { return }
+        await fallback?.deliver(events)
+    }
+}

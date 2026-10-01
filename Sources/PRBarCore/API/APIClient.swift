@@ -26,10 +26,13 @@ final class APIClient: @unchecked Sendable {
     let events: AsyncStream<APIEvent>
     /// State updates, once subscribed with `state: true`.
     let stateUpdates: AsyncStream<StateUpdate>
+    /// Notification batches, once subscribed with `notifications: true`.
+    let notifications: AsyncStream<NotificationBatch>
 
     private let connection: any APIClientTransport
     private let eventSink: AsyncStream<APIEvent>.Continuation
     private let stateSink: AsyncStream<StateUpdate>.Continuation
+    private let notificationSink: AsyncStream<NotificationBatch>.Continuation
     private let lock = NSLock()
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<Data, Error>] = [:]
@@ -41,6 +44,7 @@ final class APIClient: @unchecked Sendable {
         self.connection = transport
         (events, eventSink) = AsyncStream<APIEvent>.makeStream()
         (stateUpdates, stateSink) = AsyncStream<StateUpdate>.makeStream(bufferingPolicy: .unbounded)
+        (notifications, notificationSink) = AsyncStream<NotificationBatch>.makeStream()
         transport.start(
             onLine: { [weak self] line in self?.receive(line) },
             onClose: { [weak self] in self?.failAll() }
@@ -160,6 +164,9 @@ final class APIClient: @unchecked Sendable {
         } else if header.method == APIMethod.state.rawValue,
                   let update = try? RPCLine.decode(RPCRequest<StateUpdate>.self, from: line).params {
             stateSink.yield(update)
+        } else if header.method == APIMethod.notify.rawValue,
+                  let batch = try? RPCLine.decode(RPCRequest<NotificationBatch>.self, from: line).params {
+            notificationSink.yield(batch)
         }
     }
 
@@ -176,6 +183,7 @@ final class APIClient: @unchecked Sendable {
         for handler in handlers { handler(nil) }
         eventSink.finish()
         stateSink.finish()
+        notificationSink.finish()
     }
 }
 

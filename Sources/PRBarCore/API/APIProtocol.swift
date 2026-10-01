@@ -47,9 +47,11 @@ enum APIMethod: String, CaseIterable, Sendable {
     case event
     /// Server to client, no id: one `StateUpdate`.
     case state
+    /// Server to client, no id: `NotificationBatch` for the client to show.
+    case notify
 
     /// Sent by the server only; a client sending one gets "unknown method".
-    var isNotification: Bool { self == .event || self == .state }
+    var isNotification: Bool { self == .event || self == .state || self == .notify }
 }
 
 /// Dates as ISO 8601 with milliseconds, the same as the history files.
@@ -199,6 +201,13 @@ struct SubscribeParams: Codable, Sendable {
     /// Also send `state` updates (the data a UI renders), starting with a
     /// full snapshot in the reply. Without it only `event`s arrive.
     var state: Bool?
+    /// Also send `notify` batches: this client shows notifications, so the
+    /// server stops handing them to its own fallback while it's connected.
+    var notifications: Bool?
+}
+
+struct NotificationBatch: Codable, Sendable, Equatable {
+    var events: [NotificationEvent]
 }
 
 struct SubscribeResult: Codable, Sendable {

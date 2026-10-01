@@ -84,7 +84,10 @@ enum ServeCommand {
             return 3
         }
 
-        let runtime = PRBarRuntime.live(env, deliverer: StderrDeliverer())
+        // Notifications go to a connected app that shows them, else to
+        // stderr.
+        let relay = RelayDeliverer(fallback: StderrDeliverer())
+        let runtime = PRBarRuntime.live(env, deliverer: relay)
         // Nobody is watching an undo banner.
         runtime.queue.undoWindow = 0
         if let cap = options.dailyCapUsd {
@@ -119,6 +122,7 @@ enum ServeCommand {
 
         let stop = StopSignal()
         let server = APIServer(runtime: runtime, holder: holder)
+        server.relayNotifications(from: relay)
         server.onShutdown = {
             log("shutdown requested by a client")
             stop.fire()

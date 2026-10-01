@@ -17,11 +17,13 @@ final class ServerSessionTests: XCTestCase {
     }
 
     /// Waits for the main actor to drain the updates already in flight.
-    private func until(_ condition: @MainActor () -> Bool) async throws {
-        for _ in 0..<100 where !condition() {
+    private func until(_ condition: @MainActor () async -> Bool) async throws {
+        for _ in 0..<100 {
+            if await condition() { break }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(condition())
+        let met = await condition()
+        XCTAssertTrue(met)
     }
 
     func testSnapshotThenUpdates() async throws {
@@ -224,6 +226,42 @@ final class ServerSessionTests: XCTestCase {
         XCTAssertEqual(LogUpdate.between([b, c], [a, c]), LogUpdate(reset: [a, c]), "same count, different rows")
         XCTAssertEqual(LogUpdate(added: [a]).applied(to: [b, c]), [a, b, c])
     }
+
+    /// Notifications go to a front end that subscribed to show them, and to
+    /// the host's own deliverer only while none has.
+    func testNotificationsGoToTheSubscribedFrontEnd() async throws {
+        let (_, server) = makeServer(prs: [])
+        let fallback = RecordingDeliverer()
+        let relay = RelayDeliverer(fallback: fallback)
+        server.relayNotifications(from: relay)
+        let event = NotificationEvent(
+            kind: .ciFailed, prNodeId: "PR_1", prTitle: "t", prRepo: "o/r", prNumber: 1,
+            prURL: URL(string: "https://github.com/o/r/pull/1")!)
+
+        await relay.deliver([event])
+        var fallbackCount = await fallback.batches.count
+        XCTAssertEqual(fallbackCount, 1, "nobody subscribed yet")
+
+        let shown = RecordingDeliverer()
+        let session = ServerSession(client: server.connectInProcess())
+        try await session.start(deliverer: shown)
+        await relay.deliver([event])
+        try await until { await shown.batches.count == 1 }
+        fallbackCount = await fallback.batches.count
+        XCTAssertEqual(fallbackCount, 1)
+
+        session.stop()
+        try await until { server.forward([event]) == false }
+        await relay.deliver([event])
+        fallbackCount = await fallback.batches.count
+        XCTAssertEqual(fallbackCount, 2, "back to the fallback once the front end is gone")
+    }
+}
+
+private actor RecordingDeliverer: NotificationDeliverer {
+    var batches: [[NotificationEvent]] = []
+    func requestAuthorization() async {}
+    func deliver(_ events: [NotificationEvent]) async { batches.append(events) }
 }
 
 private final class RecordingTransport: APIClientTransport, @unchecked Sendable {

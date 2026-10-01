@@ -50,6 +50,7 @@ final class APIServer {
     /// Connections that asked for `event`s / `state` updates.
     private var subscribers: [ObjectIdentifier: any APIConnection] = [:]
     private var stateSubscribers: [ObjectIdentifier: any APIConnection] = [:]
+    private var notificationSubscribers: [ObjectIdentifier: any APIConnection] = [:]
     /// What each connection said about itself in `hello`.
     private var clients: [ObjectIdentifier: HelloParams] = [:]
     private var observer: UUID?
@@ -106,6 +107,7 @@ final class APIServer {
         connections.removeAll()
         subscribers.removeAll()
         stateSubscribers.removeAll()
+        notificationSubscribers.removeAll()
         if let socketURL { unlink(socketURL.path) }
     }
 
@@ -131,6 +133,7 @@ final class APIServer {
                     self?.connections[key] = nil
                     self?.subscribers[key] = nil
                     self?.stateSubscribers[key] = nil
+                    self?.notificationSubscribers[key] = nil
                     self?.clients[key] = nil
                 }
             }
@@ -144,6 +147,31 @@ final class APIServer {
         for (key, connection) in subscribers where !connection.send(line) {
             subscribers[key] = nil
         }
+    }
+
+    // MARK: - Notifications
+
+    /// Routes the runtime's notifications to clients that show them.
+    func relayNotifications(from relay: RelayDeliverer) {
+        relay.attach { [weak self] events in
+            await self?.forward(events) ?? false
+        }
+    }
+
+    /// True when at least one client took the batch.
+    func forward(_ events: [NotificationEvent]) -> Bool {
+        guard !notificationSubscribers.isEmpty,
+              let line = try? RPCLine.encode(RPCRequest(id: nil, method: APIMethod.notify.rawValue, params: NotificationBatch(events: events)))
+        else { return false }
+        var delivered = false
+        for (key, connection) in notificationSubscribers {
+            if connection.send(line) {
+                delivered = true
+            } else {
+                notificationSubscribers[key] = nil
+            }
+        }
+        return delivered
     }
 
     // MARK: - State
@@ -460,8 +488,10 @@ final class APIServer {
             return await reply(line, id, SubscribeParams.self) { params in
                 let wantsState = params?.state ?? false
                 if let connection {
-                    self.subscribers[ObjectIdentifier(connection)] = connection
-                    if wantsState { self.stateSubscribers[ObjectIdentifier(connection)] = connection }
+                    let key = ObjectIdentifier(connection)
+                    self.subscribers[key] = connection
+                    if wantsState { self.stateSubscribers[key] = connection }
+                    if params?.notifications ?? false { self.notificationSubscribers[key] = connection }
                 }
                 return SubscribeResult(status: self.status(), state: wantsState ? self.snapshot() : nil)
             }
@@ -472,7 +502,7 @@ final class APIServer {
             // After the reply is on its way, so the client hears back.
             Task { @MainActor in onShutdown() }
             return await reply(line, id, APIEmpty.self) { _ in APIEmpty() }
-        case .event, .state:
+        case .event, .state, .notify:
             return nil
         }
     }
@@ -481,7 +511,7 @@ final class APIServer {
     nonisolated static func denial(of method: APIMethod, by client: HelloParams, under policy: AgentPolicy) -> RPCError? {
         let capability: AgentPolicy.Capability
         switch method {
-        case .hello, .event, .state:
+        case .hello, .event, .state, .notify:
             return nil
         case .status, .inbox, .refreshPR, .review, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
              .loadDiff, .invalidateDiff, .loadCILog, .invalidateCILog:
