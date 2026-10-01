@@ -18,10 +18,9 @@ final class ActionLogStore {
         self.entries = history.readAll().sorted { $0.timestamp > $1.timestamp }
     }
 
-    /// The user's history directory, after a one-time copy of the rows the
-    /// SwiftData store held before history moved to files.
+    /// The user's history directory. `LegacyHistoryMigration` fills it
+    /// from the old SwiftData store once, in the background, then `reload`s.
     static func live(historyDirectory: URL = HistoryLocation.directory()) -> ActionLogStore {
-        LegacyHistoryMigration.migrateIfNeeded(historyDirectory: historyDirectory)
         return ActionLogStore(history: .actions(in: historyDirectory))
     }
 
@@ -64,6 +63,11 @@ final class ActionLogStore {
         }
         let at = entries.firstIndex { $0.timestamp <= record.timestamp } ?? entries.endIndex
         entries.insert(record, at: at)
+    }
+
+    /// Re-read the files, e.g. after the background history migration.
+    func reload() {
+        entries = history.readAll().sorted { $0.timestamp > $1.timestamp }
     }
 
     func fetchAll(limit: Int? = nil) -> [ActionRecord] {

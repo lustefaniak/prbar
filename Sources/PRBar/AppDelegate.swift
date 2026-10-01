@@ -141,6 +141,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let coord = ReadinessCoordinator(notifier: n)
         let log = Self.isHostingTests ? ActionLogStore.temporary() : ActionLogStore.live(historyDirectory: AppPaths.history)
         let rlog = Self.isHostingTests ? ReviewLogStore.temporary() : ReviewLogStore.live(historyDirectory: AppPaths.history)
+        if !Self.isHostingTests {
+            LegacyHistoryMigration.migrateInBackground(historyDirectory: AppPaths.history) { [weak log, weak rlog] in
+                log?.reload()
+                rlog?.reload()
+            }
+        }
         q.actionLog = log
         q.reviewLog = rlog
         a.actionLog = log

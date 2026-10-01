@@ -23,7 +23,6 @@ final class ReviewLogStore {
     }
 
     static func live(historyDirectory: URL = HistoryLocation.directory()) -> ReviewLogStore {
-        LegacyHistoryMigration.migrateIfNeeded(historyDirectory: historyDirectory)
         return ReviewLogStore(history: ReviewHistory(in: historyDirectory))
     }
 
@@ -117,6 +116,11 @@ final class ReviewLogStore {
 
     func todaysSpend(calendar: Calendar = .current) -> Double {
         spend(since: Self.startOfDay(calendar: calendar))
+    }
+
+    /// Re-read the files, e.g. after the background history migration.
+    func reload() {
+        entries = history.readAll().sorted { $0.triggeredAt > $1.triggeredAt }
     }
 
     func fetchAll(limit: Int? = nil) -> [ReviewRecord] {

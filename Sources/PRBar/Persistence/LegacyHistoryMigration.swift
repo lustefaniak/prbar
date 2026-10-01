@@ -10,14 +10,30 @@ import SwiftData
 enum LegacyHistoryMigration {
     static let markerName = ".migrated-from-swiftdata"
 
+    /// Runs the copy on a background task — a real store took ~5 s for
+    /// ~1,500 reviews — and calls `then` on the main actor once the files
+    /// are in place, so the stores can reload. Rows the app appends in the
+    /// meantime land in the same files and are picked up by that reload.
     @MainActor
-    static func migrateIfNeeded(
+    static func migrateInBackground(
         historyDirectory: URL,
-        container: @autoclosure () -> ModelContainer = PRBarModelContainer.live()
+        then: @escaping @MainActor @Sendable () -> Void
     ) {
+        guard needsMigration(historyDirectory) else { return }
+        Task.detached(priority: .utility) {
+            migrateIfNeeded(historyDirectory: historyDirectory, container: PRBarModelContainer.live())
+            await MainActor.run { then() }
+        }
+    }
+
+    static func needsMigration(_ historyDirectory: URL) -> Bool {
+        !FileManager.default.fileExists(atPath: historyDirectory.appendingPathComponent(markerName).path)
+    }
+
+    static func migrateIfNeeded(historyDirectory: URL, container: ModelContainer) {
+        guard needsMigration(historyDirectory) else { return }
         let marker = historyDirectory.appendingPathComponent(markerName)
-        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
-        let context = ModelContext(container())
+        let context = ModelContext(container)
 
         let actions = (try? context.fetch(FetchDescriptor<ActionLogEntry>())) ?? []
         let reviews = (try? context.fetch(FetchDescriptor<ReviewLogEntry>())) ?? []
