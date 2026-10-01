@@ -18,7 +18,7 @@ final class CLIRunnerTests: XCTestCase {
         await runner.review(pr: pr, force: force, providerOverride: nil)
     }
 
-    private func runner(_ config: CLIConfig) -> Runner {
+    private func runner(_ config: PRBarConfig) -> Runner {
         Runner(
             config: config,
             diffFetcher: { _, _, _ in
@@ -35,7 +35,7 @@ final class CLIRunnerTests: XCTestCase {
     private enum TestStop: Error { case unexpected }
 
     func testAIDisabledSkipReturnsInsteadOfHanging() async {
-        var config = CLIConfig()
+        var config = PRBarConfig()
         config.defaults.aiReviewEnabled = false
 
         let outcome = await review(runner(config), pr: Self.pr())
@@ -45,7 +45,7 @@ final class CLIRunnerTests: XCTestCase {
     }
 
     func testDraftSkipReturnsInsteadOfHanging() async {
-        var config = CLIConfig()
+        var config = PRBarConfig()
         config.defaults.reviewDrafts = false
 
         let outcome = await review(runner(config), pr: Self.pr(isDraft: true))
@@ -56,14 +56,14 @@ final class CLIRunnerTests: XCTestCase {
 
     func testVerdictAlreadyAtHeadSkipReturnsInsteadOfHanging() async {
         let outcome = await review(
-            runner(CLIConfig()), pr: Self.pr(hasPRBarVerdictAtHead: true))
+            runner(PRBarConfig()), pr: Self.pr(hasPRBarVerdictAtHead: true))
 
         XCTAssertFalse(outcome.isFailure)
         XCTAssertTrue(outcome.note.contains("skipped"), "got: \(outcome.note)")
     }
 
     func testRoleWithoutAReviewRequestIsReportedAsSuch() async {
-        let outcome = await review(runner(CLIConfig()), pr: Self.pr(role: .authored))
+        let outcome = await review(runner(PRBarConfig()), pr: Self.pr(role: .authored))
 
         XCTAssertFalse(outcome.isFailure)
         XCTAssertTrue(outcome.note.contains("no review request"), "got: \(outcome.note)")
@@ -72,7 +72,7 @@ final class CLIRunnerTests: XCTestCase {
     /// An excluded repo leaves no review state at all, so it used to fall
     /// through to the "pass --force" advice — which does nothing for it.
     func testExcludedRepoSaysSoRatherThanSuggestingForce() async {
-        var config = CLIConfig()
+        var config = PRBarConfig()
         config.repos = [RepoConfig(repoGlobs: ["o/r"], excluded: true)]
 
         let outcome = await review(runner(config), pr: Self.pr(), force: true)
@@ -86,7 +86,7 @@ final class CLIRunnerTests: XCTestCase {
     /// CLI never goes through — so the shared config said skip and the
     /// worker reviewed it anyway, spending money and possibly posting.
     func testTitleExcludedSkipsWithoutFetching() async {
-        var config = CLIConfig()
+        var config = PRBarConfig()
         config.defaults.excludeTitlePatterns = ["chore: bump *"]
 
         let outcome = await review(
@@ -98,7 +98,7 @@ final class CLIRunnerTests: XCTestCase {
     }
 
     func testNonMatchingTitleIsNotExcluded() async {
-        var config = CLIConfig()
+        var config = PRBarConfig()
         config.defaults.excludeTitlePatterns = ["chore: bump *"]
         config.defaults.aiReviewEnabled = false   // stop before any fetch
 

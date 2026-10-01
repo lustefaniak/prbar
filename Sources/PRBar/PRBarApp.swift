@@ -23,10 +23,7 @@ struct PRBarApp: App {
     }
 
     private static func enforceSingleInstance() {
-        if ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil {
-            return
-        }
-        if NSClassFromString("XCTestCase") != nil {
+        if AppDelegate.isHostingTests {
             return
         }
         let myBundleID = Bundle.main.bundleIdentifier ?? "dev.lustefaniak.prbar"

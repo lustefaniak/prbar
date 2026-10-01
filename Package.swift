@@ -17,9 +17,13 @@ let package = Package(
         .library(name: "PRBarCore", targets: ["PRBarCore"]),
         .executable(name: "prbar-review", targets: ["prbar-review"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/jpsim/Yams", from: "6.2.0"),
+    ],
     targets: [
         .target(
             name: "PRBarCore",
+            dependencies: [.product(name: "Yams", package: "Yams")],
             path: "Sources/PRBar",
             // `sources` below already decides what compiles, but SwiftPM
             // warns once per file it finds under the target path and can't
@@ -62,6 +66,7 @@ let package = Package(
             ],
             sources: [
                 "CLI",
+                "Config",
                 "Models",
                 "Util",
                 "Services/AutoReviewPolicy.swift",

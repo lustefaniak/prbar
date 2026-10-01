@@ -128,7 +128,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
 
     // MARK: - Codable (forward-compatible)
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case splitMode, unmatchedStrategy, minFilesPerSubreview
         case maxParallelSubreviews, collapseAboveSubreviewCount
         case toolMode, customSystemPrompt, replaceBaseSystemPrompt
@@ -140,6 +140,45 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         case notifyPolicy
         case autoApprove, autoDeny, shareFindings
         case shareMinConfidence, shareMaxComments, resolveThreads
+    }
+
+    /// Sparse: only fields that differ from the shipped defaults are
+    /// written. A config file then states what the user chose, and a
+    /// future change to a shipped default reaches everyone who never
+    /// touched that field.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        let d = ReviewDefaults()
+        func put<T: Encodable & Equatable>(_ value: T, _ shipped: T, _ key: CodingKeys) throws {
+            if value != shipped { try c.encode(value, forKey: key) }
+        }
+        try put(splitMode, d.splitMode, .splitMode)
+        try put(unmatchedStrategy, d.unmatchedStrategy, .unmatchedStrategy)
+        try put(minFilesPerSubreview, d.minFilesPerSubreview, .minFilesPerSubreview)
+        try put(maxParallelSubreviews, d.maxParallelSubreviews, .maxParallelSubreviews)
+        try put(collapseAboveSubreviewCount, d.collapseAboveSubreviewCount, .collapseAboveSubreviewCount)
+        try put(toolMode, d.toolMode, .toolMode)
+        try put(customSystemPrompt, d.customSystemPrompt, .customSystemPrompt)
+        try put(replaceBaseSystemPrompt, d.replaceBaseSystemPrompt, .replaceBaseSystemPrompt)
+        try put(aiReviewEnabled, d.aiReviewEnabled, .aiReviewEnabled)
+        try put(forceFullReview, d.forceFullReview, .forceFullReview)
+        try put(maxToolCallsPerSubreview, d.maxToolCallsPerSubreview, .maxToolCallsPerSubreview)
+        try put(maxCostUsdPerSubreview, d.maxCostUsdPerSubreview, .maxCostUsdPerSubreview)
+        try put(reviewTimeoutSeconds, d.reviewTimeoutSeconds, .reviewTimeoutSeconds)
+        try put(riskBriefEnabled, d.riskBriefEnabled, .riskBriefEnabled)
+        try put(churnWindowDays, d.churnWindowDays, .churnWindowDays)
+        try put(churnHistoryDepth, d.churnHistoryDepth, .churnHistoryDepth)
+        try put(reviewDrafts, d.reviewDrafts, .reviewDrafts)
+        try put(skipAIIfReviewedByOthers, d.skipAIIfReviewedByOthers, .skipAIIfReviewedByOthers)
+        try put(excludeTitlePatterns, d.excludeTitlePatterns, .excludeTitlePatterns)
+        try put(agentEnvironment, d.agentEnvironment, .agentEnvironment)
+        try put(notifyPolicy, d.notifyPolicy, .notifyPolicy)
+        try put(autoApprove, d.autoApprove, .autoApprove)
+        try put(autoDeny, d.autoDeny, .autoDeny)
+        try put(shareFindings, d.shareFindings, .shareFindings)
+        try put(shareMinConfidence, d.shareMinConfidence, .shareMinConfidence)
+        try put(shareMaxComments, d.shareMaxComments, .shareMaxComments)
+        try put(resolveThreads, d.resolveThreads, .resolveThreads)
     }
 
     init(from decoder: Decoder) throws {

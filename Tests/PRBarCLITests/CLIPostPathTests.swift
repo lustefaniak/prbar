@@ -27,7 +27,7 @@ final class CLIPostPathTests: XCTestCase {
     /// or its posts are invisible to the cross-instance dedup.
     func testAutoPostCarriesTheVerdictMarker() async {
         let posted = Recorder()
-        var config = CLIConfig()
+        var config = PRBarConfig()
         config.defaults.aiReviewEnabled = true
         config.defaults.autoApprove = Self.permissiveApprove
 
@@ -58,7 +58,7 @@ final class CLIPostPathTests: XCTestCase {
     /// check against those could see "nothing pending" mid-write.
     func testRunnerWaitsForAnInFlightPost() async {
         let finished = Recorder()
-        var config = CLIConfig()
+        var config = PRBarConfig()
         config.defaults.autoApprove = Self.permissiveApprove
 
         var runner = Runner(

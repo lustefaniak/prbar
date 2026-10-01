@@ -21,7 +21,7 @@ public enum PRBarReviewCLI {
             return 2
         }
 
-        let config: CLIConfig
+        let config: PRBarConfig
         do {
             config = try CLIConfig.load(path: invocation.configPath)
         } catch {
@@ -60,7 +60,7 @@ public enum PRBarReviewCLI {
         let resolved = config.resolver()(target.owner, target.repo)
         let providerId = invocation.providerOverride
             ?? resolved.providerOverride
-            ?? config.defaultProvider
+            ?? config.defaultProvider.resolve()
         BrahmandaEvent(
             taskId: taskId, outcome: .started,
             note: "\(pr.headSha.prefix(7)) \(pr.title)",
@@ -139,8 +139,9 @@ public enum PRBarReviewCLI {
                               reviewed, an AI verdict already at this SHA)
                               would otherwise skip it
       --provider claude|codex override the configured provider
-      --config <path>         JSON settings file; defaults to
-                              $PRBAR_CONFIG, then ./prbar.json
+      --config <path>         prbar.yaml (JSON works too); defaults to
+                              $PRBAR_CONFIG, then ./prbar.yaml, ./prbar.json,
+                              then ~/.config/prbar/prbar.yaml (the app's)
       --review-json <path>    write the full review (summary, findings,
                               cost) as one JSON line; - means stdout.
                               Without it, only the verdict and a finding

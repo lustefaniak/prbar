@@ -48,6 +48,10 @@ enum PRBarLog {
     /// the re-launch "surface a window" recovery path. The place to look
     /// when the menu-bar icon went missing and the app seemed unreachable.
     static let lifecycle = Logger(subsystem: subsystem, category: "lifecycle")
+
+    /// `prbar.yaml`: loads, reloads after outside edits, parse failures,
+    /// the one-time migration from the pre-file settings.
+    static let config = Logger(subsystem: subsystem, category: "config")
 }
 
 #if !canImport(OSLog)

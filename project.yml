@@ -22,6 +22,10 @@ packages:
   NetworkImage:
     url: https://github.com/gonzalezreal/NetworkImage
     from: "6.0.0"
+  # prbar.yaml, shared with the CLI (Package.swift declares it too).
+  Yams:
+    url: https://github.com/jpsim/Yams
+    from: "6.2.0"
 
 settings:
   base:
@@ -56,6 +60,7 @@ targets:
       - package: MarkdownUI
       - package: NetworkImage
       - package: Sparkle
+      - package: Yams
     # Custom Info.plist — Sparkle keys (SUFeedURL / SUPublicEDKey / SUEnableInstallerLauncherService)
     # are not in Apple's INFOPLIST_KEY_* allow-list, so GENERATE_INFOPLIST_FILE silently drops them.
     # Generating a real plist via XcodeGen is the only way to embed them.

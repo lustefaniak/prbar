@@ -49,7 +49,7 @@ struct DiagnosticsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Reset all data")
                             .font(.callout.weight(.medium))
-                        Text("Wipes everything PRBar has saved on disk: repo rules, action history, AI reviews, cached diffs and CI logs, plus every settings toggle. The app relaunches with empty state. Bare clones are preserved — use Prune above to clear those.")
+                        Text("Wipes everything PRBar has saved on disk: action history, AI reviews, cached diffs and CI logs, plus every settings toggle. prbar.yaml (review defaults and repo rules) is renamed to prbar.yaml.reset-<date> next to itself rather than deleted. The app relaunches with empty state. Bare clones are preserved — use Prune above to clear those.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -74,7 +74,7 @@ struct DiagnosticsView: View {
                 AppReset.wipeEverythingAndRelaunch()
             }
         } message: {
-            Text("All saved rules, history, and cached reviews will be deleted. The app will relaunch with empty state. This can't be undone.")
+            Text("History and cached reviews will be deleted and prbar.yaml moved aside. The app will relaunch with empty state.")
         }
     }
 

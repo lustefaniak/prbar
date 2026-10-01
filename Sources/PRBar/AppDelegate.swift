@@ -49,6 +49,12 @@ enum PRBarPopoverSize {
 /// and Settings scene can both inject them via `.environment(...)`.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// XCTest launches this app as the test host.
+    nonisolated static var isHostingTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     // MARK: - Services (visible to the SwiftUI side via PRBarApp)
 
     let poller: PRPoller
@@ -123,7 +129,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // concrete store the UI needs; screenshot mode never sets one.
         let fls = (q.failureLogStore as? FailureLogStore) ?? FailureLogStore.live()
         q.failureLogStore = fls
-        let rc = RepoConfigStore()
+        // The test host is this app: give it a throwaway config so a test
+        // run never migrates or rewrites the user's real prbar.yaml.
+        let rc = Self.isHostingTests
+            ? RepoConfigStore(
+                fileURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("prbar-test-host-\(UUID().uuidString)/prbar.yaml"),
+                lastGoodURL: nil
+            )
+            : RepoConfigStore.live()
         let coord = ReadinessCoordinator(notifier: n)
         let log = ActionLogStore.live()
         let rlog = ReviewLogStore.live()
@@ -157,22 +171,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             a?.enqueue(pr, kind: .resolveThreads(ids: threadIds), source: .automated)
         }
         q.configResolver = rc.makeResolver()
-        // Resolve the persisted default provider. Stored value can be
-        // "auto" (probe-and-pick at launch) or a concrete ProviderID
-        // rawValue. Auto tie-breaks to claude per resolveAuto().
-        let storedRaw = UserDefaults.standard.string(forKey: "defaultProviderId")
-        if storedRaw == ProviderID.autoSentinel || storedRaw == nil {
-            q.defaultProviderId = ProviderID.resolveAuto()
-        } else if let raw = storedRaw, let id = ProviderID(rawValue: raw) {
-            q.defaultProviderId = id
-        }
-        // Persisted default model/effort per provider. Absent key ⇒ keep
-        // the compiled-in default (q.defaultClaudeModel = "sonnet" etc.);
-        // present-but-empty is a deliberate user opt-out of any override.
-        if let v = UserDefaults.standard.string(forKey: "defaultClaudeModel") { q.defaultClaudeModel = v }
-        if let v = UserDefaults.standard.string(forKey: "defaultClaudeEffort") { q.defaultClaudeEffort = v }
-        if let v = UserDefaults.standard.string(forKey: "defaultCodexModel") { q.defaultCodexModel = v }
-        if let v = UserDefaults.standard.string(forKey: "defaultCodexEffort") { q.defaultCodexEffort = v }
+        // Provider / model / effort defaults come from prbar.yaml, shared
+        // with the CLI. "auto" resolves to whichever CLI is installed
+        // (claude wins ties).
+        rc.config.applyAgentDefaults(to: q)
         // Daily cost cap — both presence (toggle) and value persist
         // separately so the cap survives flipping the toggle off/on.
         let defaults = UserDefaults.standard
@@ -188,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let q, let rc else { return }
             q.configResolver = rc.makeResolver()
             p?.configResolver = rc.makeResolver()
+            rc.config.applyAgentDefaults(to: q)
             // Re-poll so the title-exclude filter applies to anything in
             // the inbox right now, not just future fetches.
             p?.pollNow()

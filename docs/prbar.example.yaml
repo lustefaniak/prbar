@@ -1,40 +1,53 @@
-{
-  "defaultProvider": "claude",
-  "defaultClaudeModel": "sonnet",
-  "defaultClaudeEffort": "",
+# Example prbar.yaml. The menu-bar app and the prbar-review CLI read the
+# same file, by default ~/.config/prbar/prbar.yaml (override with
+# $PRBAR_CONFIG). JSON is valid YAML, so a prbar.json works too.
+#
+# Every key is optional; an empty file means the shipped defaults, which
+# review PRs and post nothing. Field names match ReviewDefaults / RepoConfig
+# in Sources/PRBar/Models. Unknown keys are reported as warnings.
+version: 1
 
-  "defaults": {
-    "toolMode": "sandboxed",
-    "splitMode": "per_subfolder",
-    "maxParallelSubreviews": 2,
-    "maxCostUsdPerSubreview": 3.0,
-    "maxToolCallsPerSubreview": 10,
-    "reviewTimeoutSeconds": 600,
+# auto | claude | codex. auto picks claude when installed, else codex.
+defaultProvider: claude
+# Omit to use PRBar's default (sonnet); "" passes no --model at all.
+defaultClaudeModel: sonnet
+defaultClaudeEffort: ""
 
-    "reviewDrafts": false,
-    "skipAIIfReviewedByOthers": true,
-    "excludeTitlePatterns": ["chore: bump *", "Release *"],
+# App-level review settings. Repo rules below override them field by field.
+defaults:
+  toolMode: sandboxed
+  splitMode: perSubfolder
+  maxParallelSubreviews: 2
+  maxCostUsdPerSubreview: 3.0
+  maxToolCallsPerSubreview: 10
+  reviewTimeoutSeconds: 600
 
-    "shareFindings": "warnings_and_blockers",
-    "shareMinConfidence": 0.5,
-    "shareMaxComments": 20,
+  reviewDrafts: false
+  skipAIIfReviewedByOthers: true
+  # Repo rules add to this list; negate a pattern there to opt out.
+  excludeTitlePatterns:
+    - "chore: bump *"
+    - "Release *"
 
-    "autoApprove": { "enabled": false },
-    "autoDeny": { "action": "off" },
-    "resolveThreads": { "enabled": false }
-  },
+  # off | warnings_and_blockers | all_findings
+  shareFindings: warnings_and_blockers
+  shareMinConfidence: 0.5
+  shareMaxComments: 20
 
-  "repos": [
-    {
-      "repoGlobs": ["getsynq/cloud"],
-      "rootPatterns": ["kernel-*", "lib/*", "dev-tools"],
-      "providerOverride": "codex",
-      "collapseAboveSubreviewCount": 8,
-      "shareFindings": "all_findings"
-    },
-    {
-      "repoGlobs": ["*/infra-*"],
-      "excluded": true
-    }
-  ]
-}
+  autoApprove:
+    enabled: false
+  autoDeny:
+    action: "off"
+  resolveThreads:
+    enabled: false
+
+# First matching rule wins. Unset fields inherit from `defaults`.
+repos:
+  - repoGlobs: ["getsynq/cloud"]
+    rootPatterns: ["kernel-*", "lib/*", "dev-tools"]
+    providerOverride: codex
+    collapseAboveSubreviewCount: 8
+    shareFindings: all_findings
+
+  - repoGlobs: ["*/infra-*"]
+    excluded: true

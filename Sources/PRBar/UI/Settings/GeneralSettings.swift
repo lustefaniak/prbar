@@ -14,16 +14,11 @@ struct GeneralSettings: View {
     @AppStorage(InboxVisibility.hideReviewedByOthersKey) private var hideReviewedByOthersFromInbox = false
     @AppStorage(MyPRsScope.storageKey)      private var myPRsScopeRaw        =
         MyPRsScope.default.rawValue
-    @AppStorage("defaultProviderId")        private var defaultProviderRaw   = ProviderID.claude.rawValue
     @AppStorage(ProviderRelevance.suppressionStorageKey)
         private var suppressUnusedProviderWarnings = false
     @AppStorage("dailyCostCapEnabled")      private var costCapEnabled       = true
     @AppStorage("dailyCostCapUsd")          private var costCapUsd: Double   = 5.0
     @AppStorage("skipMergeConfirmation")    private var skipMergeConfirmation = false
-    @AppStorage("defaultClaudeModel")       private var defaultClaudeModel    = "sonnet"
-    @AppStorage("defaultClaudeEffort")      private var defaultClaudeEffort   = ""
-    @AppStorage("defaultCodexModel")        private var defaultCodexModel     = ""
-    @AppStorage("defaultCodexEffort")       private var defaultCodexEffort    = ""
 
     /// Probed at view-load. Drives "(not installed)" annotations in the
     /// provider picker so users don't pick a backend they don't have.
@@ -134,10 +129,7 @@ struct GeneralSettings: View {
             }
 
             Section {
-                TextField("Model id (blank = codex's own default)", text: $defaultCodexModel)
-                    .onChange(of: defaultCodexModel) { _, newValue in
-                        queue.defaultCodexModel = newValue
-                    }
+                TextField("Model id (blank = codex's own default)", text: codexModelBinding)
                 Picker("Effort", selection: codexEffortBinding) {
                     Text("Auto (codex's default)").tag("")
                     Text("None").tag("none")
@@ -250,7 +242,7 @@ struct GeneralSettings: View {
     private var relevantProviders: Set<ProviderID> {
         ProviderRelevance.relevantProviders(
             suppressionEnabled: suppressUnusedProviderWarnings,
-            defaultProviderRaw: defaultProviderRaw,
+            defaultProviderRaw: repoConfigs.defaultProvider.rawValue,
             repoOverrides: repoConfigs.providerOverrides
         )
     }
@@ -300,22 +292,20 @@ struct GeneralSettings: View {
         )
     }
 
-    /// Bridge the AppStorage string (`"auto"`, `"claude"`, `"codex"`) ↔
-    /// the picker's selection. Setter pushes the resolved concrete
-    /// `ProviderID` into the live worker so the change applies without
-    /// restart; `"auto"` resolves to whichever backend is installed
-    /// (claude wins ties).
+    // Provider, model and effort live in prbar.yaml (shared with the CLI)
+    // via `RepoConfigStore`; its `onChange` pushes them into the worker.
+
+    private var defaultClaudeModel: String {
+        repoConfigs.defaultClaudeModel ?? ReviewQueueWorker.compiledDefaultClaudeModel
+    }
+
+    /// `"auto"`, `"claude"` or `"codex"` ↔ the picker's selection. `"auto"`
+    /// stays `auto` in the file and resolves to whichever backend is
+    /// installed (claude wins ties).
     private var providerBinding: Binding<String> {
         Binding(
-            get: { defaultProviderRaw },
-            set: { newValue in
-                defaultProviderRaw = newValue
-                if newValue == ProviderID.autoSentinel {
-                    queue.defaultProviderId = ProviderID.resolveAuto()
-                } else {
-                    queue.defaultProviderId = ProviderID(rawValue: newValue) ?? .claude
-                }
-            }
+            get: { repoConfigs.defaultProvider.rawValue },
+            set: { repoConfigs.defaultProvider = ProviderChoice(rawValue: $0) ?? .auto }
         )
     }
 
@@ -335,9 +325,7 @@ struct GeneralSettings: View {
                     return
                 }
                 claudeModelCustomMode = false
-                let value = Self.claudeModelPresets.first { $0.tag == tag }?.value ?? ""
-                defaultClaudeModel = value
-                queue.defaultClaudeModel = value
+                repoConfigs.defaultClaudeModel = Self.claudeModelPresets.first { $0.tag == tag }?.value ?? ""
             }
         )
     }
@@ -345,30 +333,28 @@ struct GeneralSettings: View {
     private var claudeModelTextBinding: Binding<String> {
         Binding(
             get: { defaultClaudeModel },
-            set: { newValue in
-                defaultClaudeModel = newValue
-                queue.defaultClaudeModel = newValue
-            }
+            set: { repoConfigs.defaultClaudeModel = $0 }
         )
     }
 
     private var claudeEffortBinding: Binding<String> {
         Binding(
-            get: { defaultClaudeEffort },
-            set: { newValue in
-                defaultClaudeEffort = newValue
-                queue.defaultClaudeEffort = newValue
-            }
+            get: { repoConfigs.defaultClaudeEffort ?? "" },
+            set: { repoConfigs.defaultClaudeEffort = $0 }
+        )
+    }
+
+    private var codexModelBinding: Binding<String> {
+        Binding(
+            get: { repoConfigs.defaultCodexModel ?? "" },
+            set: { repoConfigs.defaultCodexModel = $0 }
         )
     }
 
     private var codexEffortBinding: Binding<String> {
         Binding(
-            get: { defaultCodexEffort },
-            set: { newValue in
-                defaultCodexEffort = newValue
-                queue.defaultCodexEffort = newValue
-            }
+            get: { repoConfigs.defaultCodexEffort ?? "" },
+            set: { repoConfigs.defaultCodexEffort = $0 }
         )
     }
 }

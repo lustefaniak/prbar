@@ -17,6 +17,8 @@ struct ReviewDefaultsSettings: View {
         @Bindable var store = store
 
         Form {
+            ConfigFileSection()
+
             Section {
                 ReviewSettingControls.costCap($store.defaults.maxCostUsdPerSubreview)
                 if let warning = dailyCapWarning {

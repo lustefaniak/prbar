@@ -227,7 +227,8 @@ final class ReviewQueueWorker {
     /// into unattended PRBar reviews and silently burns their quota.
     /// Empty string = no override (claude's own default applies).
     /// `RepoConfig.claudeModelOverride` wins over this.
-    var defaultClaudeModel: String = "sonnet"
+    var defaultClaudeModel: String = ReviewQueueWorker.compiledDefaultClaudeModel
+    nonisolated static let compiledDefaultClaudeModel = "sonnet"
 
     /// App-level default `--effort` for the claude provider. Empty =
     /// no flag passed (claude's own default effort applies — there is

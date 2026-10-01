@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ToolAvailabilityView: View {
     @Environment(RepoConfigStore.self) private var repoConfigs
-    @AppStorage("defaultProviderId") private var defaultProviderRaw = ProviderID.claude.rawValue
     @AppStorage(ProviderRelevance.suppressionStorageKey)
         private var suppressUnusedProviderWarnings = false
 
@@ -69,7 +68,7 @@ struct ToolAvailabilityView: View {
     private var relevantProviders: Set<ProviderID> {
         ProviderRelevance.relevantProviders(
             suppressionEnabled: suppressUnusedProviderWarnings,
-            defaultProviderRaw: defaultProviderRaw,
+            defaultProviderRaw: repoConfigs.defaultProvider.rawValue,
             repoOverrides: repoConfigs.providerOverrides
         )
     }

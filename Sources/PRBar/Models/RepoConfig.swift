@@ -97,7 +97,7 @@ struct AutoApproveConfig: Sendable, Hashable, Codable {
 
     // MARK: - Codable (forward-compatible)
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case enabled, minConfidence
         case claudeMinConfidence, codexMinConfidence
         case allowApproveWithNotes
@@ -134,20 +134,23 @@ struct AutoApproveConfig: Sendable, Hashable, Codable {
         self.postInlineAnnotations = (try? c.decode(Bool.self, forKey: .postInlineAnnotations)) ?? d.postInlineAnnotations
     }
 
+    /// `enabled` always, the rest only where it differs from the shipped
+    /// value — decoding fills those back in, so the file stays readable.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        let d = AutoApproveConfig()
         try c.encode(enabled, forKey: .enabled)
-        try c.encode(minConfidence, forKey: .minConfidence)
+        if minConfidence != d.minConfidence { try c.encode(minConfidence, forKey: .minConfidence) }
         try c.encodeIfPresent(claudeMinConfidence, forKey: .claudeMinConfidence)
         try c.encodeIfPresent(codexMinConfidence, forKey: .codexMinConfidence)
-        try c.encode(allowApproveWithNotes, forKey: .allowApproveWithNotes)
-        try c.encode(maxAnnotationSeverity, forKey: .maxAnnotationSeverity)
-        try c.encode(maxAnnotations, forKey: .maxAnnotations)
-        try c.encode(maxAdditions, forKey: .maxAdditions)
-        try c.encode(maxDeletions, forKey: .maxDeletions)
-        try c.encode(maxChangedFiles, forKey: .maxChangedFiles)
-        try c.encode(postAttributionComment, forKey: .postAttributionComment)
-        try c.encode(postInlineAnnotations, forKey: .postInlineAnnotations)
+        if allowApproveWithNotes != d.allowApproveWithNotes { try c.encode(allowApproveWithNotes, forKey: .allowApproveWithNotes) }
+        if maxAnnotationSeverity != d.maxAnnotationSeverity { try c.encode(maxAnnotationSeverity, forKey: .maxAnnotationSeverity) }
+        if maxAnnotations != d.maxAnnotations { try c.encode(maxAnnotations, forKey: .maxAnnotations) }
+        if maxAdditions != d.maxAdditions { try c.encode(maxAdditions, forKey: .maxAdditions) }
+        if maxDeletions != d.maxDeletions { try c.encode(maxDeletions, forKey: .maxDeletions) }
+        if maxChangedFiles != d.maxChangedFiles { try c.encode(maxChangedFiles, forKey: .maxChangedFiles) }
+        if postAttributionComment != d.postAttributionComment { try c.encode(postAttributionComment, forKey: .postAttributionComment) }
+        if postInlineAnnotations != d.postInlineAnnotations { try c.encode(postInlineAnnotations, forKey: .postInlineAnnotations) }
     }
 
     /// Restored explicitly — Swift drops the synthesized memberwise init
@@ -278,7 +281,7 @@ struct ResolveThreadsConfig: Sendable, Hashable, Codable {
 
     static let off = ResolveThreadsConfig()
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case enabled, minConfidence
     }
 
@@ -338,11 +341,26 @@ struct AutoDenyConfig: Sendable, Hashable, Codable {
 
     // MARK: - Codable (forward-compatible)
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case action, minConfidence
         case claudeMinConfidence, codexMinConfidence
         case requiredSeverity, minMatchingAnnotations
         case maxAdditions, postInlineAnnotations
+    }
+
+    /// `action` always, the rest only where it differs from the shipped
+    /// value, as `AutoApproveConfig` does.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        let d = AutoDenyConfig()
+        try c.encode(action, forKey: .action)
+        if minConfidence != d.minConfidence { try c.encode(minConfidence, forKey: .minConfidence) }
+        try c.encodeIfPresent(claudeMinConfidence, forKey: .claudeMinConfidence)
+        try c.encodeIfPresent(codexMinConfidence, forKey: .codexMinConfidence)
+        if requiredSeverity != d.requiredSeverity { try c.encode(requiredSeverity, forKey: .requiredSeverity) }
+        if minMatchingAnnotations != d.minMatchingAnnotations { try c.encode(minMatchingAnnotations, forKey: .minMatchingAnnotations) }
+        if maxAdditions != d.maxAdditions { try c.encode(maxAdditions, forKey: .maxAdditions) }
+        if postInlineAnnotations != d.postInlineAnnotations { try c.encode(postInlineAnnotations, forKey: .postInlineAnnotations) }
     }
 
     init(from decoder: Decoder) throws {
@@ -650,9 +668,10 @@ struct RepoConfig: Sendable, Hashable, Codable {
     // future never breaks existing JSON payloads stored in the SwiftData
     // `RepoConfigEntry` table — every field decodes via
     // `decodeIfPresent ?? <default from RepoConfig.default>`. The
-    // synthesized encoder is fine; only the decoder needs the shim.
+    // encoder is hand-written too, so a config file only carries the
+    // fields a rule actually sets.
 
-    enum CodingKeys: String, CodingKey {
+    enum CodingKeys: String, CodingKey, CaseIterable {
         case id
         case repoGlobs, excluded
         case splitMode, rootPatterns, unmatchedStrategy, minFilesPerSubreview
@@ -718,6 +737,54 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.claudeEffortOverride    = try? c.decodeIfPresent(String.self, forKey: .claudeEffortOverride)
         self.codexModelOverride      = try? c.decodeIfPresent(String.self, forKey: .codexModelOverride)
         self.codexEffortOverride     = try? c.decodeIfPresent(String.self, forKey: .codexEffortOverride)
+    }
+
+    /// `id` is UI identity only. A config file people edit and share
+    /// has no use for a UUID per rule, so `ConfigFile` asks for it to be
+    /// left out; the SwiftData payload path still writes it.
+    static let omitIDUserInfoKey = CodingUserInfoKey(rawValue: "prbar.repoConfig.omitID")!
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        if encoder.userInfo[Self.omitIDUserInfoKey] as? Bool != true {
+            try c.encode(id, forKey: .id)
+        }
+        try c.encode(repoGlobs, forKey: .repoGlobs)
+        if excluded { try c.encode(excluded, forKey: .excluded) }
+        if !rootPatterns.isEmpty { try c.encode(rootPatterns, forKey: .rootPatterns) }
+        try c.encodeIfPresent(splitMode, forKey: .splitMode)
+        try c.encodeIfPresent(unmatchedStrategy, forKey: .unmatchedStrategy)
+        try c.encodeIfPresent(minFilesPerSubreview, forKey: .minFilesPerSubreview)
+        try c.encodeIfPresent(maxParallelSubreviews, forKey: .maxParallelSubreviews)
+        try c.encodeIfPresent(collapseAboveSubreviewCount, forKey: .collapseAboveSubreviewCount)
+        try c.encodeIfPresent(toolModeOverride, forKey: .toolModeOverride)
+        try c.encodeIfPresent(customSystemPrompt, forKey: .customSystemPrompt)
+        try c.encodeIfPresent(replaceBaseSystemPrompt, forKey: .replaceBaseSystemPrompt)
+        try c.encodeIfPresent(maxToolCallsPerSubreview, forKey: .maxToolCallsPerSubreview)
+        try c.encodeIfPresent(maxCostUsdPerSubreview, forKey: .maxCostUsdPerSubreview)
+        try c.encodeIfPresent(reviewTimeoutSeconds, forKey: .reviewTimeoutSeconds)
+        try c.encodeIfPresent(riskBriefEnabled, forKey: .riskBriefEnabled)
+        try c.encodeIfPresent(churnWindowDays, forKey: .churnWindowDays)
+        try c.encodeIfPresent(churnHistoryDepth, forKey: .churnHistoryDepth)
+        try c.encodeIfPresent(autoApprove, forKey: .autoApprove)
+        try c.encodeIfPresent(autoDeny, forKey: .autoDeny)
+        try c.encodeIfPresent(shareFindings, forKey: .shareFindings)
+        try c.encodeIfPresent(shareMinConfidence, forKey: .shareMinConfidence)
+        try c.encodeIfPresent(shareMaxComments, forKey: .shareMaxComments)
+        try c.encodeIfPresent(resolveThreads, forKey: .resolveThreads)
+        try c.encodeIfPresent(reviewDrafts, forKey: .reviewDrafts)
+        try c.encodeIfPresent(excludeTitlePatterns, forKey: .excludeTitlePatterns)
+        try c.encodeIfPresent(agentEnvironment, forKey: .agentEnvironment)
+        try c.encodeIfPresent(skipAIIfReviewedByOthers, forKey: .skipAIIfReviewedByOthers)
+        try c.encodeIfPresent(aiReviewEnabled, forKey: .aiReviewEnabled)
+        try c.encodeIfPresent(providerOverride, forKey: .providerOverride)
+        try c.encodeIfPresent(notifyPolicy, forKey: .notifyPolicy)
+        try c.encodeIfPresent(forceFullReview, forKey: .forceFullReview)
+        try c.encodeIfPresent(skipMergeConfirmation, forKey: .skipMergeConfirmation)
+        try c.encodeIfPresent(claudeModelOverride, forKey: .claudeModelOverride)
+        try c.encodeIfPresent(claudeEffortOverride, forKey: .claudeEffortOverride)
+        try c.encodeIfPresent(codexModelOverride, forKey: .codexModelOverride)
+        try c.encodeIfPresent(codexEffortOverride, forKey: .codexEffortOverride)
     }
 
     /// Memberwise init survives the explicit `init(from:)`. Listed so

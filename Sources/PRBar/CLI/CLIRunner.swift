@@ -11,7 +11,7 @@ import Foundation
 /// landed" signal this process needs before it exits.
 @MainActor
 struct Runner {
-    let config: CLIConfig
+    let config: PRBarConfig
 
     /// Injected rather than taking a `GHClient`, which cannot be
     /// constructed without `gh` on PATH — the skip paths reach neither
@@ -64,11 +64,7 @@ struct Runner {
             worker.providerLookup = { _ in provider }
         }
         worker.configResolver = config.resolver()
-        worker.defaultProviderId = config.defaultProvider
-        if let v = config.defaultClaudeModel { worker.defaultClaudeModel = v }
-        if let v = config.defaultClaudeEffort { worker.defaultClaudeEffort = v }
-        if let v = config.defaultCodexModel { worker.defaultCodexModel = v }
-        if let v = config.defaultCodexEffort { worker.defaultCodexEffort = v }
+        config.applyAgentDefaults(to: worker)
         worker.reviewThreadFetcher = reviewThreadFetcher
         // No human is watching a banner, so the staged batch fires as soon
         // as the run settles.

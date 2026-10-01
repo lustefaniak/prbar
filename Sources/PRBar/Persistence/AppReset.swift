@@ -12,7 +12,31 @@ enum AppReset {
     static func wipeEverythingAndRelaunch() {
         wipeSwiftData()
         wipeUserDefaults()
+        moveConfigAside()
         relaunch()
+    }
+
+    /// `prbar.yaml` is renamed, not deleted: it is a file the user may
+    /// have written by hand or shares with the CLI, and a reset aimed at
+    /// broken caches shouldn't cost them that. The last-good copy goes,
+    /// or the relaunch would restore from it.
+    static func moveConfigAside(
+        fileURL: URL = ConfigLocation.userConfigURL(),
+        lastGoodURL: URL = ConfigLocation.lastGoodURL(),
+        now: Date = Date()
+    ) {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: fileURL.path) {
+            let stamp = ISO8601DateFormatter().string(from: now).replacingOccurrences(of: ":", with: "-")
+            let aside = fileURL.deletingLastPathComponent()
+                .appendingPathComponent("\(fileURL.lastPathComponent).reset-\(stamp)")
+            do {
+                try fm.moveItem(at: fileURL, to: aside)
+            } catch {
+                NSLog("AppReset.moveConfigAside: %@", String(describing: error))
+            }
+        }
+        try? fm.removeItem(at: lastGoodURL)
     }
 
     /// Delete every row of every `@Model` registered in the schema.

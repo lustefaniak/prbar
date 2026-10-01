@@ -125,27 +125,28 @@ It needs the same `gh` and `claude`/`codex` logins the app does.
 
 ### Configuring it
 
-Settings come from a JSON file — `--config <path>`, else `$PRBAR_CONFIG`, else
-`./prbar.json`, and running with none of those is valid (everything falls back to
-the same defaults the app ships). It holds the same two-level chain the Settings
-window edits: `defaults` applying everywhere, and `repos` rules overriding it per
-repository. Copy [docs/prbar.example.json](docs/prbar.example.json) as a starting
-point:
+Settings come from `prbar.yaml`, the same file the menu-bar app's Settings
+window reads and writes (`~/.config/prbar/prbar.yaml`). The CLI looks for it in
+this order: `--config <path>`, `$PRBAR_CONFIG`, `./prbar.yaml` or `./prbar.json` in
+the working directory, then the app's file. Running with none of those is valid
+(everything falls back to the defaults the app ships), and JSON is valid YAML, so
+an older `prbar.json` still loads. The file holds the same two-level chain the
+Settings window edits: `defaults` applying everywhere, and `repos` rules overriding
+it per repository. Copy [docs/prbar.example.yaml](docs/prbar.example.yaml) as a
+starting point:
 
-```json
-{
-  "defaultProvider": "claude",
-  "defaultClaudeModel": "sonnet",
-  "defaults": {
-    "toolMode": "sandboxed",
-    "shareFindings": "warnings_and_blockers",
-    "excludeTitlePatterns": ["chore: bump *"]
-  },
-  "repos": [
-    { "repoGlobs": ["myorg/monorepo"], "rootPatterns": ["services/*"],
-      "providerOverride": "codex" }
-  ]
-}
+```yaml
+version: 1
+defaultProvider: claude
+defaultClaudeModel: sonnet
+defaults:
+  toolMode: sandboxed
+  shareFindings: warnings_and_blockers
+  excludeTitlePatterns: ["chore: bump *"]
+repos:
+  - repoGlobs: [myorg/monorepo]
+    rootPatterns: ["services/*"]
+    providerOverride: codex
 ```
 
 Like the app, **it posts nothing until you turn on `shareFindings`, `autoApprove`
@@ -167,10 +168,11 @@ Under an orchestrator, give it a path instead (`--review-json "$AGENT_STATE_ROOT
 and keep stdout clean for events. A skipped or failed review writes nothing —
 there is no review to report.
 
-> Unknown and mistyped keys are **silently ignored**, not rejected — the decoder
-> is deliberately forgiving so old files keep working. If a setting seems to have
-> no effect, check its spelling against
-> [`ReviewDefaults`](Sources/PRBar/Models/ReviewDefaults.swift) and
+> Unknown keys are reported as warnings (on stderr from the CLI, in Settings →
+> Review defaults in the app) and otherwise ignored, so a file written for a
+> newer PRBar still loads. A value of the wrong type or an unknown enum value is
+> still dropped without a warning; if a setting seems to have no effect, check it
+> against [`ReviewDefaults`](Sources/PRBar/Models/ReviewDefaults.swift) and
 > [`RepoConfig`](Sources/PRBar/Models/RepoConfig.swift), which are the schema.
 
 Progress is reported on stdout as one JSON object per line
