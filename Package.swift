@@ -26,10 +26,9 @@ let package = Package(
             name: "PRBarCore",
             dependencies: [.product(name: "Yams", package: "Yams")],
             path: "Sources/PRBarCore",
-            resources: [
-                .copy("Resources/schemas"),
-                .copy("Resources/prompts"),
-            ],
+            // Compiled in as EmbeddedResources (bin/gen-resources), so the
+            // CLI ships as one file.
+            exclude: ["Resources"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(

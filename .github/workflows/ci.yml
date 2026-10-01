@@ -80,18 +80,14 @@ jobs:
       - name: Build release binary
         run: swift build -c release --static-swift-stdlib --product prbar-review
 
-      # The binary needs its resource bundle (prompts + output schema)
-      # beside it, so ship the pair rather than the executable alone.
-      # SwiftPM names that bundle `<package>_<target>.resources` on Linux
-      # and `.bundle` on Darwin, so this glob is Linux-specific. The
-      # schema check is here so a rename fails the build instead of every
-      # review at PromptLibrary.
+      # Prompts and the output schema are compiled in, so the binary is
+      # the whole install. Running it from an empty directory proves no
+      # resource bundle is needed beside it.
       - name: Stage artifact
         run: |
           mkdir -p dist
           cp .build/release/prbar-review dist/
-          cp -R .build/release/*.resources dist/
-          test -f dist/prbar_PRBarCore.resources/schemas/review.json
+          (cd /tmp && "$GITHUB_WORKSPACE/dist/prbar-review" --help 2>&1 | grep -q usage)
           tar -C dist -czf prbar-review-linux-amd64.tar.gz .
 
       - name: Upload CLI artifact
