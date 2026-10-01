@@ -172,6 +172,15 @@ struct PopoverView: View {
             missingToolsBanner
         }
 
+        if case .disconnected(let reason) = session.connection {
+            Label("Can't reach the PRBar server, retrying: \(reason)", systemImage: "bolt.horizontal.circle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .textSelection(.enabled)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+        }
+
         if queue.batchUndoActive || !queue.flaggedDenials.isEmpty {
             AutoReviewBanner()
         }

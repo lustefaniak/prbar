@@ -1,7 +1,8 @@
 # Review rules redesign
 
 Status: draft, working notes. Phases 1 and 2 (core split, files instead of SwiftData, `prbar.yaml`) shipped in
-v0.15.0; the client-server work below is in progress.
+v0.15.0. Client-server (phase 3) on `main` since: 3.1 to 3.4 done, 3.5 done except the LaunchAgent (the app can
+run against a separate `prbar-review serve` it starts itself, opt-in), 3.6 not started.
 
 Goal: replace the per-repo settings model with a rule-based configuration that lives in files, is shared by
 the app and the `prbar-review` CLI, can be exported/imported/versioned, and can explain for any repo + PR which

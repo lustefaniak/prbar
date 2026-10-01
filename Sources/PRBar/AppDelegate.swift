@@ -57,13 +57,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Services (visible to the SwiftUI side via PRBarApp)
 
-    let runtime: PRBarRuntime
+    /// The runtime this app hosts, when it hosts one: in process (the
+    /// default) and in screenshot mode. Nil when the server is
+    /// `prbar-review serve` in a process of its own.
+    let runtime: PRBarRuntime?
     private var runtimeLock: RuntimeLock?
-    /// The server this app's own runtime hosts, which the views reach only
-    /// through `session` (in process for now; a socket once the server
-    /// moves out of the app). Not bound to the socket unless the app holds
-    /// the runtime lock.
-    private(set) var server: APIServer!
+    /// The server over `runtime`, which the views reach only through
+    /// `session`. Not bound to the socket unless the app holds the runtime
+    /// lock.
+    private(set) var server: APIServer?
     private(set) var session: ServerSession!
     private var notificationRelay: RelayDeliverer?
 
@@ -75,16 +77,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var configModel: ConfigModel { session.config }
     var actionLogModel: ActionLogModel { session.actionLog }
     var reviewLogModel: ReviewLogModel { session.reviewLog }
-    var poller: PRPoller { runtime.poller }
-    var notifier: Notifier { runtime.notifier }
-    var queue: ReviewQueueWorker { runtime.queue }
-    var actionQueue: ActionQueue { runtime.actionQueue }
-    var diffStore: DiffStore { runtime.diffStore }
-    var failureLogs: FailureLogStore { runtime.failureLogs }
-    var repoConfigs: RepoConfigStore { runtime.repoConfigs }
-    var readiness: ReadinessCoordinator { runtime.readiness }
-    var actionLog: ActionLogStore { runtime.actionLog }
-    var reviewLog: ReviewLogStore { runtime.reviewLog }
 
     /// Routes UNUserNotification action-button taps back into services.
     /// Held strongly because UNUserNotificationCenter retains its
@@ -119,39 +111,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Single-instance is checked from PRBarApp.init before the App
         // declaration triggers @NSApplicationDelegateAdaptor, so by the
         // time we're here we're already the only PRBar.
-        let runtime: PRBarRuntime
+        var runtime: PRBarRuntime?
         var socketURL: URL?
         var importsHistory: URL?
+        var external: ServerLauncher.Executable?
+        let hosting = ServerHosting.current
         if ScreenshotMode.isActive {
-            // Screenshot launch path: never poll, never call gh, never
-            // touch the network or the user's files. Inert services seeded
-            // with ScreenshotFixtures so every UI surface has the data it
-            // needs to render fully populated. The ActionQueue keeps its
-            // no-op default executors so no gh write can fire.
-            let p = PRPoller(fetcher: { ScreenshotFixtures.allPRs })
-            let q = ReviewQueueWorker(diffFetcher: { _, _, _ in "" })
-            p._setPRsForScreenshot(ScreenshotFixtures.allPRs)
-            q._setReviewsForScreenshot(ScreenshotFixtures.allReviewStates)
-            let n = Notifier(deliverer: UNNotificationDeliverer())
-            let scratch = FileManager.default.temporaryDirectory
-                .appendingPathComponent("prbar-screenshots-\(UUID().uuidString)")
-            runtime = PRBarRuntime(
-                poller: p,
-                notifier: n,
-                queue: q,
-                actionQueue: ActionQueue(),
-                diffStore: DiffStore(diffFetcher: q.diffFetcher),
-                failureLogs: FailureLogStore(logFetcher: { _, _, _ in "" }),
-                repoConfigs: RepoConfigStore(fileURL: scratch.appendingPathComponent("prbar.yaml"), lastGoodURL: nil),
-                readiness: ReadinessCoordinator(notifier: n, store: FileNotifiedSHAStore(stateDirectory: scratch)),
-                actionLog: ActionLogStore(history: .actions(in: scratch)),
-                reviewLog: ReviewLogStore(history: ReviewHistory(in: scratch)),
-                ownsAutomation: false
-            )
+            runtime = Self.screenshotRuntime()
+        } else if hosting == .external {
+            // The server is `prbar-review serve` (the copy inside this app),
+            // started on demand and left running when the app quits. It
+            // can't read the old SwiftData store, so whatever only that
+            // store held is written to files first.
+            let env = RuntimeEnvironment.app()
+            env.materializeLegacyFiles()
+            importsHistory = env.historyDirectory
+            external = ServerLauncher.Executable(
+                path: CommandLineTool.bundledBinary.path,
+                log: env.stateDirectory.appendingPathComponent("server.log"))
         } else {
             let env = RuntimeEnvironment.app()
             // Only one PRBar per machine starts reviews and posts on its
-            // own; if `prbar-review watch` already holds the lock, this app
+            // own; if `prbar-review serve` already holds the lock, this app
             // still polls and shows everything but leaves automation to it.
             let lock = RuntimeLock(stateDirectory: env.stateDirectory)
             let owns = Self.isHostingTests || lock.acquire(holder: "PRBar.app")
@@ -172,23 +153,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 importsHistory = env.historyDirectory
             }
         }
-        let n = runtime.notifier
         self.runtime = runtime
         super.init()
-        let server = APIServer(runtime: runtime, holder: "PRBar.app")
-        if let socketURL {
-            do {
-                try server.start(socketURL: socketURL)
-            } catch {
-                PRBarLog.lifecycle.error("API socket not served: \(error.localizedDescription, privacy: .public)")
+
+        let session: ServerSession
+        if let external {
+            let socket = ServerLocation.socketURL(stateDirectory: AppPaths.state)
+            let build = PRBarBuild.version
+            session = ServerSession(connect: {
+                try await ServerLauncher.connect(
+                    socketURL: socket, client: "PRBar.app", executable: external, expectedBuild: build)
+            })
+        } else if let runtime {
+            let server = APIServer(runtime: runtime, holder: "PRBar.app")
+            if let socketURL {
+                do {
+                    try server.start(socketURL: socketURL)
+                } catch {
+                    PRBarLog.lifecycle.error("API socket not served: \(error.localizedDescription, privacy: .public)")
+                }
             }
+            self.server = server
+            if let notificationRelay { server.relayNotifications(from: notificationRelay) }
+            session = ServerSession(client: server.connectInProcess())
+            // Applied at once so the first frame already shows the cached
+            // inbox; `start` then subscribes and follows updates.
+            session.apply(server.snapshot())
+        } else {
+            preconditionFailure("no runtime and no external server")
         }
-        self.server = server
-        if let notificationRelay { server.relayNotifications(from: notificationRelay) }
-        let session = ServerSession(client: server.connectInProcess())
-        // Applied at once so the first frame already shows the cached
-        // inbox; `start` then subscribes and follows updates.
-        session.apply(server.snapshot())
         self.session = session
         // Machine-local preferences live in UserDefaults and are handed to
         // the server. The cost cap's presence and value persist separately
@@ -198,7 +191,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         session.setPreferences(PreferencesParams(
             dailyCostCapEnabled: defaults.object(forKey: "dailyCostCapEnabled").map { _ in defaults.bool(forKey: "dailyCostCapEnabled") },
             dailyCostCapUsd: storedCap > 0 ? storedCap : nil,
-            notifyAuthoredDrafts: !MyDraftHandling.current(defaults).silencesAuthoredDrafts))
+            notifyAuthoredDrafts: !MyDraftHandling.current(defaults).silencesAuthoredDrafts,
+            undoWindowSeconds: Self.undoWindowSeconds))
         // The one-time import of history from before v0.15.0. It reads the
         // old SwiftData store, which only the app can open, and reports to
         // whichever server hosts the logs.
@@ -211,8 +205,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             )
         }
-        let showsNotifications = !ScreenshotMode.isActive
-        Task { try? await session.start(deliverer: showsNotifications ? UNNotificationDeliverer() : nil) }
+        let deliverer: UNNotificationDeliverer? = ScreenshotMode.isActive ? nil : UNNotificationDeliverer()
+        if external != nil {
+            session.run(deliverer: deliverer)
+        } else {
+            Task { try? await session.start(deliverer: deliverer) }
+        }
         // Install the notification action router *before* requesting
         // authorization so the registered categories are visible the
         // first time macOS shows the auth prompt — otherwise the user
@@ -222,11 +220,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.notificationRouter = router
         // In screenshot mode we deliberately skip the OS auth prompt
         // (would steal focus from the very window we're trying to
-        // capture). The worktree sweep is part of the runtime's
-        // maintenance pass, started at launch.
-        if !ScreenshotMode.isActive {
-            Task { await n.requestAuthorization() }
+        // capture).
+        if let deliverer {
+            Task { await deliverer.requestAuthorization() }
         }
+    }
+
+    /// How long staged auto reviews wait behind the banner's Undo.
+    private static let undoWindowSeconds: Double = 30
+
+    /// Inert services seeded with ScreenshotFixtures so every UI surface
+    /// has the data it needs to render fully populated: never polls, never
+    /// calls gh, never touches the network or the user's files. The
+    /// ActionQueue keeps its no-op default executors so no gh write can
+    /// fire.
+    private static func screenshotRuntime() -> PRBarRuntime {
+        let p = PRPoller(fetcher: { ScreenshotFixtures.allPRs })
+        let q = ReviewQueueWorker(diffFetcher: { _, _, _ in "" })
+        p._setPRsForScreenshot(ScreenshotFixtures.allPRs)
+        q._setReviewsForScreenshot(ScreenshotFixtures.allReviewStates)
+        let n = Notifier(deliverer: UNNotificationDeliverer())
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("prbar-screenshots-\(UUID().uuidString)")
+        return PRBarRuntime(
+            poller: p,
+            notifier: n,
+            queue: q,
+            actionQueue: ActionQueue(),
+            diffStore: DiffStore(diffFetcher: q.diffFetcher),
+            failureLogs: FailureLogStore(logFetcher: { _, _, _ in "" }),
+            repoConfigs: RepoConfigStore(fileURL: scratch.appendingPathComponent("prbar.yaml"), lastGoodURL: nil),
+            readiness: ReadinessCoordinator(notifier: n, store: FileNotifiedSHAStore(stateDirectory: scratch)),
+            actionLog: ActionLogStore(history: .actions(in: scratch)),
+            reviewLog: ReviewLogStore(history: ReviewHistory(in: scratch)),
+            ownsAutomation: false
+        )
     }
 
     /// Disable AppKit window state restoration. PRBar is a menu-bar
@@ -248,12 +276,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `persist()` coalesces for 300 ms, so quitting inside that window
     /// drops the update — a review that just completed is re-run, and
     /// re-billed, on the next launch. `.terminateLater` is the only hook
-    /// that can await anything; the timeout is there so a wedged SQLite
-    /// write can't hold a quit open indefinitely.
+    /// that can await anything; the timeout is there so a save that never
+    /// finishes can't hold a quit open indefinitely. With the server in its
+    /// own process there is nothing to flush: it keeps running.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         server?.stop()
+        session?.stop()
+        guard let queue = runtime?.queue else { return .terminateNow }
         Task { @MainActor in
-            let flush = Task { await self.queue.flushPendingSaves() }
+            let flush = Task { await queue.flushPendingSaves() }
             let timeout = Task { try? await Task.sleep(for: .seconds(3)) }
             _ = await withTaskGroup(of: Void.self) { group in
                 group.addTask { await flush.value }
@@ -306,7 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preShown.orderOut(nil)
         }
         if !ScreenshotMode.isActive {
-            runtime.startMaintenance(cacheDirectory: AppPaths.cache)
+            runtime?.startMaintenance(cacheDirectory: AppPaths.cache)
         }
 
         installStatusItem()

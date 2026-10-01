@@ -28,6 +28,11 @@ struct PRBarApp: App {
         if AppDelegate.isHostingTests || ScreenshotMode.isActive {
             return
         }
+        // Development: a second copy pointed at its own XDG directories,
+        // to try a change beside the copy in daily use.
+        if ProcessInfo.processInfo.environment["PRBAR_ALLOW_SECOND_INSTANCE"] == "1" {
+            return
+        }
         let myBundleID = Bundle.main.bundleIdentifier ?? "dev.lustefaniak.prbar"
         let myPID = ProcessInfo.processInfo.processIdentifier
         let others = NSRunningApplication
