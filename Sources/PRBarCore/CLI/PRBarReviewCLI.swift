@@ -16,6 +16,13 @@ import Foundation
 public enum PRBarReviewCLI {
     public static func main() async -> Int32 {
         let args = Array(CommandLine.arguments.dropFirst())
+        if args.first == "watch" {
+            guard let options = WatchCommand.Options(args: Array(args.dropFirst())) else {
+                FileHandle.standardError.write(Data(WatchCommand.usage.utf8))
+                return 2
+            }
+            return await WatchCommand.run(options)
+        }
         guard let invocation = Invocation(args: args) else {
             FileHandle.standardError.write(Data(Self.usage.utf8))
             return 2
@@ -148,5 +155,8 @@ public enum PRBarReviewCLI {
                               count reach the event stream
 
     Emits brahmanda NDJSON on stdout, one event per line. Logs go to stderr.
+
+    prbar-review watch [options]   run the review automation headless;
+                                   see `prbar-review watch --help`
     """
 }

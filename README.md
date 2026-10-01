@@ -153,6 +153,22 @@ Like the app, **it posts nothing until you turn on `shareFindings`, `autoApprove
 or `autoDeny`**. `shareFindings` is the one to start with when you *do* want it on
 the PR: it posts findings as a comment and never casts a verdict.
 
+### Running it continuously
+
+`prbar-review watch` is the menu-bar app without the menu bar: it polls your
+inbox, reviews incoming review requests, posts whatever `prbar.yaml` allows, and
+keeps the same history and state files as the app (under `~/.local/state/prbar`).
+Notifications and progress go to stderr; Ctrl-C stops it.
+
+```sh
+prbar-review watch                      # uses ~/.config/prbar/prbar.yaml
+prbar-review watch --config team.yaml --daily-cap 20
+```
+
+Only one PRBar per machine automates: `watch` refuses to start while the app is
+running it, and the app, if started while `watch` runs, still shows everything
+but leaves reviewing and posting to `watch`.
+
 ### Getting the findings without posting them
 
 The event stream only carries a verdict and a finding count, so on its own a

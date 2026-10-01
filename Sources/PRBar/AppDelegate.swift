@@ -57,16 +57,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Services (visible to the SwiftUI side via PRBarApp)
 
-    let poller: PRPoller
-    let notifier: Notifier
-    let queue: ReviewQueueWorker
-    let actionQueue: ActionQueue
-    let diffStore: DiffStore
-    let failureLogs: FailureLogStore
-    let repoConfigs: RepoConfigStore
-    let readiness: ReadinessCoordinator
-    let actionLog: ActionLogStore
-    let reviewLog: ReviewLogStore
+    let runtime: PRBarRuntime
+    private var runtimeLock: RuntimeLock?
+
+    var poller: PRPoller { runtime.poller }
+    var notifier: Notifier { runtime.notifier }
+    var queue: ReviewQueueWorker { runtime.queue }
+    var actionQueue: ActionQueue { runtime.actionQueue }
+    var diffStore: DiffStore { runtime.diffStore }
+    var failureLogs: FailureLogStore { runtime.failureLogs }
+    var repoConfigs: RepoConfigStore { runtime.repoConfigs }
+    var readiness: ReadinessCoordinator { runtime.readiness }
+    var actionLog: ActionLogStore { runtime.actionLog }
+    var reviewLog: ReviewLogStore { runtime.reviewLog }
 
     /// Routes UNUserNotification action-button taps back into services.
     /// Held strongly because UNUserNotificationCenter retains its
@@ -101,88 +104,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Single-instance is checked from PRBarApp.init before the App
         // declaration triggers @NSApplicationDelegateAdaptor, so by the
         // time we're here we're already the only PRBar.
-        let n = Notifier(deliverer: UNNotificationDeliverer())
-        let p: PRPoller
-        let q: ReviewQueueWorker
-        let a: ActionQueue
+        let runtime: PRBarRuntime
         if ScreenshotMode.isActive {
             // Screenshot launch path: never poll, never call gh, never
-            // touch the network. Build inert services seeded with
-            // ScreenshotFixtures so every UI surface has the data it
+            // touch the network or the user's files. Inert services seeded
+            // with ScreenshotFixtures so every UI surface has the data it
             // needs to render fully populated. The ActionQueue keeps its
             // no-op default executors so no gh write can fire.
-            p = PRPoller(fetcher: { ScreenshotFixtures.allPRs })
-            q = ReviewQueueWorker(diffFetcher: { _, _, _ in "" })
-            a = ActionQueue()
+            let p = PRPoller(fetcher: { ScreenshotFixtures.allPRs })
+            let q = ReviewQueueWorker(diffFetcher: { _, _, _ in "" })
             p._setPRsForScreenshot(ScreenshotFixtures.allPRs)
             q._setReviewsForScreenshot(ScreenshotFixtures.allReviewStates)
+            let n = Notifier(deliverer: UNNotificationDeliverer())
+            let scratch = FileManager.default.temporaryDirectory
+                .appendingPathComponent("prbar-screenshots-\(UUID().uuidString)")
+            runtime = PRBarRuntime(
+                poller: p,
+                notifier: n,
+                queue: q,
+                actionQueue: ActionQueue(),
+                diffStore: DiffStore(diffFetcher: q.diffFetcher),
+                failureLogs: FailureLogStore(logFetcher: { _, _, _ in "" }),
+                repoConfigs: RepoConfigStore(fileURL: scratch.appendingPathComponent("prbar.yaml"), lastGoodURL: nil),
+                readiness: ReadinessCoordinator(notifier: n, store: FileNotifiedSHAStore(stateDirectory: scratch)),
+                actionLog: ActionLogStore(history: .actions(in: scratch)),
+                reviewLog: ReviewLogStore(history: ReviewHistory(in: scratch)),
+                ownsAutomation: false
+            )
         } else {
-            p = PRPoller.live()
-            q = ReviewQueueWorker.live()
-            a = ActionQueue.live()
-        }
-        let d = DiffStore.sharing(q)
-        // Reuse the worker's FailureLogStore so the UI's expandable
-        // failure-log section reads from the same cache the prompt
-        // pipeline already warmed.
-        // The seam is protocol-typed for the headless CLI, so recover the
-        // concrete store the UI needs; screenshot mode never sets one.
-        let fls = (q.failureLogStore as? FailureLogStore) ?? FailureLogStore.live()
-        q.failureLogStore = fls
-        // The test host is this app: give it a throwaway config so a test
-        // run never migrates or rewrites the user's real prbar.yaml.
-        let rc = Self.isHostingTests
-            ? RepoConfigStore(
-                fileURL: FileManager.default.temporaryDirectory
-                    .appendingPathComponent("prbar-test-host-\(UUID().uuidString)/prbar.yaml"),
-                lastGoodURL: nil
-            )
-            : RepoConfigStore.live()
-        let coord = ReadinessCoordinator.live(notifier: n)
-        let log = Self.isHostingTests ? ActionLogStore.temporary() : ActionLogStore.live(historyDirectory: AppPaths.history)
-        let rlog = Self.isHostingTests ? ReviewLogStore.temporary() : ReviewLogStore.live(historyDirectory: AppPaths.history)
-        if !Self.isHostingTests {
-            LegacyHistoryMigration.migrateInBackground(historyDirectory: AppPaths.history) { [weak log, weak rlog] in
-                log?.reload()
-                rlog?.reload()
+            let env = RuntimeEnvironment.app()
+            // Only one PRBar per machine starts reviews and posts on its
+            // own; if `prbar-review watch` already holds the lock, this app
+            // still polls and shows everything but leaves automation to it.
+            let lock = RuntimeLock(stateDirectory: env.stateDirectory)
+            let owns = Self.isHostingTests || lock.acquire(holder: "PRBar.app")
+            if !owns {
+                PRBarLog.lifecycle.notice("runtime lock held by \(lock.currentHolder() ?? "?", privacy: .public); automation off")
+            }
+            self.runtimeLock = lock
+            runtime = PRBarRuntime.live(env, deliverer: UNNotificationDeliverer(), ownsAutomation: owns)
+            if !Self.isHostingTests {
+                LegacyHistoryMigration.migrateInBackground(historyDirectory: env.historyDirectory) {
+                    [weak log = runtime.actionLog, weak rlog = runtime.reviewLog] in
+                    log?.reload()
+                    rlog?.reload()
+                }
             }
         }
-        q.actionLog = log
-        q.reviewLog = rlog
-        a.actionLog = log
-        // Every successful gh write refreshes the PR through the poller.
-        // GitHub's GraphQL read-model lags the REST write, so refresh now
-        // for the optimistic intermediate state and again after ~1.2s as a
-        // belt-and-suspenders catch for the propagation.
-        a.onActionCompleted = { [weak p] pr in
-            p?.refreshPR(pr)
-            Task { @MainActor [weak p] in
-                try? await Task.sleep(for: .seconds(1.2))
-                p?.refreshPR(pr, force: true)
-            }
-        }
-        // Auto-review posts route through the ActionQueue so they share
-        // the one serialized + dedup'd + retryable + logged write path.
-        q.enqueueAutoReview = { [weak a] pr, kind, body, comments, cost, source in
-            a?.enqueue(
-                pr,
-                kind: .review(kind: kind, body: body, comments: comments),
-                source: source,
-                costUsd: cost
-            )
-        }
-        // Thread resolution is a GitHub write like any other, so it takes
-        // the same queued path rather than firing from the worker.
-        q.enqueueResolveThreads = { [weak a] pr, threadIds in
-            a?.enqueue(pr, kind: .resolveThreads(ids: threadIds), source: .automated)
-        }
-        q.configResolver = rc.makeResolver()
-        // Provider / model / effort defaults come from prbar.yaml, shared
-        // with the CLI. "auto" resolves to whichever CLI is installed
-        // (claude wins ties).
-        rc.config.applyAgentDefaults(to: q)
+        let p = runtime.poller, n = runtime.notifier, q = runtime.queue, a = runtime.actionQueue
         // Daily cost cap — both presence (toggle) and value persist
-        // separately so the cap survives flipping the toggle off/on.
+        // separately so the cap survives flipping the toggle off/on. A
+        // machine-local preference, so it stays in UserDefaults.
         let defaults = UserDefaults.standard
         if defaults.object(forKey: "dailyCostCapEnabled") != nil {
             q.dailyCostCapEnabled = defaults.bool(forKey: "dailyCostCapEnabled")
@@ -191,43 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if storedCap > 0 {
             q.dailyCostCap = storedCap
         }
-        p.configResolver = rc.makeResolver()
-        rc.onChange = { [weak q, weak rc, weak p] in
-            guard let q, let rc else { return }
-            q.configResolver = rc.makeResolver()
-            p?.configResolver = rc.makeResolver()
-            rc.config.applyAgentDefaults(to: q)
-            // Re-poll so the title-exclude filter applies to anything in
-            // the inbox right now, not just future fetches.
-            p?.pollNow()
-        }
-        // Hand AI-triage settlement to the coordinator so it can flip the
-        // per-PR ready bit and (when the queue idles) flush a batched
-        // "ready for review" notification.
-        q.onReviewSettled = { [weak coord] prNodeId, isWorkerSettled in
-            coord?.noteReviewSettled(prNodeId: prNodeId, isWorkerSettled: isWorkerSettled)
-        }
-        // Feed each successful poll into the coordinator so it can spot
-        // newly-arrived review-requested PRs and forget ones that left
-        // the inbox.
-        p.onPollSuccess = { [weak coord, weak rc, weak q] prs in
-            guard let coord, let rc else { return }
-            coord.track(prs: prs, configResolver: rc.resolve(owner:repo:))
-            // Worker auto-enqueue still happens here so AI triage starts
-            // immediately after a poll discovers a new review request.
-            q?.enqueueNewReviewRequests(from: prs)
-        }
-        p.notifier = n
-        self.poller = p
-        self.notifier = n
-        self.queue = q
-        self.actionQueue = a
-        self.diffStore = d
-        self.failureLogs = fls
-        self.repoConfigs = rc
-        self.readiness = coord
-        self.actionLog = log
-        self.reviewLog = rlog
+        self.runtime = runtime
         super.init()
         // Install the notification action router *before* requesting
         // authorization so the registered categories are visible the

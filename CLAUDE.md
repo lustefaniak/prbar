@@ -149,7 +149,11 @@ swift build -c release --static-swift-stdlib --product prbar-review
 
 **The CLI's source lives *inside* `PRBarCore`** (`Sources/PRBarCore/CLI/`) with a three-line `Sources/prbar-review/main.swift` shim, because that keeps `public` to exactly one symbol — `PRBarReviewCLI.main()` — instead of exporting the whole model layer. `CLI/**` is in project.yml's `excludes` for `Sources/PRBarCore` so the .app doesn't carry it.
 
-**One PR per invocation, and that's all it does:**
+**`PRBarRuntime` is the app without the UI** (`Sources/PRBarCore/Runtime/`). It wires poller, worker, `ActionQueue`, `ReadinessCoordinator`, `Notifier`, the stores and the config together; `AppDelegate` builds one (`PRBarRuntime.live(RuntimeEnvironment.app(), …)`, or an inert one in screenshot mode) and only exposes its services to SwiftUI. All wiring between services belongs in `PRBarRuntime.wire()`, not in a front end, or the headless mode silently loses it. `RuntimeEnvironment` says where files live and supplies the app's read-only legacy fallbacks; `.standard()` is the plain XDG layout the CLI uses.
+
+**`prbar-review watch` runs that runtime headless** (`CLI/WatchCommand.swift`): polls, reviews, posts what the config allows, writes the same history and state files as the app, logs to stderr, stops on SIGINT/SIGTERM after flushing review state. `undoWindow = 0` (nobody sees a banner); `--daily-cap` because there is no Settings pane. **One automating PRBar per state directory:** `RuntimeLock` (`flock` on `<state>/runtime.lock`, released by the kernel on exit, crash included) — `watch` refuses to start when it can't take it (exit 3), and the app starts with `ownsAutomation = false` (polls, shows, manual actions work; no auto-enqueue) when `watch` holds it. Without the lock two processes polling as the same user both review and post.
+
+**`prbar-review <pr>` reviews one PR per invocation, and that's all it does:**
 
 ```sh
 prbar-review [--force] [--provider claude|codex] [--config <path>] <pr-url|owner/repo#number>
