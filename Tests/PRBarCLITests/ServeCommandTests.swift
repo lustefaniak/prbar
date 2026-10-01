@@ -74,7 +74,7 @@ final class RuntimeMaintenanceTests: XCTestCase {
 final class LegacyMaterializationTests: XCTestCase {
     /// A server in another process has no legacy fallbacks, so whatever the
     /// app could only read from the old store has to be on disk first.
-    func testWritesMissingFilesFromTheFallbacksOnce() throws {
+    func testWritesMissingFilesFromTheFallbacksOnce() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prbar-legacy-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         var env = RuntimeEnvironment(
