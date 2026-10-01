@@ -41,6 +41,9 @@ targets:
     platform: macOS
     sources:
       - path: Sources/PRBar
+      # The platform-independent half, also built alone by Package.swift
+      # (and on Linux in CI). Compiled into the same module as the app.
+      - path: Sources/PRBarCore
         excludes:
           # Resources are added explicitly below as folder references;
           # letting the source glob see them nests a second Resources/
@@ -48,10 +51,10 @@ targets:
           # only by SwiftPM.
           - Resources/**
           - CLI/**
-      - path: Sources/PRBar/Resources/schemas
+      - path: Sources/PRBarCore/Resources/schemas
         buildPhase: resources
         type: folder
-      - path: Sources/PRBar/Resources/prompts
+      - path: Sources/PRBarCore/Resources/prompts
         buildPhase: resources
         type: folder
       - path: Resources/Assets.xcassets

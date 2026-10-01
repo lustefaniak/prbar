@@ -172,8 +172,8 @@ there is no review to report.
 > Review defaults in the app) and otherwise ignored, so a file written for a
 > newer PRBar still loads. A value of the wrong type or an unknown enum value is
 > still dropped without a warning; if a setting seems to have no effect, check it
-> against [`ReviewDefaults`](Sources/PRBar/Models/ReviewDefaults.swift) and
-> [`RepoConfig`](Sources/PRBar/Models/RepoConfig.swift), which are the schema.
+> against [`ReviewDefaults`](Sources/PRBarCore/Models/ReviewDefaults.swift) and
+> [`RepoConfig`](Sources/PRBarCore/Models/RepoConfig.swift), which are the schema.
 
 Progress is reported on stdout as one JSON object per line
 (`task_id` / `outcome` / `note` / `agent.cost_usd`), which is

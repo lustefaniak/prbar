@@ -4,7 +4,7 @@
 #
 # Every key is optional; an empty file means the shipped defaults, which
 # review PRs and post nothing. Field names match ReviewDefaults / RepoConfig
-# in Sources/PRBar/Models. Unknown keys are reported as warnings.
+# in Sources/PRBarCore/Models. Unknown keys are reported as warnings.
 version: 1
 
 # auto | claude | codex. auto picks claude when installed, else codex.
