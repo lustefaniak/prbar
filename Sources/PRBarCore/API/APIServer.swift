@@ -472,6 +472,7 @@ final class APIServer {
                 if let enabled = params?.dailyCostCapEnabled { self.runtime.queue.dailyCostCapEnabled = enabled }
                 if let usd = params?.dailyCostCapUsd { self.runtime.queue.dailyCostCap = max(0, usd) }
                 if let drafts = params?.notifyAuthoredDrafts { self.runtime.poller.includeAuthoredDrafts = drafts }
+                if let seconds = params?.undoWindowSeconds { self.runtime.queue.undoWindow = max(0, seconds) }
                 return APIEmpty()
             }
         case .checkoutUsage:

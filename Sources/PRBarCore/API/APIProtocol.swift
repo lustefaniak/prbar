@@ -264,6 +264,18 @@ struct PreferencesParams: Codable, Sendable {
     /// Whether drafts you authored raise CI and ready-to-merge
     /// notifications.
     var notifyAuthoredDrafts: Bool?
+    /// How long staged auto reviews wait for an undo. A headless server
+    /// runs with 0, since nobody sees the banner; a UI that shows it sets
+    /// its own.
+    var undoWindowSeconds: Double?
+
+    /// Later values win, field by field.
+    mutating func merge(_ other: PreferencesParams) {
+        dailyCostCapEnabled = other.dailyCostCapEnabled ?? dailyCostCapEnabled
+        dailyCostCapUsd = other.dailyCostCapUsd ?? dailyCostCapUsd
+        notifyAuthoredDrafts = other.notifyAuthoredDrafts ?? notifyAuthoredDrafts
+        undoWindowSeconds = other.undoWindowSeconds ?? undoWindowSeconds
+    }
 }
 
 struct CheckoutUsage: Codable, Sendable {

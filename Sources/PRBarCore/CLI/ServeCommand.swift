@@ -45,7 +45,7 @@ enum ServeCommand {
         }
     }
 
-    static let holder = "prbar-review serve"
+    static let holder = ServerLauncher.serveHolder
 
     static let usage = """
     usage: prbar-review serve [--config <path>] [--daily-cap <usd>|off]

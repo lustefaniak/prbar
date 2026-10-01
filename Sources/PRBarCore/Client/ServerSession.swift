@@ -18,15 +18,53 @@ final class ServerSession {
     let actionLog: ActionLogModel
     let reviewLog: ReviewLogModel
 
+    enum Connection: Equatable {
+        case connecting
+        case connected(HelloResult)
+        /// Lost, and trying again; the message says why.
+        case disconnected(String)
+
+        var isConnected: Bool {
+            if case .connected = self { return true }
+            return false
+        }
+    }
+
+    /// Whether the views are showing live state. A banner reads this.
+    private(set) var connection: Connection = .connecting
+
     @ObservationIgnored
-    private let client: APIClient
+    private var client: APIClient?
+    @ObservationIgnored
+    private var connect: (@MainActor () async throws -> ServerConnection.Connected)?
+    @ObservationIgnored
+    private var runTask: Task<Void, Never>?
     @ObservationIgnored
     private var listener: Task<Void, Never>?
     @ObservationIgnored
     private var notificationListener: Task<Void, Never>?
+    /// What this front end told the server about itself, replayed on every
+    /// reconnect: a restarted server knows none of it.
+    @ObservationIgnored
+    private var preferences = PreferencesParams()
+    @ObservationIgnored
+    private var popoverVisible: Bool?
 
-    init(client: APIClient) {
+    /// A session over one fixed connection (tests, and the in-process
+    /// server, which can't go away).
+    convenience init(client: APIClient) {
+        self.init()
         self.client = client
+    }
+
+    /// A session that connects with `connect`, and again whenever the
+    /// connection drops (`run`).
+    convenience init(connect: @escaping @MainActor () async throws -> ServerConnection.Connected) {
+        self.init()
+        self.connect = connect
+    }
+
+    private init() {
         inbox = InboxModel()
         reviews = ReviewQueueModel()
         actions = ActionQueueModel()
@@ -44,10 +82,11 @@ final class ServerSession {
         reviewLog.session = self
     }
 
-    /// Subscribes, applies the snapshot, then follows updates until the
-    /// connection closes. With `deliverer`, this front end shows the
-    /// server's notifications.
+    /// Subscribes over the current connection, applies the snapshot, then
+    /// follows updates until the connection closes. With `deliverer`, this
+    /// front end shows the server's notifications.
     func start(deliverer: (any NotificationDeliverer)? = nil) async throws {
+        guard let client else { throw APIClientError.disconnected }
         let params = SubscribeParams(state: true, notifications: deliverer != nil)
         let result = try await client.call(.subscribe, params, as: SubscribeResult.self)
         if let snapshot = result.state { apply(snapshot) }
@@ -67,12 +106,47 @@ final class ServerSession {
         }
     }
 
+    /// Connects, subscribes and follows the server, reconnecting with a
+    /// backoff whenever the connection drops, until `stop`.
+    func run(deliverer: (any NotificationDeliverer)? = nil) {
+        guard let connect, runTask == nil else { return }
+        runTask = Task { [weak self] in
+            var delay: Duration = .milliseconds(500)
+            while !Task.isCancelled {
+                do {
+                    let connected = try await connect()
+                    guard let self else { return }
+                    self.client = connected.client
+                    self.replayClientSettings()
+                    try await self.start(deliverer: deliverer)
+                    self.connection = .connected(connected.hello)
+                    delay = .milliseconds(500)
+                    // Until the server closes the connection.
+                    await self.listener?.value
+                    self.connection = .disconnected("the PRBar server closed the connection")
+                } catch {
+                    self?.connection = .disconnected(error.localizedDescription)
+                }
+                self?.client?.close()
+                try? await Task.sleep(for: delay)
+                delay = min(delay * 2, .seconds(5))
+            }
+        }
+    }
+
     func stop() {
+        runTask?.cancel()
+        runTask = nil
         listener?.cancel()
         listener = nil
         notificationListener?.cancel()
         notificationListener = nil
-        client.close()
+        client?.close()
+    }
+
+    private func replayClientSettings() {
+        send(.setPreferences, preferences)
+        if let popoverVisible { send(.setPopoverVisible, PopoverVisibility(visible: popoverVisible)) }
     }
 
     func apply(_ update: StateUpdate) {
@@ -92,6 +166,10 @@ final class ServerSession {
         _ method: APIMethod, _ params: P, as type: R.Type,
         completion: @escaping @MainActor (Result<R, Error>) -> Void
     ) {
+        guard let client else {
+            completion(.failure(APIClientError.disconnected))
+            return
+        }
         client.post(method, params, as: type) { result in
             Task { @MainActor in completion(result) }
         }
@@ -106,23 +184,30 @@ final class ServerSession {
     }
 
     func setPreferences(_ preferences: PreferencesParams) {
+        self.preferences.merge(preferences)
         send(.setPreferences, preferences)
     }
 
     /// While the user is looking at PRBar, the server holds notifications.
     func setPopoverVisible(_ visible: Bool) {
+        popoverVisible = visible
         send(.setPopoverVisible, PopoverVisibility(visible: visible))
     }
 
     /// A request whose answer the caller needs.
     func call<P: Codable & Sendable, R: Codable & Sendable>(_ method: APIMethod, _ params: P, as type: R.Type) async throws -> R {
-        try await client.call(method, params, as: type)
+        guard let client else { throw APIClientError.disconnected }
+        return try await client.call(method, params, as: type)
     }
 
     /// Fire-and-forget command, sent before this returns so commands reach
     /// the server in the order the UI issued them. A failure is logged: the
     /// state the UI shows comes back through `state` updates anyway.
     func send<P: Codable & Sendable>(_ method: APIMethod, _ params: P) {
+        guard let client else {
+            PRBarLog.lifecycle.notice("API \(method.rawValue, privacy: .public) dropped: not connected")
+            return
+        }
         client.post(method, params) { error in
             PRBarLog.lifecycle.error("API \(method.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -178,11 +263,11 @@ final class ReviewQueueModel {
     /// setting one hands it to the server.
     @ObservationIgnored
     var dailyCostCapEnabled = true {
-        didSet { session?.send(.setPreferences, PreferencesParams(dailyCostCapEnabled: dailyCostCapEnabled)) }
+        didSet { session?.setPreferences(PreferencesParams(dailyCostCapEnabled: dailyCostCapEnabled)) }
     }
     @ObservationIgnored
     var dailyCostCap: Double = 0 {
-        didSet { session?.send(.setPreferences, PreferencesParams(dailyCostCapUsd: dailyCostCap)) }
+        didSet { session?.setPreferences(PreferencesParams(dailyCostCapUsd: dailyCostCap)) }
     }
 
     @ObservationIgnored
