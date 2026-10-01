@@ -172,6 +172,30 @@ Like the app, **it posts nothing until you turn on `shareFindings`, `autoApprove
 or `autoDeny`**. `shareFindings` is the one to start with when you *do* want it on
 the PR: it posts findings as a comment and never casts a verdict.
 
+### Rules
+
+For decisions the per-repo settings can't express ("approve small PRs from these
+people", "never act on anything under `infra/` on its own", "skip dependency
+bumps from bots"), write rules: [CEL](https://github.com/google/cel-spec) policies
+in a `rules/` directory beside `prbar.yaml`, one stage per subdirectory:
+
+```yaml
+# ~/.config/prbar/rules/decide/10-trusted.yaml
+name: trusted
+rule:
+  match:
+    - condition: >-
+        pr.author in lists.trusted && review.verdict == "approve"
+        && review.max_severity <= severity.suggestion && pr.additions <= 200
+      output: '{"rule": "trusted-approve", "action": "approve"}'
+```
+
+The first rule that matches decides; when none does, the settings above decide
+as before. Rules are checked when they load, with the file and line of any
+mistake. `prbar-review rules check` validates them, and `prbar-review rules
+explain <pr>` shows every condition evaluated for a PR, with the facts it read.
+[docs/rules.md](docs/rules.md) lists the stages, the facts and the actions.
+
 ### Reviewing work before it's a PR
 
 Point it at a checkout instead of a PR and it reviews what you haven't pushed:

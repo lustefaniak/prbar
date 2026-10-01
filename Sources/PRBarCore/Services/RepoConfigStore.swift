@@ -44,6 +44,15 @@ final class RepoConfigStore {
     @ObservationIgnored let fileURL: URL
     @ObservationIgnored private let lastGoodURL: URL?
     @ObservationIgnored private var lastSeenData: Data?
+    /// The rules directory as last read.
+    @ObservationIgnored private var lastSeenRules: [String: Data]?
+
+    /// Why the rules in effect aren't what's in the rules directory: they
+    /// don't compile. At launch that leaves `Rules.unloaded` in effect,
+    /// which posts nothing; later, the previous rules stay.
+    private(set) var rulesIssue: String?
+
+    @ObservationIgnored let rulesURL: URL
     @ObservationIgnored private var watchTask: Task<Void, Never>?
 
     /// Hook fired after every change, from Settings or from the file.
@@ -102,13 +111,16 @@ final class RepoConfigStore {
     init(
         fileURL: URL = ConfigLocation.userConfigURL(),
         lastGoodURL: URL? = ConfigLocation.lastGoodURL(),
+        rulesURL: URL? = nil,
         legacy: (@MainActor () -> PRBarConfig?)? = nil,
         watch: Bool = false
     ) {
         self.fileURL = fileURL
         self.lastGoodURL = lastGoodURL
+        self.rulesURL = rulesURL ?? RuleDirectory.url(configFile: fileURL)
         self.config = PRBarConfig()
         loadAtLaunch(legacy: legacy)
+        reloadRulesIfChanged()
         if watch { startWatching() }
     }
 
@@ -164,6 +176,9 @@ final class RepoConfigStore {
     private func mutate(_ body: (inout PRBarConfig) -> Void) {
         var next = config
         body(&next)
+        // A config from a front end carries no rules: they come from the
+        // rules directory, which only `reloadRulesIfChanged` reads.
+        next.compiledRules = config.compiledRules
         // SwiftUI writes bindings back on every edit; an unchanged value
         // must not rewrite the file or churn the resolvers.
         guard next != config else { return }
@@ -215,7 +230,9 @@ final class RepoConfigStore {
         guard let lastGoodURL, let data = try? Data(contentsOf: lastGoodURL) else { return }
         if let text = String(data: data, encoding: .utf8),
            let loaded = try? ConfigFile.decode(text, path: lastGoodURL.path) {
-            config = loaded.config
+            var next = loaded.config
+            next.compiledRules = config.compiledRules
+            config = next
         }
     }
 
@@ -225,11 +242,42 @@ final class RepoConfigStore {
         }
         let loaded = try ConfigFile.decode(text, path: path)
         var next = loaded.config
+        next.compiledRules = config.compiledRules
         next.repos = Self.keepingIdentity(next.repos, from: config.repos)
         config = next
         warnings = loaded.warnings
         loadIssue = nil
         saveLastGood(text)
+    }
+
+    // MARK: - rules
+
+    /// Reads the rules directory if anything in it changed. A launch whose
+    /// rules don't compile runs with `Rules.unloaded`, which posts nothing;
+    /// a later edit that breaks them keeps the previous ones in effect.
+    /// Returns whether the rules in effect changed.
+    @discardableResult
+    func reloadRulesIfChanged() -> Bool {
+        let seen = RuleDirectory.fingerprint(rulesURL)
+        guard seen != lastSeenRules else { return false }
+        let atLaunch = lastSeenRules == nil
+        lastSeenRules = seen
+        let next: Rules?
+        do {
+            next = try RuleDirectory.load(rulesURL)
+            rulesIssue = nil
+        } catch {
+            PRBarLog.config.error("rules: \(error.localizedDescription, privacy: .public)")
+            guard atLaunch else {
+                rulesIssue = "\(error.localizedDescription)\nThe previous rules stay in effect."
+                return false
+            }
+            rulesIssue = "\(error.localizedDescription)\nNothing is posted on its own until they compile."
+            next = .unloaded(rulesIssue ?? "")
+        }
+        guard next != config.compiledRules else { return false }
+        config.compiledRules = next
+        return true
     }
 
     /// The file carries no rule ids, so a reload would otherwise hand
@@ -253,6 +301,10 @@ final class RepoConfigStore {
     /// Re-read the file if it changed since we last read or wrote it.
     /// Called by the poller; exposed for tests.
     func reloadIfChanged() {
+        if reloadRulesIfChanged() {
+            revision += 1
+            onChange?()
+        }
         guard let data = try? Data(contentsOf: fileURL) else { return }
         guard data != lastSeenData else { return }
         lastSeenData = data

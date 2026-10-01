@@ -157,6 +157,12 @@ actor MCPSession {
                 }
                 let records = try await api { try await $0.call(.historyReviews, limit, as: [ReviewRecord].self) }
                 return ToolResult(text: records.isEmpty ? "No reviews recorded." : records.map(ClientCommand.describe).joined(separator: "\n"))
+            case "explain_rules":
+                guard let ref = try Self.reference(try arguments(GetReviewArgs.self, line)?.pr) else {
+                    return ToolResult(error: "pr is required: a PR URL or owner/repo#number")
+                }
+                let explanation = try await api { try await $0.call(.explainRules, ExplainRulesParams(pr: ref), as: RulesExplanation.self) }
+                return ToolResult(text: RulesCommand.describe(explanation))
             case "watch":
                 let args = try arguments(WatchArgs.self, line)
                 if args?.pr != nil, args?.path != nil { return ToolResult(error: "pass pr or path, not both.") }
@@ -421,6 +427,13 @@ enum MCPTools {
                 "kind": .init(type: "string", description: "reviews (default) or actions", enumValues: ["reviews", "actions"]),
                 "limit": .init(type: "integer", description: "How many entries, 1-200 (default 20)"),
             ]),
+            annotations: .init(readOnlyHint: true)),
+        MCPTool(
+            name: "explain_rules",
+            description: "Why PRBar reviews a pull request or not, and what it posts once reviewed: every rule condition in the user's rules directory, with the facts it read, then the outcome. Read-only.",
+            inputSchema: .init(
+                properties: ["pr": .init(type: "string", description: "PR URL or owner/repo#number")],
+                required: ["pr"]),
             annotations: .init(readOnlyHint: true)),
         MCPTool(
             name: "watch",

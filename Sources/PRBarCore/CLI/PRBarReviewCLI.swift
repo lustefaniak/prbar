@@ -30,6 +30,13 @@ public enum PRBarReviewCLI {
             }
             return await MCPCommand.run()
         }
+        if args.first == "rules" {
+            guard let command = RulesCommand(args: args) else {
+                FileHandle.standardError.write(Data(RulesCommand.usage.utf8))
+                return 2
+            }
+            return await command.run()
+        }
         if let name = args.first, ClientCommand.names.contains(name) {
             guard let command = ClientCommand(args: args) else {
                 FileHandle.standardError.write(Data(ClientCommand.usage.utf8))
@@ -231,6 +238,10 @@ public enum PRBarReviewCLI {
     prbar-review status | inbox | history | events
                                    ask the running server; see
                                    `prbar-review status --help`
+    prbar-review rules check | explain <pr>
+                                   check the rules directory, or ask why
+                                   they decide what they do for a PR; see
+                                   `prbar-review rules --help`
     prbar-review mcp               serve PRBar to a coding agent over MCP
     """
 }

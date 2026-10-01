@@ -297,7 +297,8 @@ final class APIServer {
             path: store.fileURL.path,
             loadIssue: store.loadIssue,
             warnings: store.warnings,
-            migratedFromLegacy: store.migratedFromLegacy)
+            migratedFromLegacy: store.migratedFromLegacy,
+            rulesIssue: store.rulesIssue)
     }
 
     private static func actions(_ queue: ActionQueue) -> ActionQueueState {
@@ -444,6 +445,18 @@ final class APIServer {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
                 return self.outcome(of: pr, since: params.since)
+            }
+        case .explainRules:
+            return await reply(line, id, ExplainRulesParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                let ref = try await Self.resolvingPath(params.pr)
+                let pr: InboxPR
+                if let known = self.findPR(ref) {
+                    pr = known
+                } else {
+                    pr = try await self.resolvePR(ref, fetch: true)
+                }
+                return self.explanation(of: pr)
             }
         case .reviewLocal:
             return await reply(line, id, LocalReviewParams.self) { params in
@@ -662,7 +675,7 @@ final class APIServer {
         switch method {
         case .hello, .event, .state, .notify:
             return nil
-        case .status, .inbox, .refreshPR, .review, .reviewOutcome, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
+        case .status, .inbox, .refreshPR, .review, .reviewOutcome, .explainRules, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
              .loadDiff, .invalidateDiff, .loadCILog, .invalidateCILog:
             capability = .read
         case .runReview, .reviewLocal:
@@ -712,6 +725,11 @@ final class APIServer {
     /// repo's own opt-outs hold even with `force`: they are the user's cost
     /// decision, not a gate the agent may lift. The rest refuse with their
     /// reason unless `force` is set.
+    nonisolated private static func isRule(_ reason: ReviewState.SkipReason) -> Bool {
+        if case .rule = reason { return true }
+        return false
+    }
+
     nonisolated static func agentReviewRefusal(
         pr: InboxPR, config: ResolvedRepoConfig, existing: ReviewState?, force: Bool
     ) -> RPCError? {
@@ -719,11 +737,13 @@ final class APIServer {
         if config.excluded {
             return refused("\(pr.nameWithOwner) is excluded from PRBar in prbar.yaml.")
         }
-        switch ReviewAdmission.evaluate(pr: pr, config: config, existing: existing, requireRequested: false) {
+        switch ReviewAdmission.evaluate(pr: pr, config: config, existing: existing, requireRequested: false, trigger: .agent) {
         case .review:
             return nil
         case .skip(let reason) where reason == .aiReviewDisabled || reason == .titleExcluded:
             return refused("\(reason.detail) Coding agents can't override that; the user can in prbar.yaml.")
+        case .skip(let reason) where Self.isRule(reason):
+            return refused("\(reason.detail) Coding agents can't override a rule; the user can in the rules directory.")
         case .skip(let reason):
             return force ? nil : refused("Not reviewed: \(reason.detail) Pass force true to review it anyway.")
         case .ignore(.failedAtCurrentSha):
@@ -765,7 +785,10 @@ final class APIServer {
             configIssue: runtime.repoConfigs.loadIssue,
             configWarnings: runtime.repoConfigs.warnings,
             agents: runtime.repoConfigs.config.agents,
-            idleExitSeconds: idleExitSeconds
+            idleExitSeconds: idleExitSeconds,
+            rulesPath: runtime.repoConfigs.rulesURL.path,
+            rules: runtime.repoConfigs.config.compiledRules.map { RuleCounts(select: $0.select.count, decide: $0.decide.count) },
+            rulesIssue: runtime.repoConfigs.rulesIssue
         )
     }
 
@@ -782,6 +805,46 @@ final class APIServer {
     nonisolated static func resolvingPath(_ ref: PRReference) async throws -> PRReference {
         guard let path = ref.path else { return ref }
         return PRReference(nodeId: LocalChanges.Snapshot.nodeId(root: try await LocalChanges.root(of: path)))
+    }
+
+    func explanation(of pr: InboxPR) -> RulesExplanation {
+        let config = runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
+        let existing = runtime.queue.reviews[pr.nodeId]
+        var select = config.rules.map {
+            $0.explainSelect(SelectFacts(pr: ChangeFacts(pr), trigger: .reviewRequested, viewer: pr.viewerLogin, lists: $0.lists))
+        } ?? "No rules in \(runtime.repoConfigs.rulesURL.path); the repo settings in prbar.yaml decide."
+        select += "\n\nOutcome: " + Self.describe(ReviewAdmission.evaluate(pr: pr, config: config, existing: existing))
+
+        var decide: String?
+        if let existing, existing.headSha == pr.headSha, case .completed(let review) = existing.status {
+            let rules = config.rules.map {
+                $0.explainDecide(DecideFacts(
+                    pr: ChangeFacts(pr), review: ReviewFacts(review, provider: existing.providerId),
+                    viewer: pr.viewerLogin, lists: $0.lists))
+            } ?? "No rules; the repo settings in prbar.yaml decide."
+            let outcome = AutoReviewPlan.plan(pr: pr, review: review, config: config, providerId: existing.providerId, diffText: "")
+            decide = rules + "\n\nOutcome: " + Self.describe(outcome)
+        }
+        return RulesExplanation(pr: pr, select: select, decide: decide)
+    }
+
+    nonisolated static func describe(_ decision: ReviewAdmission.Decision) -> String {
+        switch decision {
+        case .review: return "reviewed."
+        case .skip(let reason): return "skipped. \(reason.detail)"
+        case .ignore(.notRequested): return "not reviewed on its own: you aren't a requested reviewer."
+        case .ignore(.failedAtCurrentSha): return "not reviewed again: the review of this commit failed."
+        }
+    }
+
+    nonisolated static func describe(_ outcome: AutoReviewPlan.Outcome) -> String {
+        switch outcome {
+        case .none(let reason): return "nothing posted (\(reason))."
+        case .flag: return "flagged in PRBar, nothing posted."
+        case .post(let staged):
+            let kind = staged.source == .sharedFindings ? "the findings, as a comment" : staged.action?.rawValue ?? "nothing"
+            return "posts \(kind)."
+        }
     }
 
     /// How events and logs name a PR, or a checkout for a local review.
@@ -813,13 +876,13 @@ final class APIServer {
             queue.enqueue(pr, force: params.force ?? false, providerOverride: params.provider)
             return nil
         }
-        switch ReviewAdmission.evaluate(pr: pr, config: config, existing: queue.reviews[pr.nodeId]) {
+        switch ReviewAdmission.evaluate(pr: pr, config: config, existing: queue.reviews[pr.nodeId], trigger: .command) {
         case .ignore(.notRequested):
             return "no review request for the authenticated user (pass --force to review anyway)"
         case .ignore(.failedAtCurrentSha):
             return "PRBar's review of this commit already failed (pass --force to try again)"
         case .review, .skip:
-            queue.enqueueNewReviewRequests(from: [pr], providerOverride: params.provider)
+            queue.enqueueNewReviewRequests(from: [pr], providerOverride: params.provider, trigger: .command)
             return nil
         }
     }

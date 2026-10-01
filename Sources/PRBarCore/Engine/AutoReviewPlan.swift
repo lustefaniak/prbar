@@ -26,6 +26,20 @@ enum AutoReviewPlan {
         diffText: String,
         now: Date = Date()
     ) -> Outcome {
+        if let rules = config.rules, !rules.decide.isEmpty || rules.failure != nil {
+            let facts = DecideFacts(
+                pr: ChangeFacts(pr), review: ReviewFacts(review, provider: providerId),
+                viewer: pr.viewerLogin, lists: rules.lists)
+            do {
+                if let decision = try rules.decide(facts) {
+                    return plan(decision, pr: pr, review: review, diffText: diffText, now: now)
+                }
+            } catch {
+                // Posting nothing is the side that can't go wrong in public.
+                PRBarLog.triage.error("decide rule failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public): \(String(describing: error), privacy: .public)")
+                return .none(reason: "a decide rule failed, nothing posted: \(error)")
+            }
+        }
         switch AutoReviewPolicy.evaluate(pr: pr, review: review, providerId: providerId, config: config) {
         case .skip(let reason):
             return .none(reason: reason)
@@ -97,6 +111,54 @@ enum AutoReviewPlan {
                 stagedAt: now
             )
             return denyAction == .flagOnly ? .flag(staged) : .post(staged)
+        }
+    }
+
+    /// What a decide rule asked for, made concrete.
+    static func plan(
+        _ decision: RuleDecision, pr: InboxPR, review: AggregatedReview, diffText: String, now: Date
+    ) -> Outcome {
+        let rule = "rule \(decision.rule)"
+        func findings(defaultInline: Bool, defaultCap: Int) -> [DiffAnnotation] {
+            guard decision.inline ?? defaultInline else { return [] }
+            let floor = decision.minSeverity ?? .info
+            let kept = review.annotations.filter { $0.severity >= floor }.sorted { $0.severity > $1.severity }
+            let cap = decision.maxComments ?? defaultCap
+            return cap > 0 ? Array(kept.prefix(cap)) : kept
+        }
+        func summaryBody() -> String {
+            review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? denyFallbackBody(review) : review.summaryMarkdown
+        }
+        func staged(_ action: ReviewActionKind?, body: String, comments: [GHClient.InlineComment], source: ActionSource = .automated)
+            -> ReviewQueueWorker.StagedAutoReview
+        {
+            .init(pr: pr, review: review, action: action, body: body, comments: comments, stagedAt: now, source: source)
+        }
+
+        switch decision.action {
+        case .none:
+            return .none(reason: "\(rule): post nothing")
+        case .approve:
+            let comments = inlineComments(findings(defaultInline: false, defaultCap: 0), diffText: diffText)
+            return .post(staged(.approve, body: decision.attribution == true ? attributionBody(review) : "", comments: comments))
+        case .requestChanges, .flag:
+            let comments = inlineComments(findings(defaultInline: true, defaultCap: 0), diffText: diffText)
+            // A flag is never posted, so it carries no GitHub action.
+            let isFlag = decision.action == .flag
+            let post = staged(isFlag ? nil : .requestChanges, body: summaryBody(), comments: comments)
+            return isFlag ? .flag(post) : .post(post)
+        case .comment:
+            let comments = inlineComments(findings(defaultInline: true, defaultCap: 0), diffText: diffText)
+            return .post(staged(.comment, body: summaryBody(), comments: comments))
+        case .share:
+            // A share is the findings; with none at the floor there is
+            // nothing to give the author, and a summary alone would make
+            // PRBar comment on every PR it looks at.
+            let shared = findings(defaultInline: true, defaultCap: 20)
+            guard !shared.isEmpty else { return .none(reason: "\(rule): no findings to share") }
+            let comments = inlineComments(shared, diffText: diffText)
+            return .post(staged(.comment, body: comments.isEmpty ? shareBody(review) : "", comments: comments, source: .sharedFindings))
         }
     }
 

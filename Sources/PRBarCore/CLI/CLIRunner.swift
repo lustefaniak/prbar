@@ -149,7 +149,7 @@ struct Runner {
             // Not `enqueue`: this applies the repo gates (AI off, draft,
             // already reviewed by a human, an AI verdict already posted at
             // this SHA) and records a typed skip reason for each.
-            worker.enqueueNewReviewRequests(from: [pr], providerOverride: providerOverride)
+            worker.enqueueNewReviewRequests(from: [pr], providerOverride: providerOverride, trigger: .command)
         }
 
         // Nothing was recorded at all: `enqueue` drops an excluded repo

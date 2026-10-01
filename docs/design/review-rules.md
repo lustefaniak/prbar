@@ -3,7 +3,8 @@
 Status: draft, working notes. Phases 1 and 2 (core split, files instead of SwiftData, `prbar.yaml`) shipped in
 v0.15.0. Client-server (phase 3) on `main` since: 3.1 to 3.6 done (the app can run against a separate
 `prbar-review serve` it starts and stops itself, opt-in; `prbar-review <pr>` reviews through the server,
-starting one on demand).
+starting one on demand). Rules (phase 7) started: `select` and `decide` as CEL policies through cel-swift,
+in a `rules/` directory of their own; see `docs/rules.md`.
 
 Goal: replace the per-repo settings model with a rule-based configuration that lives in files, is shared by
 the app and the `prbar-review` CLI, can be exported/imported/versioned, and can explain for any repo + PR which
@@ -998,6 +999,13 @@ Main loop it enables: agent working on a PR in Claude Code calls `get_review`, f
 7. Depend on `cel-swift` (its milestones M0 to M8: parser, checker, cost limits, unknowns, policy), `PolicyEvaluator` protocol in the engine, hot reload
    with last-good snapshots. Current behaviour expressed as generated stage policies, equivalence tests against
    `AutoReviewPolicy` on the same fixtures.
+   **Done, differently:** the rules live in their own directory (`rules/select/*.yaml`, `rules/decide/*.yaml`,
+   `rules/lists.yaml`), not inline in prbar.yaml, so Settings never rewrites them and errors point at real
+   files. Rules run before the settings, and no match falls through to them, which replaces the generated
+   policies and their equivalence tests: the settings keep deciding exactly as before until a rule matches.
+   `rules check`, `rules explain <pr>`, API `rules.explain`, MCP `explain_rules`. Next: the rule id in History,
+   rules and review guidance from the reviewed repo (root and per folder, read at the base branch, only for
+   repos the local config trusts), a `plan` stage, and lazy AI signals.
 8. YAML loader + validation + CLI `explain` / `validate`; `prbar.json` deprecated. Facts-reference generator,
    JSON schema for `prbar.yaml` with its round-trip tests.
 9. App reads the file; one-time export from `ReviewDefaults` + `RepoConfig`; Settings becomes viewer + explain +

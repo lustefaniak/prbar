@@ -23,6 +23,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case runReview = "review.run"
     case reviewOutcome = "review.outcome"
     case reviewLocal = "review.local"
+    case explainRules = "rules.explain"
     case enqueueAction = "action.enqueue"
     case retryAction = "action.retry"
     case dismissAction = "action.dismiss"
@@ -185,14 +186,38 @@ struct ServerStatus: Codable, Sendable, Equatable {
     var agents: AgentPolicy?
     /// Set for a server started on demand by `prbar-review <pr>`.
     var idleExitSeconds: Int?
+    /// The rules directory, and how many select / decide policies are in
+    /// effect from it. Nil from an older server.
+    var rulesPath: String?
+    var rules: RuleCounts?
+    var rulesIssue: String?
 
     /// Problems a client should surface, empty when everything is fine.
     var problems: [String] {
         var out: [String] = []
         if let lastPollError { out.append("last poll failed: \(lastPollError)") }
         if let configIssue { out.append("config: \(configIssue)") }
+        if let rulesIssue { out.append("rules: \(rulesIssue)") }
         return out
     }
+}
+
+/// Why the rules decide what they do for a PR: `select` always, `decide`
+/// when the server holds a completed review of its current head.
+struct ExplainRulesParams: Codable, Sendable {
+    var pr: PRReference
+}
+
+struct RulesExplanation: Codable, Sendable {
+    var pr: InboxPR
+    /// Every condition evaluated, with the facts it read, then the outcome.
+    var select: String
+    var decide: String?
+}
+
+struct RuleCounts: Codable, Sendable, Equatable {
+    var select: Int
+    var decide: Int
 }
 
 /// A PR named either by its GraphQL node id or by `owner/repo#number`.

@@ -612,7 +612,7 @@ final class ConfigModel {
             adoptedRevision = state.revision
         }
         path = state.path
-        loadIssue = saveIssue ?? state.loadIssue
+        loadIssue = saveIssue ?? state.loadIssue ?? state.rulesIssue
         warnings = state.warnings
         migratedFromLegacy = state.migratedFromLegacy
     }

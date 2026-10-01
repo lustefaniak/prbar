@@ -51,6 +51,11 @@ struct PRBarConfig: Sendable, Hashable, Codable {
     var repos: [RepoConfig] = []
     /// What coding agents may do through `prbar-review mcp`.
     var agents = AgentPolicy()
+    /// The rules directory (`RuleDirectory`), compiled by whoever loaded
+    /// the config (`ConfigFile.load`, `RepoConfigStore`). Kept apart from
+    /// prbar.yaml: not part of the file, not sent over the API, and never
+    /// rewritten by Settings.
+    var compiledRules: Rules?
 
     init() {}
 
@@ -99,7 +104,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
     }
 
     func resolve(owner: String, repo: String) -> ResolvedRepoConfig {
-        rule(owner: owner, repo: repo).resolved(with: defaults)
+        ResolvedRepoConfig(rule: rule(owner: owner, repo: repo), defaults: defaults, rules: compiledRules)
     }
 
     /// `resolve` as a snapshot closure, for the worker and the poller.

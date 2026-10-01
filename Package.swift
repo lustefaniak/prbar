@@ -19,12 +19,20 @@ let package = Package(
         .executable(name: "prbar-review", targets: ["prbar-review"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/jpsim/Yams", from: "6.2.0"),
+        .package(url: "https://github.com/jpsim/Yams", from: "6.2.2"),
+        // The rules engine. Pinned to a commit until cel-swift tags 0.1.0;
+        // project.yml pins the same one.
+        .package(url: "https://github.com/lustefaniak/cel-swift", revision: "cded182490b9aa36d55051c4519b2e238ec46f23"),
     ],
     targets: [
         .target(
             name: "PRBarCore",
-            dependencies: [.product(name: "Yams", package: "Yams")],
+            dependencies: [
+                .product(name: "Yams", package: "Yams"),
+                .product(name: "CEL", package: "cel-swift"),
+                .product(name: "CELPolicy", package: "cel-swift"),
+                .product(name: "CELSwift", package: "cel-swift"),
+            ],
             path: "Sources/PRBarCore",
             // Compiled in as EmbeddedResources (bin/gen-resources), so the
             // CLI ships as one file.

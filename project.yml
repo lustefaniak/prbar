@@ -25,7 +25,11 @@ packages:
   # prbar.yaml, shared with the CLI (Package.swift declares it too).
   Yams:
     url: https://github.com/jpsim/Yams
-    from: "6.2.0"
+    from: "6.2.2"
+  # The rules engine (Package.swift pins the same commit).
+  cel-swift:
+    url: https://github.com/lustefaniak/cel-swift
+    revision: cded182490b9aa36d55051c4519b2e238ec46f23
 
 settings:
   base:
@@ -57,6 +61,12 @@ targets:
       - package: NetworkImage
       - package: Sparkle
       - package: Yams
+      - package: cel-swift
+        product: CEL
+      - package: cel-swift
+        product: CELPolicy
+      - package: cel-swift
+        product: CELSwift
       # The CLI / server, shipped inside the app as
       # Contents/MacOS/prbar-review so it is signed, notarized and updated
       # with it. Settings → "Install command-line tool" symlinks it.
@@ -128,6 +138,12 @@ targets:
       - path: Sources/prbar-review
     dependencies:
       - package: Yams
+      - package: cel-swift
+        product: CEL
+      - package: cel-swift
+        product: CELPolicy
+      - package: cel-swift
+        product: CELSwift
     settings:
       base:
         PRODUCT_NAME: prbar-review

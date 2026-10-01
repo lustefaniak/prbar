@@ -139,6 +139,10 @@ enum ClientCommand: Equatable {
         }
         lines.append("reviews:    \(status.reviewsRunning) running, \(status.reviewsQueued) queued")
         lines.append("config:     \(status.configPath)")
+        if let path = status.rulesPath {
+            let counts = status.rules.map { "\($0.select) select, \($0.decide) decide" } ?? "none"
+            lines.append("rules:      \(path) (\(counts))")
+        }
         if let agents = status.agents {
             let granted = AgentPolicy.Capability.allCases.map { "\($0.rawValue) \(agents[$0].rawValue)" }
             lines.append("agents:     \(granted.joined(separator: ", "))")

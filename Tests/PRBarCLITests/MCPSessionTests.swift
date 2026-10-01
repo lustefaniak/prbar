@@ -59,7 +59,7 @@ final class MCPSessionTests: XCTestCase {
     func testToolsList() async throws {
         let reply = try await send(MCPSession(socketURL: socketURL), #"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#)
         let tools = try XCTUnwrap((reply["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.compactMap { $0["name"] as? String }, ["status", "list_inbox", "get_review", "run_review", "get_history", "watch"])
+        XCTAssertEqual(tools.compactMap { $0["name"] as? String }, ["status", "list_inbox", "get_review", "run_review", "get_history", "explain_rules", "watch"])
         for tool in tools {
             XCTAssertEqual((tool["inputSchema"] as? [String: Any])?["type"] as? String, "object", "\(tool)")
         }

@@ -120,7 +120,7 @@ enum ServeCommand {
             runtime.queue.dailyCostCapEnabled = cap > 0
             if cap > 0 { runtime.queue.dailyCostCap = cap }
         }
-        for issue in [runtime.repoConfigs.loadIssue].compactMap({ $0 }) + runtime.repoConfigs.warnings {
+        for issue in [runtime.repoConfigs.loadIssue, runtime.repoConfigs.rulesIssue].compactMap({ $0 }) + runtime.repoConfigs.warnings {
             log(issue)
         }
 

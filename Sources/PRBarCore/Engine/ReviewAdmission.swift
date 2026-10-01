@@ -35,10 +35,23 @@ enum ReviewAdmission {
         pr: InboxPR,
         config: ResolvedRepoConfig,
         existing: ReviewState?,
-        requireRequested: Bool = true
+        requireRequested: Bool = true,
+        trigger: RuleTrigger = .reviewRequested
     ) -> Decision {
         guard !requireRequested || pr.role == .reviewRequested || pr.role == .both else {
             return .ignore(.notRequested)
+        }
+        // A select rule decides before the repo settings. Its `review`
+        // still yields to a failure at this commit and to a verdict some
+        // PRBar already posted for it: those save repeating a run, they
+        // aren't a policy a rule should have to restate.
+        switch selectRule(pr: pr, rules: config.rules, trigger: trigger) {
+        case let .skip(id, reason)?:
+            return .skip(.rule(id, reason: reason))
+        case .review?:
+            return sharedGates(pr: pr, existing: existing) ?? .review
+        case nil:
+            break
         }
         // Also a poller filter, but the poller is not the only entry
         // point: the CLI is handed a PR directly and never polls.
@@ -61,6 +74,32 @@ enum ReviewAdmission {
         if config.skipAIIfReviewedByOthers && pr.isReviewedByOthers {
             return .skip(.reviewedByOthers)
         }
+        return sharedGates(pr: pr, existing: existing) ?? .review
+    }
+
+    private enum RuleOutcome {
+        case review
+        case skip(String, String?)
+    }
+
+    private static func selectRule(pr: InboxPR, rules: Rules?, trigger: RuleTrigger) -> RuleOutcome? {
+        guard let rules, !rules.select.isEmpty else { return nil }
+        let facts = SelectFacts(pr: ChangeFacts(pr), trigger: trigger, viewer: pr.viewerLogin, lists: rules.lists)
+        do {
+            guard let selection = try rules.select(facts) else { return nil }
+            switch selection.action {
+            case .review: return .review
+            case .skip: return .skip(selection.rule, selection.reason)
+            }
+        } catch {
+            // Not reviewing is the side that costs nothing; the reason
+            // carries the error to the row and the log.
+            PRBarLog.triage.error("select rule failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public): \(String(describing: error), privacy: .public)")
+            return .skip(Rules.errorRuleID, "a select rule failed: \(String(describing: error))")
+        }
+    }
+
+    private static func sharedGates(pr: InboxPR, existing: ReviewState?) -> Decision? {
         if let existing, case .failed = existing.status, existing.headSha == pr.headSha {
             return .ignore(.failedAtCurrentSha)
         }
@@ -73,7 +112,7 @@ enum ReviewAdmission {
         if pr.hasPRBarVerdictAtHead, !holdsCompletedReview(existing, at: pr.headSha) {
             return .skip(.reviewedByPRBarElsewhere)
         }
-        return .review
+        return nil
     }
 
     private static func holdsCompletedReview(_ existing: ReviewState?, at headSha: String) -> Bool {

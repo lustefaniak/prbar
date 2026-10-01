@@ -77,6 +77,8 @@ struct ConfigState: Codable, Sendable, Equatable {
     var loadIssue: String?
     var warnings: [String]
     var migratedFromLegacy: Bool
+    /// The rules directory doesn't compile. Nil from an older server.
+    var rulesIssue: String? = nil
 }
 
 /// GitHub writes queued, running, retrying or failed, per PR, and the ones

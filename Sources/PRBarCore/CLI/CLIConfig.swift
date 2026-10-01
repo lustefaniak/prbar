@@ -1,7 +1,7 @@
 import Foundation
 
 /// How the CLI finds its config: the same `PRBarConfig` the app uses,
-/// from the same file by default.
+/// from the same file by default, with the rules directory beside it.
 ///
 /// Note what the shipped defaults mean here: auto-approve, auto-deny and
 /// share-findings are all off, so an unconfigured run reviews the PR and
@@ -19,12 +19,18 @@ enum CLIConfig {
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         warn: (String) -> Void = { FileHandle.standardError.write(Data("prbar-review: \($0)\n".utf8)) }
     ) throws -> PRBarConfig {
-        guard let url = try locate(path: explicit, environment: environment, workingDirectory: workingDirectory, home: home) else {
-            return PRBarConfig()
+        let located = try locate(path: explicit, environment: environment, workingDirectory: workingDirectory, home: home)
+        var config = PRBarConfig()
+        if let located {
+            let loaded = try ConfigFile.load(url: located)
+            loaded.warnings.forEach(warn)
+            config = loaded.config
         }
-        let loaded = try ConfigFile.load(url: url)
-        loaded.warnings.forEach(warn)
-        return loaded.config
+        // The rules directory sits beside the config file, or beside where
+        // the app's would be when there is none.
+        let configFile = located ?? ConfigLocation.userConfigURL(environment: environment, home: home)
+        config.compiledRules = try RuleDirectory.load(RuleDirectory.url(configFile: configFile, environment: environment))
+        return config
     }
 
     /// The file `load` reads, or nil when there is none.

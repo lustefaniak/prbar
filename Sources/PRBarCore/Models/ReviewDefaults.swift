@@ -229,10 +229,13 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
 struct ResolvedRepoConfig: Sendable, Hashable {
     let rule: RepoConfig
     let defaults: ReviewDefaults
+    /// prbar.yaml's `rules:`, which decide before the settings above.
+    let rules: Rules?
 
-    init(rule: RepoConfig, defaults: ReviewDefaults) {
+    init(rule: RepoConfig, defaults: ReviewDefaults, rules: Rules? = nil) {
         self.rule = rule
         self.defaults = defaults
+        self.rules = rules
     }
 
     // MARK: Per-repo only

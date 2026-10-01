@@ -11,7 +11,7 @@ struct ReviewState: Sendable, Hashable, Codable {
     /// Why auto-triage deliberately did not review a PR. Recorded as a
     /// terminal status so the UI can explain *why* a review-requested PR
     /// wasn't triaged instead of leaving it on a perpetual "not started".
-    enum SkipReason: String, Sendable, Hashable, Codable, CaseIterable {
+    enum SkipReason: Sendable, Hashable, Codable, CaseIterable {
         /// `aiReviewEnabled == false` for the repo.
         case aiReviewDisabled
         /// PR is a draft and `reviewDrafts == false` for the repo.
@@ -28,10 +28,63 @@ struct ReviewState: Sendable, Hashable, Codable {
         /// Enforced here as well as in `PRPoller` because the poller is not
         /// the only entry point — the headless CLI is handed a PR directly.
         case titleExcluded
+        /// A select rule in the rules directory said skip.
+        case rule(String, reason: String?)
+
+        static var allCases: [SkipReason] {
+            [.aiReviewDisabled, .draftNotReviewed, .reviewedByOthers, .reviewedByPRBarElsewhere, .titleExcluded,
+             .rule("example", reason: "an example")]
+        }
+
+        private static let simple: [String: SkipReason] = [
+            "aiReviewDisabled": .aiReviewDisabled, "draftNotReviewed": .draftNotReviewed,
+            "reviewedByOthers": .reviewedByOthers, "reviewedByPRBarElsewhere": .reviewedByPRBarElsewhere,
+            "titleExcluded": .titleExcluded,
+        ]
+
+        /// The other cases encode as the plain string they always were, so
+        /// state files and older peers keep reading them.
+        var name: String {
+            switch self {
+            case .aiReviewDisabled: return "aiReviewDisabled"
+            case .draftNotReviewed: return "draftNotReviewed"
+            case .reviewedByOthers: return "reviewedByOthers"
+            case .reviewedByPRBarElsewhere: return "reviewedByPRBarElsewhere"
+            case .titleExcluded: return "titleExcluded"
+            case .rule: return "rule"
+            }
+        }
+
+        private enum RuleKeys: String, CodingKey { case rule, reason }
+
+        init(from decoder: Decoder) throws {
+            if let single = try? decoder.singleValueContainer(), let name = try? single.decode(String.self) {
+                guard let reason = Self.simple[name] else {
+                    throw DecodingError.dataCorruptedError(in: single, debugDescription: "unknown skip reason \(name)")
+                }
+                self = reason
+                return
+            }
+            let c = try decoder.container(keyedBy: RuleKeys.self)
+            self = .rule(try c.decode(String.self, forKey: .rule), reason: try c.decodeIfPresent(String.self, forKey: .reason))
+        }
+
+        func encode(to encoder: Encoder) throws {
+            if case let .rule(id, reason) = self {
+                var c = encoder.container(keyedBy: RuleKeys.self)
+                try c.encode(id, forKey: .rule)
+                try c.encodeIfPresent(reason, forKey: .reason)
+            } else {
+                var c = encoder.singleValueContainer()
+                try c.encode(name)
+            }
+        }
 
         /// Full-sentence explanation for the detail pane.
         var detail: String {
             switch self {
+            case let .rule(id, reason):
+                return "The rule `\(id)` skips it\(reason.map { ": \($0)" } ?? "")."
             case .aiReviewDisabled:
                 return "AI review is turned off for this repository."
             case .draftNotReviewed:
@@ -53,6 +106,7 @@ struct ReviewState: Sendable, Hashable, Codable {
             case .reviewedByOthers: return "already reviewed by others"
             case .reviewedByPRBarElsewhere: return "already AI-reviewed at this commit"
             case .titleExcluded: return "title matches an exclude pattern"
+            case let .rule(id, reason): return reason ?? "rule \(id)"
             }
         }
     }
@@ -707,11 +761,13 @@ final class ReviewQueueWorker {
     /// `providerOverride` is forwarded to `enqueue` so a caller that has
     /// one — the CLI's `--provider` — is not silently ignored on the gated
     /// path. The app passes nil and resolves per repo as before.
-    func enqueueNewReviewRequests(from prs: [InboxPR], providerOverride: ProviderID? = nil) {
+    func enqueueNewReviewRequests(
+        from prs: [InboxPR], providerOverride: ProviderID? = nil, trigger: RuleTrigger = .reviewRequested
+    ) {
         pruneReviews(keeping: prs)
         for pr in prs {
             let cfg = configResolver(pr.owner, pr.repo)
-            switch ReviewAdmission.evaluate(pr: pr, config: cfg, existing: reviews[pr.nodeId]) {
+            switch ReviewAdmission.evaluate(pr: pr, config: cfg, existing: reviews[pr.nodeId], trigger: trigger) {
             case .review:
                 enqueue(pr, providerOverride: providerOverride)
             case .skip(let reason):
@@ -737,6 +793,7 @@ final class ReviewQueueWorker {
         case .draftNotReviewed: return "draft"
         case .reviewedByOthers: return "already-reviewed-by-others"
         case .reviewedByPRBarElsewhere: return "verdict-exists-at-sha"
+        case let .rule(id, _): return "rule:\(id)"
         }
     }
 
