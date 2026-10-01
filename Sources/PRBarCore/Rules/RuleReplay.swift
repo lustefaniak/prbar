@@ -22,8 +22,9 @@ enum RuleReplay {
         do {
             switch evaluation.stage {
             case .select:
-                guard let facts = evaluation.select else { throw ReplayError.noFacts }
+                guard var facts = evaluation.select else { throw ReplayError.noFacts }
                 guard let rules else { result.outcome = Rules.describe(nil as RuleSelection?); return result }
+                facts.lists = rules.lists
                 switch try rules.select(facts, pending: pending) {
                 case .decided(let selection):
                     result.outcome = Rules.describe(selection)
@@ -33,8 +34,9 @@ enum RuleReplay {
                     result.outcome = undecided(facts)
                 }
             case .decide:
-                guard let facts = evaluation.decide else { throw ReplayError.noFacts }
+                guard var facts = evaluation.decide else { throw ReplayError.noFacts }
                 guard let rules else { result.outcome = Rules.describe(nil as RuleDecision?); return result }
+                facts.lists = rules.lists
                 // The files came from the diff the review read.
                 pending.remove(.files)
                 switch try rules.decide(facts, pending: pending) {
@@ -58,10 +60,12 @@ enum RuleReplay {
         guard let rules else { return "No rules; the settings in prbar.yaml decide." }
         switch evaluation.stage {
         case .select:
-            guard let facts = evaluation.select else { return "The record holds no facts." }
+            guard var facts = evaluation.select else { return "The record holds no facts." }
+            facts.lists = rules.lists
             return rules.explainSelect(facts)
         case .decide:
-            guard let facts = evaluation.decide else { return "The record holds no facts." }
+            guard var facts = evaluation.decide else { return "The record holds no facts." }
+            facts.lists = rules.lists
             return rules.explainDecide(facts)
         }
     }
