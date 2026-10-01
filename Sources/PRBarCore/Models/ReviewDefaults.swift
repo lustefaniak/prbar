@@ -36,6 +36,10 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
     var replaceBaseSystemPrompt: Bool = false
     var aiReviewEnabled: Bool = true
     var forceFullReview: Bool = false
+    /// Read the reviewed repository's own rules (`.prbar/rules/` on its
+    /// default branch) and let them decide, between your rules and these
+    /// settings. Off: they decide what is posted under your name.
+    var trustRepoRules: Bool = false
 
     // MARK: Budgets
 
@@ -132,7 +136,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         case splitMode, unmatchedStrategy, minFilesPerSubreview
         case maxParallelSubreviews, collapseAboveSubreviewCount
         case toolMode, customSystemPrompt, replaceBaseSystemPrompt
-        case aiReviewEnabled, forceFullReview
+        case aiReviewEnabled, forceFullReview, trustRepoRules
         case maxToolCallsPerSubreview, maxCostUsdPerSubreview, reviewTimeoutSeconds
         case riskBriefEnabled, churnWindowDays, churnHistoryDepth
         case reviewDrafts, skipAIIfReviewedByOthers, excludeTitlePatterns
@@ -162,6 +166,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         try put(replaceBaseSystemPrompt, d.replaceBaseSystemPrompt, .replaceBaseSystemPrompt)
         try put(aiReviewEnabled, d.aiReviewEnabled, .aiReviewEnabled)
         try put(forceFullReview, d.forceFullReview, .forceFullReview)
+        try put(trustRepoRules, d.trustRepoRules, .trustRepoRules)
         try put(maxToolCallsPerSubreview, d.maxToolCallsPerSubreview, .maxToolCallsPerSubreview)
         try put(maxCostUsdPerSubreview, d.maxCostUsdPerSubreview, .maxCostUsdPerSubreview)
         try put(reviewTimeoutSeconds, d.reviewTimeoutSeconds, .reviewTimeoutSeconds)
@@ -194,6 +199,7 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
         self.replaceBaseSystemPrompt = (try? c.decode(Bool.self, forKey: .replaceBaseSystemPrompt)) ?? d.replaceBaseSystemPrompt
         self.aiReviewEnabled = (try? c.decode(Bool.self, forKey: .aiReviewEnabled)) ?? d.aiReviewEnabled
         self.forceFullReview = (try? c.decode(Bool.self, forKey: .forceFullReview)) ?? d.forceFullReview
+        self.trustRepoRules = (try? c.decode(Bool.self, forKey: .trustRepoRules)) ?? d.trustRepoRules
         self.maxToolCallsPerSubreview = (try? c.decode(Int.self, forKey: .maxToolCallsPerSubreview)) ?? d.maxToolCallsPerSubreview
         self.maxCostUsdPerSubreview = (try? c.decode(Double.self, forKey: .maxCostUsdPerSubreview)) ?? d.maxCostUsdPerSubreview
         self.reviewTimeoutSeconds = (try? c.decode(Int.self, forKey: .reviewTimeoutSeconds)) ?? d.reviewTimeoutSeconds
@@ -229,13 +235,21 @@ struct ReviewDefaults: Sendable, Hashable, Codable {
 struct ResolvedRepoConfig: Sendable, Hashable {
     let rule: RepoConfig
     let defaults: ReviewDefaults
-    /// prbar.yaml's `rules:`, which decide before the settings above.
+    /// The user's rules directory, which decides before the settings.
     let rules: Rules?
+    /// The repository's own rules, used when `trustRepoRules`; set by the
+    /// worker, which fetches them.
+    let repoRules: Rules?
 
-    init(rule: RepoConfig, defaults: ReviewDefaults, rules: Rules? = nil) {
+    init(rule: RepoConfig, defaults: ReviewDefaults, rules: Rules? = nil, repoRules: Rules? = nil) {
         self.rule = rule
         self.defaults = defaults
         self.rules = rules
+        self.repoRules = repoRules
+    }
+
+    func with(repoRules: Rules?) -> ResolvedRepoConfig {
+        ResolvedRepoConfig(rule: rule, defaults: defaults, rules: rules, repoRules: repoRules)
     }
 
     // MARK: Per-repo only
@@ -279,6 +293,7 @@ struct ResolvedRepoConfig: Sendable, Hashable {
     var replaceBaseSystemPrompt: Bool { rule.replaceBaseSystemPrompt ?? defaults.replaceBaseSystemPrompt }
     var aiReviewEnabled: Bool { rule.aiReviewEnabled ?? defaults.aiReviewEnabled }
     var forceFullReview: Bool { rule.forceFullReview ?? defaults.forceFullReview }
+    var trustRepoRules: Bool { rule.trustRepoRules ?? defaults.trustRepoRules }
 
     var maxToolCallsPerSubreview: Int { rule.maxToolCallsPerSubreview ?? defaults.maxToolCallsPerSubreview }
     var maxCostUsdPerSubreview: Double { rule.maxCostUsdPerSubreview ?? defaults.maxCostUsdPerSubreview }

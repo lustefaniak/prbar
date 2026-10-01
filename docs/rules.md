@@ -17,6 +17,7 @@ rules, PRBar does exactly what `prbar.yaml` says.
 - [Writing conditions](#writing-conditions)
 - [Editor support: the JSON schemas](#editor-support-the-json-schemas)
 - [Working on rules: check, explain, history, replay](#working-on-rules-check-explain-history-replay)
+- [Repository rules: one policy for a team](#repository-rules-one-policy-for-a-team)
 - [Cookbook](#cookbook)
 - [Pitfalls](#pitfalls)
 - [Reference: stages and outputs](#reference-stages-and-outputs)
@@ -352,6 +353,68 @@ How to read them:
   and the record holds what the rules saw, not the settings, so a replay says
   `no rule matched; the settings decide` rather than guessing their answer.
 
+## Repository rules: one policy for a team
+
+A repository can keep rules for everyone who reviews it with PRBar, in
+`.prbar/rules/` on its default branch, laid out like your own directory
+(`select/`, `decide/`, `lists.yaml`). They apply only in your PRBar when you
+trust that repository in `prbar.yaml`:
+
+```yaml
+repos:
+  - repoGlobs: [acme/monorepo]
+    trustRepoRules: true
+```
+
+They sit between your rules and the settings:
+
+```
+1. your rules           ~/.config/prbar/rules/      only you, decide first
+2. the repository's     .prbar/rules/ on its default branch, the team's
+3. prbar.yaml settings  when no rule matches
+```
+
+- **The highest layer that matches decides.** Each layer sees the answer of the
+  layers under it as `below`; when the team's rule decided, `below.source` is
+  `repo` and `below.rule` its id. So a private rule can adjust the team's
+  answer without repeating it, as in [`below`](#adjusting-the-settings-instead-of-restating-them-below):
+
+  ```yaml
+  # rules/decide/05-no-auto-approve-for-some.yaml
+  name: no-auto-approve-for-some
+  rule:
+    match:
+      - condition: >-
+          pr.repo == "acme/monorepo" && below.action == "approve"
+          && pr.author in lists.reviewed_by_hand
+        output:
+          rule: no-auto-approve-for-some
+          action: share
+  ```
+
+- **Read at the default branch, never the PR's head.** A PR that edits
+  `.prbar/rules/` can't change how it is itself reviewed or approved; the change
+  applies to everyone's PRBar once it is merged.
+- **Each layer has its own lists.** The repository's rules read its
+  `.prbar/rules/lists.yaml`, yours read yours, so neither can change what the
+  other's names mean.
+- **Fetched only when needed:** one GitHub call per repository, again only when
+  the default branch's `.prbar/rules` changes, and nothing for repositories you
+  don't trust.
+- **When they don't load** (they don't compile, a file is too large to read, or
+  they can't be fetched after three tries five minutes apart), nothing is posted
+  on its own for that repository until they do; your rules still apply above them.
+  The reason shows in `prbar-review status`.
+- **Checking a change before it merges:** `rules explain <pr>` shows each layer's
+  conditions under its own heading. `rules history` marks decisions the
+  repository's rules made, and `rules replay --repo-rules <checkout>/.prbar/rules`
+  replays them against the rules in your checkout, so a rules PR can be checked
+  against the decisions they made recently.
+
+What belongs where: the team's agreed policy goes in the repository; anything
+about specific colleagues, or your own preferences, stays in your directory.
+Local reviews (`prbar-review <dir>`) use your rules only.
+
 ## Cookbook
 
 Skip dependency bumps opened by bots:
@@ -659,14 +722,16 @@ with, without the part that needs commit history.
 
 ### `below`
 
-What would be decided if no rule matched: the `prbar.yaml` settings' answer.
+What the layers under a rule would decide: the `prbar.yaml` settings' answer, or
+the [repository's rules'](#repository-rules-one-policy-for-a-team) when they
+matched.
 
 | Field | Type | |
 |---|---|---|
 | `action` | string | `select`: `review` or `skip`. `decide`: `approve`, `request_changes`, `comment`, `share`, `flag` or `none` |
 | `reason` | string | why, in words, when there is a reason: why the settings skip, or why they post nothing (for example `confidence 0.72 below Claude threshold 0.85`) |
 | `rule` | string | the id of the rule that decided, empty when the settings did |
-| `source` | string | `settings` |
+| `source` | string | `settings`, or `repo` when the [repository's rules](#repository-rules-one-policy-for-a-team) decided |
 
 ### Others
 

@@ -632,6 +632,8 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// but biases the model toward judging only the increment. Flip on
     /// for repos where every retriage should re-evaluate the whole diff.
     var forceFullReview: Bool?
+    /// See `ReviewDefaults.trustRepoRules`.
+    var trustRepoRules: Bool?
 
     /// The rule used for any repo without one of its own: matches
     /// everything and overrides nothing, so every setting resolves from
@@ -684,7 +686,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         case reviewDrafts, excludeTitlePatterns, skipAIIfReviewedByOthers
         case agentEnvironment
         case aiReviewEnabled, providerOverride, notifyPolicy
-        case forceFullReview
+        case forceFullReview, trustRepoRules
         case skipMergeConfirmation
         case claudeModelOverride, claudeEffortOverride
         case codexModelOverride, codexEffortOverride
@@ -732,6 +734,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.providerOverride        = try? c.decodeIfPresent(ProviderID.self, forKey: .providerOverride)
         self.notifyPolicy            = try? c.decodeIfPresent(NotifyPolicy.self, forKey: .notifyPolicy)
         self.forceFullReview         = try? c.decodeIfPresent(Bool.self, forKey: .forceFullReview)
+        self.trustRepoRules          = try? c.decodeIfPresent(Bool.self, forKey: .trustRepoRules)
         self.skipMergeConfirmation   = try? c.decodeIfPresent(Bool.self, forKey: .skipMergeConfirmation)
         self.claudeModelOverride     = try? c.decodeIfPresent(String.self, forKey: .claudeModelOverride)
         self.claudeEffortOverride    = try? c.decodeIfPresent(String.self, forKey: .claudeEffortOverride)
@@ -780,6 +783,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         try c.encodeIfPresent(providerOverride, forKey: .providerOverride)
         try c.encodeIfPresent(notifyPolicy, forKey: .notifyPolicy)
         try c.encodeIfPresent(forceFullReview, forKey: .forceFullReview)
+        try c.encodeIfPresent(trustRepoRules, forKey: .trustRepoRules)
         try c.encodeIfPresent(skipMergeConfirmation, forKey: .skipMergeConfirmation)
         try c.encodeIfPresent(claudeModelOverride, forKey: .claudeModelOverride)
         try c.encodeIfPresent(claudeEffortOverride, forKey: .claudeEffortOverride)
@@ -824,6 +828,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         providerOverride: ProviderID? = nil,
         notifyPolicy: NotifyPolicy? = nil,
         forceFullReview: Bool? = nil,
+        trustRepoRules: Bool? = nil,
         skipMergeConfirmation: Bool? = nil,
         claudeModelOverride: String? = nil,
         claudeEffortOverride: String? = nil,
@@ -862,6 +867,7 @@ struct RepoConfig: Sendable, Hashable, Codable {
         self.providerOverride = providerOverride
         self.notifyPolicy = notifyPolicy
         self.forceFullReview = forceFullReview
+        self.trustRepoRules = trustRepoRules
         self.skipMergeConfirmation = skipMergeConfirmation
         self.claudeModelOverride = claudeModelOverride
         self.claudeEffortOverride = claudeEffortOverride

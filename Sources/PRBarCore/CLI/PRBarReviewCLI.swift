@@ -149,6 +149,7 @@ public enum PRBarReviewCLI {
                 try await client.fetchReviewThreads(owner: owner, repo: repo, number: number)
             },
             lazyFactFetcher: LazyFactFetcher(client),
+            repoRulesFetcher: { owner, repo in try await client.fetchRepoRules(owner: owner, repo: repo) },
             reviewPoster: { pr, kind, body, comments in
                 if comments.isEmpty {
                     try await client.postReview(

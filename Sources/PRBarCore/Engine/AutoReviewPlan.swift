@@ -30,28 +30,36 @@ enum AutoReviewPlan {
         prior: [PriorReview] = [],
         lazy: LazyFactValues = LazyFactValues(),
         now: Date = Date(),
-        onRule: ((DecideFacts, RuleDecision?) -> Void)? = nil
+        onRule: ((RuleLayer, DecideFacts, RuleDecision?) -> Void)? = nil
     ) -> Outcome {
         let settings = AutoReviewPolicy.evaluate(pr: pr, review: review, providerId: providerId, config: config)
-        if let rules = config.rules, !rules.decide.isEmpty || rules.failure != nil {
+        // The layers bottom up, each seeing the one under it as `below`;
+        // the highest that matches decides.
+        var below = BelowFacts.settings(settings)
+        var decided: RuleDecision?
+        for (layer, rules) in config.ruleLayers where !rules.decide.isEmpty || rules.failure != nil {
             let facts = decideFacts(pr: pr, review: review, providerId: providerId, diffText: diffText,
-                                    prior: prior, lazy: lazy, rules: rules, now: now, below: .settings(settings))
+                                    prior: prior, lazy: lazy, rules: rules, now: now, below: below)
             // The diff is in hand, so the files are never pending here.
             do {
                 switch try rules.decide(facts, pending: lazy.pending.subtracting([.files])) {
                 case .needs(let needed):
                     return .needs(needed)
-                case .decided(let decision?):
-                    onRule?(facts, decision)
-                    return plan(decision, pr: pr, review: review, diffText: diffText, now: now)
-                case .decided(nil):
-                    onRule?(facts, nil)
+                case .decided(let decision):
+                    onRule?(layer, facts, decision)
+                    if let decision {
+                        decided = decision
+                        below = .rule(decision.rule, action: decision.action.rawValue, reason: nil, layer: layer)
+                    }
                 }
             } catch {
                 // Posting nothing is the side that can't go wrong in public.
-                PRBarLog.triage.error("decide rule failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public): \(String(describing: error), privacy: .public)")
+                PRBarLog.triage.error("decide rule failed layer=\(layer.rawValue, privacy: .public) pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public): \(String(describing: error), privacy: .public)")
                 return .none(reason: "a decide rule failed, nothing posted: \(error)")
             }
+        }
+        if let decided {
+            return plan(decided, pr: pr, review: review, diffText: diffText, now: now)
         }
         switch settings {
         case .skip(let reason):

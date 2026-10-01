@@ -12,7 +12,7 @@ enum RulesCommand: Equatable {
     case explain(PRReference, configPath: String?)
     case history(Filter, limit: Int, json: Bool)
     /// One recorded evaluation (by id prefix), or every one the filter keeps.
-    case replay(id: String?, Filter, watch: Bool, configPath: String?)
+    case replay(id: String?, Filter, watch: Bool, configPath: String?, repoRules: String?)
     /// The JSON schema of a rules file, for editors.
     case schema(RuleSchema.File)
 
@@ -30,6 +30,7 @@ enum RulesCommand: Equatable {
         var limit = 20
         var json = false
         var watch = false
+        var repoRules: String?
         var i = 2
         func value() -> String? {
             i += 1
@@ -57,6 +58,9 @@ enum RulesCommand: Equatable {
                 json = true
             case "--watch":
                 watch = true
+            case "--repo-rules":
+                guard let v = value() else { return nil }
+                repoRules = (v as NSString).expandingTildeInPath
             case let flag where flag.hasPrefix("-"):
                 return nil
             default:
@@ -76,7 +80,7 @@ enum RulesCommand: Equatable {
         case "history" where positional.isEmpty:
             self = .history(filter, limit: limit, json: json)
         case "replay" where positional.count <= 1:
-            self = .replay(id: positional.first, filter, watch: watch, configPath: configPath)
+            self = .replay(id: positional.first, filter, watch: watch, configPath: configPath, repoRules: repoRules)
         default:
             return nil
         }
@@ -87,6 +91,7 @@ enum RulesCommand: Equatable {
            prbar-review rules explain <pr-url|owner/repo#number> [--config <path>]
            prbar-review rules history [--pr <pr>] [--days <n>] [--limit <n>] [--json]
            prbar-review rules replay [<id>] [--pr <pr>] [--days <n>] [--watch] [--config <path>]
+                                     [--repo-rules <checkout>/.prbar/rules]
            prbar-review rules schema select|decide|lists
 
     The rules live in `rules/` beside prbar.yaml (or $PRBAR_RULES):
@@ -109,7 +114,9 @@ enum RulesCommand: Equatable {
                 (a prefix from `history` is enough): every condition, and
                 whether the answer changed since. Without one: every
                 evaluation in the last --days (7), listing the answers your
-                edits would change. --watch replays again on every save
+                edits would change. --watch replays again on every save.
+                Decisions a repository's own rules made replay only with
+                --repo-rules, against those rules in a local checkout
       schema    the JSON schema of a rules file, which editors use to
                 complete and check it; also published at
                 \(RuleSchema.baseURL)<file>.schema.json
@@ -165,7 +172,7 @@ enum RulesCommand: Equatable {
             }
             return 0
 
-        case let .replay(id, filter, watch, configPath):
+        case let .replay(id, filter, watch, configPath, repoRulesPath):
             let directory: URL
             do {
                 directory = try Self.rulesDirectory(configPath: configPath, environment: environment)
@@ -186,18 +193,38 @@ enum RulesCommand: Equatable {
             var seen: [String: Data]?
             var code: Int32 = 0
             repeat {
-                let fingerprint = RuleDirectory.fingerprint(directory)
+                let fingerprint = RuleDirectory.fingerprint(directory).merging(
+                    repoRulesPath.map { RuleDirectory.fingerprint(URL(fileURLWithPath: $0)) } ?? [:]
+                ) { mine, _ in mine }
                 if fingerprint != seen {
                     if seen != nil { print("\n--- \(Self.timestamp(Date())): the rules changed\n") }
                     seen = fingerprint
-                    let rules: Rules?
                     do {
-                        rules = try RuleDirectory.load(directory)
+                        let personal = try RuleDirectory.load(directory)
+                        let repo = try repoRulesPath.map { try RuleDirectory.load(URL(fileURLWithPath: $0)) }
+                        func rules(for evaluation: RuleEvaluation) -> Rules?? {
+                            switch evaluation.ruleLayer {
+                            case .personal: return .some(personal)
+                            case .repo: return repo
+                            }
+                        }
                         if let target {
+                            guard let rules = rules(for: target) else {
+                                fail("\(target.pr)'s own rules made this decision; replay it with --repo-rules <checkout>/.prbar/rules")
+                                return 2
+                            }
                             print(Self.describe(RuleReplay.replay(target, rules: rules), rules: rules, explain: true))
                         } else {
-                            let results = Self.evaluations(filter, environment: environment).map { RuleReplay.replay($0, rules: rules) }
-                            print(Self.summary(results, days: filter.days, directory: directory))
+                            var skipped = 0
+                            var results: [RuleReplay.Result] = []
+                            for evaluation in Self.evaluations(filter, environment: environment) {
+                                guard let rules = rules(for: evaluation) else {
+                                    skipped += 1
+                                    continue
+                                }
+                                results.append(RuleReplay.replay(evaluation, rules: rules))
+                            }
+                            print(Self.summary(results, days: filter.days, directory: directory, skippedRepo: skipped))
                         }
                         code = 0
                     } catch {
@@ -246,7 +273,8 @@ enum RulesCommand: Equatable {
     }
 
     static func line(_ evaluation: RuleEvaluation) -> String {
-        "\(evaluation.id.uuidString.prefix(8).lowercased())  \(timestamp(evaluation.at))  \(evaluation.stage.rawValue.padding(toLength: 6, withPad: " ", startingAt: 0))  \(evaluation.pr)  \(evaluation.outcome)"
+        let layer = evaluation.ruleLayer == .repo ? "  [repo's rules]" : ""
+        return "\(evaluation.id.uuidString.prefix(8).lowercased())  \(timestamp(evaluation.at))  \(evaluation.stage.rawValue.padding(toLength: 6, withPad: " ", startingAt: 0))  \(evaluation.pr)  \(evaluation.outcome)\(layer)"
     }
 
     static func timestamp(_ date: Date) -> String {
@@ -270,11 +298,14 @@ enum RulesCommand: Equatable {
         return lines.joined(separator: "\n")
     }
 
-    static func summary(_ results: [RuleReplay.Result], days: Int, directory: URL) -> String {
+    static func summary(_ results: [RuleReplay.Result], days: Int, directory: URL, skippedRepo: Int = 0) -> String {
         let changed = results.filter(\.changed)
         var lines = [
             "Replayed \(results.count) evaluation\(results.count == 1 ? "" : "s") from the last \(days) day\(days == 1 ? "" : "s") with the rules in \(directory.path): \(changed.isEmpty ? "no answer changes." : "\(changed.count) would change.")",
         ]
+        if skippedRepo > 0 {
+            lines.append("\(skippedRepo) more were made by a repository's own rules; replay them with --repo-rules <checkout>/.prbar/rules.")
+        }
         for result in changed {
             lines.append("")
             lines.append(line(result.evaluation))

@@ -320,6 +320,9 @@ struct RepoConfigEditor: View {
                 inheritableToggle("Always do a full review (ignore prior verdict)",
                                   \.forceFullReview,
                                   inherited: defaults.forceFullReview)
+                inheritableToggle("Use the repository's own rules (.prbar/rules)",
+                                  \.trustRepoRules,
+                                  inherited: defaults.trustRepoRules)
                 Picker("Provider", selection: providerOverrideBinding) {
                     Text("(use app default)").tag("default")
                     ForEach(ProviderID.allCases, id: \.self) { p in

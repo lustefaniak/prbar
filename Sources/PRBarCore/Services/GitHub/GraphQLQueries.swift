@@ -17,6 +17,7 @@ enum GraphQLQueries {
         rebaseMergeAllowed
         autoMergeAllowed
         deleteBranchOnMerge
+        rulesTree: object(expression: "HEAD:.prbar/rules") { ... on Tree { oid } }
       }
       author { login __typename }
       headRefName baseRefName
@@ -65,6 +66,29 @@ enum GraphQLQueries {
       rateLimit { remaining cost resetAt }
     }
     \(prFieldsFragment)
+    """
+
+    /// The repository's own rules: `.prbar/rules/` on its default branch,
+    /// file contents included, in one call. Fetched only for a repository
+    /// the user trusts, and again only when the tree's oid (which the inbox
+    /// query carries) changes.
+    static let repoRules: String = """
+    query RepoRules($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        object(expression: "HEAD:.prbar/rules") {
+          ... on Tree {
+            oid
+            entries {
+              name type
+              object {
+                ... on Blob { text isTruncated }
+                ... on Tree { entries { name type object { ... on Blob { text isTruncated } } } }
+              }
+            }
+          }
+        }
+      }
+    }
     """
 
     /// Review threads for one PR. Two consumers: the prompt's prior-discussion

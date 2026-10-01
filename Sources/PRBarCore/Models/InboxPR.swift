@@ -173,6 +173,9 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     /// Logins and team slugs with a pending review request.
     var requestedReviewers: [String] = []
     var requestedTeams: [String] = []
+    /// The oid of `.prbar/rules` on the repository's default branch, nil
+    /// when it has none. Changes whenever those rules do.
+    var repoRulesTree: String? = nil
 
     var nameWithOwner: String { "\(owner)/\(repo)" }
 
@@ -280,6 +283,7 @@ extension InboxPR {
         case hasPRBarVerdictAtHead
         case local
         case createdAt, updatedAt, authorAssociation, authorIsBot, labels, requestedReviewers, requestedTeams
+        case repoRulesTree
     }
 
     /// Explicit decode so payloads cached before `humanReviews` /
@@ -331,6 +335,7 @@ extension InboxPR {
         self.labels = try c.decodeIfPresent([String].self, forKey: .labels) ?? []
         self.requestedReviewers = try c.decodeIfPresent([String].self, forKey: .requestedReviewers) ?? []
         self.requestedTeams = try c.decodeIfPresent([String].self, forKey: .requestedTeams) ?? []
+        self.repoRulesTree = try c.decodeIfPresent(String.self, forKey: .repoRulesTree)
     }
 
     init(node: InboxResponse.PullRequestNode, viewerLogin: String) {
@@ -380,6 +385,7 @@ extension InboxPR {
         self.authorAssociation = node.authorAssociation ?? ""
         self.authorIsBot = node.author?.typename == "Bot" || (node.author?.login ?? "").hasSuffix("[bot]")
         self.labels = node.labels?.nodes.map(\.name) ?? []
+        self.repoRulesTree = node.repository.rulesTree?.oid
         let isReviewRequested = reviewerLogins.contains(viewerLogin)
         switch (isAuthor, isReviewRequested) {
         case (true, true): self.role = .both

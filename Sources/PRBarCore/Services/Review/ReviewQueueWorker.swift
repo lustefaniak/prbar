@@ -780,12 +780,25 @@ final class ReviewQueueWorker {
     /// recorded meanwhile, and a second poll while the fetch runs doesn't
     /// start another.
     private func admit(_ pr: InboxPR, providerOverride: ProviderID?, trigger: RuleTrigger) {
-        let cfg = configResolver(pr.owner, pr.repo)
+        // The repository's rules, when trusted and not fetched yet for its
+        // current tree, come first; the PR comes back here once they have.
+        guard let cfg = cachedLayeredConfig(configResolver(pr.owner, pr.repo), for: pr) else {
+            let key = "repo:\(pr.nameWithOwner)"
+            guard !lazyFetching.contains(key) else { return }
+            lazyFetching.insert(key)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let loaded = await self.loadRepoRules(for: pr, waitingOnFailure: false)
+                self.lazyFetching.remove(key)
+                if loaded { self.admit(pr, providerOverride: providerOverride, trigger: trigger) }
+            }
+            return
+        }
         let lazy = lazyFacts(for: pr)
-        let onRule: (SelectFacts, RuleSelection?) -> Void = { [weak self] facts, selection in
-            guard let self, let rules = cfg.rules else { return }
+        let onRule: (RuleLayer, SelectFacts, RuleSelection?) -> Void = { [weak self] layer, facts, selection in
+            guard let self, let rules = layer == .repo ? cfg.repoRules : cfg.rules else { return }
             self.recordRuleEvaluation(
-                .select, pr: pr, rules: rules, fetched: lazy.fetched, rule: selection?.rule,
+                .select, layer: layer, pr: pr, rules: rules, fetched: lazy.fetched, rule: selection?.rule,
                 outcome: Rules.describe(selection), select: facts)
         }
         switch ReviewAdmission.evaluate(
@@ -843,11 +856,11 @@ final class ReviewQueueWorker {
     private var lastRuleRecord: [String: String] = [:]
 
     private func recordRuleEvaluation(
-        _ stage: RuleEvaluation.Stage, pr: InboxPR, rules: Rules, fetched: Set<LazyFact>, rule: String?,
+        _ stage: RuleEvaluation.Stage, layer: RuleLayer, pr: InboxPR, rules: Rules, fetched: Set<LazyFact>, rule: String?,
         outcome: String, select: SelectFacts? = nil, decide: DecideFacts? = nil
     ) {
         guard let ruleLog else { return }
-        let key = "\(pr.nodeId)#\(stage.rawValue)"
+        let key = "\(pr.nodeId)#\(stage.rawValue)#\(layer.rawValue)"
         let signature = "\(pr.headSha)|\(rules.digest)|\(outcome)|\(fetched.map(\.rawValue).sorted())"
         guard lastRuleRecord[key] != signature else { return }
         lastRuleRecord[key] = signature
@@ -855,7 +868,7 @@ final class ReviewQueueWorker {
             id: UUID(), at: Date(), stage: stage, repo: pr.nameWithOwner, number: pr.number, title: pr.title,
             headSha: pr.headSha, select: select, decide: decide, rule: rule, outcome: outcome,
             rulesDigest: rules.digest, ruleFiles: rules.sources.map(\.path),
-            fetched: fetched.sorted { $0.rawValue < $1.rawValue })
+            fetched: fetched.sorted { $0.rawValue < $1.rawValue }, layer: layer)
         do {
             try ruleLog.append(record)
         } catch {
@@ -868,6 +881,7 @@ final class ReviewQueueWorker {
     func prefetchSelectFacts(
         _ pr: InboxPR, config: ResolvedRepoConfig, requireRequested: Bool = true, trigger: RuleTrigger = .reviewRequested
     ) async -> LazyFactValues {
+        let config = await layeredConfig(config, for: pr)
         var lazy = lazyFacts(for: pr)
         while case .needs(let facts) = ReviewAdmission.evaluate(
             pr: pr, config: config, existing: reviews[pr.nodeId], requireRequested: requireRequested,
@@ -877,6 +891,84 @@ final class ReviewQueueWorker {
             storeLazyFacts(lazy, for: pr)
         }
         return lazy
+    }
+
+    // MARK: - repository rules
+
+    /// Fetches a repository's `.prbar/rules/`; nil leaves repositories
+    /// without their own rules.
+    @ObservationIgnored var repoRulesFetcher: (@Sendable (_ owner: String, _ repo: String) async throws -> RepoRuleFiles?)?
+
+    /// Per repository, for the rules tree it was fetched at: the compiled
+    /// rules (nil when the tree holds no policies), or `Rules.unloaded`
+    /// when they don't compile or couldn't be fetched.
+    private var repoRulesCache: [String: (tree: String, rules: Rules?)] = [:]
+
+    /// Why a repository's rules aren't in effect, by repository.
+    private(set) var repoRulesIssues: [String: String] = [:]
+
+    /// `config` with the repository's rules when the user trusts them, or
+    /// nil while they have yet to be fetched for the repository's current
+    /// rules tree.
+    func cachedLayeredConfig(_ config: ResolvedRepoConfig, for pr: InboxPR) -> ResolvedRepoConfig? {
+        guard config.trustRepoRules, pr.local == nil, let tree = pr.repoRulesTree else { return config }
+        guard let cached = repoRulesCache[pr.nameWithOwner], cached.tree == tree else { return nil }
+        return config.with(repoRules: cached.rules)
+    }
+
+    /// `layeredConfig`, fetching the rules first when needed.
+    func layeredConfig(_ config: ResolvedRepoConfig, for pr: InboxPR) async -> ResolvedRepoConfig {
+        if let layered = cachedLayeredConfig(config, for: pr) { return layered }
+        _ = await loadRepoRules(for: pr, waitingOnFailure: true)
+        return cachedLayeredConfig(config, for: pr) ?? config.with(repoRules: .unloaded("not fetched"))
+    }
+
+    /// Fetches and compiles the repository's rules for its current tree.
+    /// A failed fetch is retried like a lazy fact; once it gives up, or when
+    /// the rules don't compile, the repository's layer is `Rules.unloaded`,
+    /// which posts nothing: those rules may have been what kept a post back.
+    /// Returns whether the cache now answers for this tree.
+    @discardableResult
+    func loadRepoRules(for pr: InboxPR, waitingOnFailure: Bool) async -> Bool {
+        guard let tree = pr.repoRulesTree else { return true }
+        let repo = pr.nameWithOwner
+        let key = "repo:\(repo)@\(tree)"
+        if let backoff = lazyBackoff[key], backoff.notBefore > Date() { return false }
+        while true {
+            do {
+                guard let fetcher = repoRulesFetcher else { throw LazyFactError.noFetcher }
+                let files = try await fetcher(pr.owner, pr.repo)
+                lazyBackoff[key] = nil
+                do {
+                    let rules = try files?.compile(repo: repo)
+                    repoRulesCache[repo] = (tree, rules)
+                    repoRulesIssues[repo] = nil
+                } catch {
+                    let issue = "\(repo)'s .prbar/rules don't compile, so nothing is posted on its own for it:\n\(error.localizedDescription)"
+                    PRBarLog.triage.error("repo rules: \(issue, privacy: .public)")
+                    repoRulesCache[repo] = (tree, .unloaded(issue))
+                    repoRulesIssues[repo] = issue
+                }
+                return true
+            } catch {
+                let attempts = (lazyBackoff[key]?.attempts ?? 0) + 1
+                PRBarLog.triage.error("repo rules fetch failed repo=\(repo, privacy: .public) attempt=\(attempts, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                if attempts >= lazyFetchAttempts || error is LazyFactError {
+                    let issue = "\(repo)'s .prbar/rules couldn't be fetched, so nothing is posted on its own for it: \(error.localizedDescription)"
+                    repoRulesCache[repo] = (tree, .unloaded(issue))
+                    repoRulesIssues[repo] = issue
+                    lazyBackoff[key] = nil
+                    return true
+                }
+                if waitingOnFailure {
+                    lazyBackoff[key] = (attempts, Date())
+                    try? await Task.sleep(for: .seconds(2 * attempts))
+                    continue
+                }
+                lazyBackoff[key] = (attempts, Date().addingTimeInterval(lazyRetryDelay))
+                return false
+            }
+        }
     }
 
     func rememberLazyFacts(_ values: LazyFactValues, for pr: InboxPR) {
@@ -1424,6 +1516,7 @@ final class ReviewQueueWorker {
     private func planAutoReview(
         pr: InboxPR, review: AggregatedReview, config: ResolvedRepoConfig, providerId: ProviderID, diffText: String
     ) async -> AutoReviewPlan.Outcome {
+        let config = await layeredConfig(config, for: pr)
         let prior = reviews[pr.nodeId]?.priorReviews ?? []
         var lazy = lazyFacts(for: pr)
         while true {
@@ -1431,10 +1524,10 @@ final class ReviewQueueWorker {
             let outcome = AutoReviewPlan.plan(
                 pr: pr, review: review, config: config, providerId: providerId, diffText: diffText,
                 prior: prior, lazy: lazy
-            ) { [weak self] facts, decision in
-                guard let self, let rules = config.rules else { return }
+            ) { [weak self] layer, facts, decision in
+                guard let self, let rules = layer == .repo ? config.repoRules : config.rules else { return }
                 self.recordRuleEvaluation(
-                    .decide, pr: pr, rules: rules, fetched: fetched, rule: decision?.rule,
+                    .decide, layer: layer, pr: pr, rules: rules, fetched: fetched, rule: decision?.rule,
                     outcome: Rules.describe(decision), decide: facts)
             }
             guard case .needs(let facts) = outcome, !facts.subtracting(lazy.fetched).isEmpty else { return outcome }

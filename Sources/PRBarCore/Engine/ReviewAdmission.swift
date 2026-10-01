@@ -42,7 +42,7 @@ enum ReviewAdmission {
         trigger: RuleTrigger = .reviewRequested,
         lazy: LazyFactValues = LazyFactValues(),
         now: Date = Date(),
-        onRule: ((SelectFacts, RuleSelection?) -> Void)? = nil
+        onRule: ((RuleLayer, SelectFacts, RuleSelection?) -> Void)? = nil
     ) -> Decision {
         guard !requireRequested || pr.role == .reviewRequested || pr.role == .both else {
             return .ignore(.notRequested)
@@ -53,7 +53,7 @@ enum ReviewAdmission {
         // aren't a policy a rule should have to restate.
         let settings = settingsSkip(pr: pr, config: config)
         let below = settings.map { BelowFacts.settings("skip", reason: $0.detail) } ?? .settings("review")
-        switch selectRule(pr: pr, rules: config.rules, trigger: trigger, lazy: lazy, now: now, below: below, onRule: onRule) {
+        switch selectRule(pr: pr, config: config, trigger: trigger, lazy: lazy, now: now, below: below, onRule: onRule) {
         case .needs(let facts)?:
             return .needs(facts)
         case let .skip(id, reason)?:
@@ -112,32 +112,38 @@ enum ReviewAdmission {
         settingsSkip(pr: pr, config: config).map { BelowFacts.settings("skip", reason: $0.detail) } ?? .settings("review")
     }
 
+    /// The layers bottom up, each seeing the one under it as `below`; the
+    /// highest that matches decides.
     private static func selectRule(
-        pr: InboxPR, rules: Rules?, trigger: RuleTrigger, lazy: LazyFactValues, now: Date, below: BelowFacts,
-        onRule: ((SelectFacts, RuleSelection?) -> Void)?
+        pr: InboxPR, config: ResolvedRepoConfig, trigger: RuleTrigger, lazy: LazyFactValues, now: Date,
+        below settings: BelowFacts, onRule: ((RuleLayer, SelectFacts, RuleSelection?) -> Void)?
     ) -> SelectOutcome? {
-        guard let rules, !rules.select.isEmpty else { return nil }
-        let facts = selectFacts(pr: pr, rules: rules, trigger: trigger, lazy: lazy, now: now, below: below)
-        do {
-            let selection: RuleSelection
-            switch try rules.select(facts, pending: lazy.pending) {
-            case .needs(let needed): return .needs(needed)
-            case .decided(nil):
-                onRule?(facts, nil)
-                return nil
-            case .decided(let decided?):
-                onRule?(facts, decided)
-                selection = decided
+        var below = settings
+        var decided: RuleSelection?
+        for (layer, rules) in config.ruleLayers where !rules.select.isEmpty {
+            let facts = selectFacts(pr: pr, rules: rules, trigger: trigger, lazy: lazy, now: now, below: below)
+            do {
+                switch try rules.select(facts, pending: lazy.pending) {
+                case .needs(let needed):
+                    return .needs(needed)
+                case .decided(let selection):
+                    onRule?(layer, facts, selection)
+                    if let selection {
+                        decided = selection
+                        below = .rule(selection.rule, action: selection.action.rawValue, reason: selection.reason, layer: layer)
+                    }
+                }
+            } catch {
+                // Not reviewing is the side that costs nothing; the reason
+                // carries the error to the row and the log.
+                PRBarLog.triage.error("select rule failed layer=\(layer.rawValue, privacy: .public) pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public): \(String(describing: error), privacy: .public)")
+                return .skip(Rules.errorRuleID, "a select rule failed: \(String(describing: error))")
             }
-            switch selection.action {
-            case .review: return .review
-            case .skip: return .skip(selection.rule, selection.reason)
-            }
-        } catch {
-            // Not reviewing is the side that costs nothing; the reason
-            // carries the error to the row and the log.
-            PRBarLog.triage.error("select rule failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public): \(String(describing: error), privacy: .public)")
-            return .skip(Rules.errorRuleID, "a select rule failed: \(String(describing: error))")
+        }
+        guard let decided else { return nil }
+        switch decided.action {
+        case .review: return .review
+        case .skip: return .skip(decided.rule, decided.reason)
         }
     }
 

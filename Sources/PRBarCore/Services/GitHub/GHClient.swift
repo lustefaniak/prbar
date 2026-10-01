@@ -104,6 +104,22 @@ actor GHClient {
         return result.stdoutString ?? ""
     }
 
+    /// The repository's `.prbar/rules/` on its default branch, nil when it
+    /// has none.
+    func fetchRepoRules(owner: String, repo: String) async throws -> RepoRuleFiles? {
+        let result = try await ProcessRunner.run(executable: executablePath, args: [
+            "api", "graphql", "-F", "owner=\(owner)", "-F", "name=\(repo)", "-f", "query=\(GraphQLQueries.repoRules)",
+        ])
+        guard result.succeeded else {
+            throw GHError.execFailed(stderr: result.stderrString ?? "", exitCode: result.exitCode)
+        }
+        do {
+            return try JSONDecoder().decode(RepoRulesResponse.self, from: result.stdout).files
+        } catch {
+            throw GHError.decodingFailed(String(describing: error))
+        }
+    }
+
     /// The GitHub logins that authored or committed a PR's commits, each
     /// once. `web-flow` (GitHub committing for a web edit or merge) and
     /// commits with no linked account are left out.

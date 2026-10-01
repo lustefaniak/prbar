@@ -152,6 +152,24 @@ explaining it. A few keys exist only on repo rules: `repoGlobs` (required),
 `skipMergeConfirmation`. The name `toolMode` in `defaults:` is
 `toolModeOverride` in a repo rule.
 
+## Rules
+
+Decisions the settings can't express live in rules: CEL policies in a directory
+of their own beside this file (`rules/`), never in `prbar.yaml`. When no rule
+matches, these settings decide. [rules.md](rules.md) is the guide.
+
+One setting here belongs to rules: **`trustRepoRules`** (off by default, in
+`defaults:` or a repo rule) lets a repository's own rules, `.prbar/rules/` on its
+default branch, decide between your rules and these settings. They decide what is
+posted under your name, so turn it on only for repositories whose maintainers you
+trust:
+
+```yaml
+repos:
+  - repoGlobs: [acme/monorepo]
+    trustRepoRules: true
+```
+
 ## Coding agents: `agents:`
 
 `prbar-review mcp` lets a coding agent such as Claude Code or codex use PRBar.

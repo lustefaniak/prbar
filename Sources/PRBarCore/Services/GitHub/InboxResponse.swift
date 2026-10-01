@@ -75,6 +75,12 @@ struct InboxResponse: Decodable, Sendable {
         let rebaseMergeAllowed: Bool
         let autoMergeAllowed: Bool
         let deleteBranchOnMerge: Bool
+        /// `.prbar/rules` on the default branch; nil (or no oid) without one.
+        let rulesTree: TreeRef?
+    }
+
+    struct TreeRef: Decodable, Sendable {
+        let oid: String?
     }
 
     struct Author: Decodable, Sendable {

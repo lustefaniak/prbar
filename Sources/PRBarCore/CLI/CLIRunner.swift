@@ -20,6 +20,8 @@ struct Runner {
     var reviewThreadFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> ReviewThreadPage
     /// What rules read only when they need it; nil leaves those facts null.
     var lazyFactFetcher: LazyFactFetcher? = nil
+    /// A trusted repository's own rules; nil leaves them out.
+    var repoRulesFetcher: (@Sendable (_ owner: String, _ repo: String) async throws -> RepoRuleFiles?)? = nil
     /// Posts the staged auto-review. Injected for the same reason as the
     /// fetches — a test must be able to drive the post path without `gh`.
     var reviewPoster: @Sendable (
@@ -69,6 +71,7 @@ struct Runner {
         config.applyAgentDefaults(to: worker)
         worker.reviewThreadFetcher = reviewThreadFetcher
         worker.lazyFactFetcher = lazyFactFetcher
+        worker.repoRulesFetcher = repoRulesFetcher
         // No human is watching a banner, so the staged batch fires as soon
         // as the run settles.
         worker.undoWindow = 0

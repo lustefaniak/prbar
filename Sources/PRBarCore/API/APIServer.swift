@@ -424,7 +424,8 @@ final class APIServer {
                 guard let params else { throw Self.missingParams }
                 let pr = try await self.resolvePR(params.pr, fetch: params.fetch ?? false)
                 let force = params.force ?? false
-                let config = self.runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
+                let config = await self.runtime.queue.layeredConfig(
+                    self.runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo), for: pr)
                 let agent = self.isAgent(connection)
                 // What the select rules read lazily is fetched here, so the
                 // answer below is the decision, not "waiting for facts".
@@ -796,8 +797,15 @@ final class APIServer {
             idleExitSeconds: idleExitSeconds,
             rulesPath: runtime.repoConfigs.rulesURL.path,
             rules: runtime.repoConfigs.config.compiledRules.map { RuleCounts(select: $0.select.count, decide: $0.decide.count) },
-            rulesIssue: runtime.repoConfigs.rulesIssue
+            rulesIssue: rulesIssues()
         )
+    }
+
+    /// The user's rules' problem, then each trusted repository's.
+    private func rulesIssues() -> String? {
+        let repos = runtime.queue.repoRulesIssues
+        let all = [runtime.repoConfigs.rulesIssue].compactMap { $0 } + repos.keys.sorted().compactMap { repos[$0] }
+        return all.isEmpty ? nil : all.joined(separator: "\n")
     }
 
     /// Whether nothing is going on that exiting would cut short: no client,
@@ -824,40 +832,57 @@ final class APIServer {
     }
 
     func explanation(of pr: InboxPR) async -> RulesExplanation {
-        let config = runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
-        let existing = runtime.queue.reviews[pr.nodeId]
+        let queue = runtime.queue
+        let config = await queue.layeredConfig(runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo), for: pr)
+        let existing = queue.reviews[pr.nodeId]
         let now = Date()
         var lazy = await selectFacts(pr, config: config)
-        var select = config.rules.map {
-            $0.explainSelect(ReviewAdmission.selectFacts(
-                pr: pr, rules: $0, trigger: .reviewRequested, lazy: lazy, now: now,
-                below: ReviewAdmission.below(pr: pr, config: config)))
-        } ?? "No rules in \(runtime.repoConfigs.rulesURL.path); the repo settings in prbar.yaml decide."
-        select += "\n\nOutcome: " + Self.describe(
-            ReviewAdmission.evaluate(pr: pr, config: config, existing: existing, lazy: lazy, now: now))
+
+        // Each layer explained on the facts it was evaluated with, `below`
+        // included, as the stage handed them over.
+        var selectFacts: [(RuleLayer, SelectFacts)] = []
+        let admission = ReviewAdmission.evaluate(
+            pr: pr, config: config, existing: existing, lazy: lazy, now: now
+        ) { layer, facts, _ in selectFacts.append((layer, facts)) }
+        var select = selectFacts.map { layer, facts in
+            heading(layer, pr: pr, config: config) + (rules(layer, config)?.explainSelect(facts) ?? "")
+        }.joined(separator: "\n\n")
+        if select.isEmpty { select = "No select rules; the settings in prbar.yaml decide." }
+        select += "\n\nOutcome: " + Self.describe(admission)
 
         var decide: String?
         if let existing, existing.headSha == pr.headSha, case .completed(let review) = existing.status {
-            // The run's diff is gone; the files come from GitHub instead.
-            if !lazy.fetched.contains(.files) || !lazy.fetched.contains(.committers) {
-                lazy.merge(await runtime.queue.fetchLazyFacts(pr, lazy.pending))
-                runtime.queue.rememberLazyFacts(lazy, for: pr)
+            // The run's diff is gone; the files come from the diff again.
+            if !lazy.fetched.isSuperset(of: [.files, .committers]) {
+                lazy.merge(await queue.fetchLazyFacts(pr, lazy.pending))
+                queue.rememberLazyFacts(lazy, for: pr)
             }
-            let rules = config.rules.map {
-                var facts = AutoReviewPlan.decideFacts(
-                    pr: pr, review: review, providerId: existing.providerId, diffText: "",
-                    prior: existing.priorReviews, lazy: lazy, rules: $0, now: now,
-                    below: .settings(AutoReviewPolicy.evaluate(
-                        pr: pr, review: review, providerId: existing.providerId, config: config)))
-                facts.pr.files = lazy.files
-                return $0.explainDecide(facts)
-            } ?? "No rules; the repo settings in prbar.yaml decide."
+            var decideFacts: [(RuleLayer, DecideFacts)] = []
             let outcome = AutoReviewPlan.plan(
                 pr: pr, review: review, config: config, providerId: existing.providerId, diffText: "",
-                prior: existing.priorReviews, lazy: lazy, now: now)
-            decide = rules + "\n\nOutcome: " + Self.describe(outcome)
+                prior: existing.priorReviews, lazy: lazy, now: now
+            ) { layer, facts, _ in decideFacts.append((layer, facts)) }
+            var text = decideFacts.map { layer, facts in
+                var facts = facts
+                facts.pr.files = lazy.files
+                return heading(layer, pr: pr, config: config) + (rules(layer, config)?.explainDecide(facts) ?? "")
+            }.joined(separator: "\n\n")
+            if text.isEmpty { text = "No decide rules; the settings in prbar.yaml decide." }
+            decide = text + "\n\nOutcome: " + Self.describe(outcome)
         }
         return RulesExplanation(pr: pr, select: select, decide: decide)
+    }
+
+    private func rules(_ layer: RuleLayer, _ config: ResolvedRepoConfig) -> Rules? {
+        layer == .repo ? config.repoRules : config.rules
+    }
+
+    private func heading(_ layer: RuleLayer, pr: InboxPR, config: ResolvedRepoConfig) -> String {
+        guard config.ruleLayers.count > 1 else { return "" }
+        switch layer {
+        case .repo: return "### \(pr.nameWithOwner)'s rules (.prbar/rules on its default branch)\n\n"
+        case .personal: return "### Your rules (\(runtime.repoConfigs.rulesURL.path))\n\n"
+        }
     }
 
     nonisolated static func describe(_ decision: ReviewAdmission.Decision) -> String {

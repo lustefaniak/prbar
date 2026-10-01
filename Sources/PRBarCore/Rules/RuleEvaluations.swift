@@ -30,8 +30,13 @@ struct RuleEvaluation: Codable, Sendable, Identifiable, Hashable {
     /// The lazy facts fetched for it. One a replayed rule now needs that
     /// isn't here was never fetched, so the replay says so.
     var fetched: [LazyFact]
+    /// Whose rules: the user's (nil in records from before repository
+    /// rules) or the reviewed repository's.
+    var layer: RuleLayer? = nil
 
     var pr: String { number == 0 ? repo : "\(repo)#\(number)" }
+
+    var ruleLayer: RuleLayer { layer ?? .personal }
 }
 
 extension Rules {

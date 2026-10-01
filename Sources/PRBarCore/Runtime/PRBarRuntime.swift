@@ -269,6 +269,9 @@ extension PRBarRuntime {
             let c = try client ?? GHClient()
             return try await c.fetchReviewThreads(owner: owner, repo: repo, number: number)
         }
+        queue.repoRulesFetcher = { owner, repo in
+            try await (client ?? GHClient()).fetchRepoRules(owner: owner, repo: repo)
+        }
         queue.lazyFactFetcher = LazyFactFetcher(committers: { owner, repo, number in
             try await (client ?? GHClient()).fetchCommitters(owner: owner, repo: repo, number: number)
         })

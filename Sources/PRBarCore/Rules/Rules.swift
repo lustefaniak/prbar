@@ -39,6 +39,24 @@ struct LazyFactValues: Sendable, Hashable {
     }
 }
 
+/// Who wrote a set of rules, in evaluation order: the repository's first,
+/// then the user's, each seeing the answer of the layers under it as
+/// `below`; the highest layer that matches decides.
+enum RuleLayer: String, Codable, Sendable, Hashable, CaseIterable {
+    case repo
+    case personal
+}
+
+extension ResolvedRepoConfig {
+    /// The rule layers that apply, bottom up.
+    var ruleLayers: [(layer: RuleLayer, rules: Rules)] {
+        var layers: [(RuleLayer, Rules)] = []
+        if trustRepoRules, let repoRules { layers.append((.repo, repoRules)) }
+        if let rules { layers.append((.personal, rules)) }
+        return layers
+    }
+}
+
 /// Where the lazy facts that aren't in the diff come from: GitHub through
 /// `gh` in production. The files come from the diff the worker fetches.
 struct LazyFactFetcher: Sendable {

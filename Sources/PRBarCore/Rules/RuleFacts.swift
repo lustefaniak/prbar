@@ -300,6 +300,11 @@ struct BelowFacts: Codable, Sendable, Hashable, CELNamedType {
     /// `settings`, or `repo` for the reviewed repository's rules.
     var source: String
 
+    /// A lower layer's matched rule, as the next layer up sees it.
+    static func rule(_ id: String, action: String, reason: String?, layer: RuleLayer) -> BelowFacts {
+        BelowFacts(action: action, reason: reason ?? "", rule: id, source: layer.rawValue)
+    }
+
     static func settings(_ action: String, reason: String = "") -> BelowFacts {
         BelowFacts(action: action, reason: reason, rule: "", source: "settings")
     }

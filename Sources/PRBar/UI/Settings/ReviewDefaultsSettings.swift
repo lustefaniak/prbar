@@ -41,6 +41,8 @@ struct ReviewDefaultsSettings: View {
                 ReviewSettingControls.toolMode($store.defaults.toolMode)
                 Toggle("Always do a full review (ignore prior verdict)", isOn: $store.defaults.forceFullReview)
                     .help("When the PR head moves, retriages re-evaluate the whole diff with no incremental framing. Off keeps cost down but biases the AI toward judging only the increment.")
+                Toggle("Use the repository's own rules (.prbar/rules)", isOn: $store.defaults.trustRepoRules)
+                    .help("Read .prbar/rules/ from the repository's default branch and let it decide between your rules and these settings. Its rules decide what is posted under your name, so turn this on only for repositories whose maintainers you trust.")
             } header: {
                 Text("AI review")
             }
