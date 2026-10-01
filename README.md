@@ -117,9 +117,16 @@ reviews one PR and exits, so an orchestrator such as
 and hand them over one at a time:
 
 ```sh
-swift build -c release --static-swift-stdlib --product prbar-review
-.build/release/prbar-review https://github.com/owner/repo/pull/123
+prbar-review https://github.com/owner/repo/pull/123
 ```
+
+Getting it:
+
+- **With the app:** it ships inside PRBar. Settings → General → Command-line tool
+  links it to `~/.local/bin/prbar-review`, and it updates with the app.
+- **Linux:** every release has `prbar-review-<version>-linux-{amd64,arm64}.tar.gz`
+  (checksums in `SHA256SUMS`). The binary is the whole install.
+- **From source:** `swift build -c release --static-swift-stdlib --product prbar-review`.
 
 It needs the same `gh` and `claude`/`codex` logins the app does.
 
@@ -227,11 +234,8 @@ there is no review to report.
 Progress is reported on stdout as one JSON object per line
 (`task_id` / `outcome` / `note` / `agent.cost_usd`), which is
 [brahmanda's worker contract](https://github.com/grasskode/brahmanda#the-worker-contract);
-logs go to stderr. Copy `prbar_PRBarCore.bundle` alongside the binary — it
-carries the prompts and the output schema.
-
-Linux amd64 builds are attached to every CI run as the `prbar-review-linux-amd64`
-artifact.
+logs go to stderr. The binary is the whole install: the prompts and the output
+schema are compiled in.
 
 ## Auto-update
 

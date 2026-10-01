@@ -222,6 +222,8 @@ struct GeneralSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            CommandLineToolSection()
         }
         .formStyle(.grouped)
     }

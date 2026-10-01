@@ -92,18 +92,16 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
-# Verify the binary really is universal — fast sanity check on CI.
-EXEC="$APP/Contents/MacOS/PRBar"
-if ! lipo -info "$EXEC" 2>/dev/null | grep -q "arm64"; then
-  echo "error: $EXEC missing arm64 slice" >&2
-  lipo -info "$EXEC" >&2 || true
-  exit 1
-fi
-if ! lipo -info "$EXEC" 2>/dev/null | grep -q "x86_64"; then
-  echo "error: $EXEC missing x86_64 slice" >&2
-  lipo -info "$EXEC" >&2 || true
-  exit 1
-fi
+# Verify both binaries really are universal — fast sanity check on CI.
+for EXEC in "$APP/Contents/MacOS/PRBar" "$APP/Contents/MacOS/prbar-review"; do
+  for arch in arm64 x86_64; do
+    if ! lipo -info "$EXEC" 2>/dev/null | grep -q "$arch"; then
+      echo "error: $EXEC missing $arch slice" >&2
+      lipo -info "$EXEC" >&2 || true
+      exit 1
+    fi
+  done
+done
 
 if [[ -n "$DEVELOPMENT_TEAM" ]]; then
   # Xcode's archive step does not re-sign Sparkle's bundled helpers
@@ -133,6 +131,13 @@ if [[ -n "$DEVELOPMENT_TEAM" ]]; then
         "$nested"
     fi
   done
+  # The bundled CLI / server. A plain executable in Contents/MacOS is
+  # nested code too, and has to carry the Developer ID signature before
+  # the bundle around it is signed.
+  codesign --force --options=runtime --timestamp \
+    --sign "$IDENT" \
+    --identifier dev.lustefaniak.prbar.cli \
+    "$APP/Contents/MacOS/prbar-review"
   # Sparkle.framework itself, then the app bundle.
   codesign --force --options=runtime --timestamp \
     --sign "$IDENT" \

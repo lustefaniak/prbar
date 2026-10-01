@@ -13,7 +13,51 @@ permissions:
   contents: write   # for softprops/action-gh-release on tag pushes
 
 jobs:
+  # The standalone CLI for Linux, from the same tag as the DMG. Static
+  # stdlib and compiled-in prompts, so the binary is the whole install.
+  linux-cli:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: swift:6.1
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Stamp the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          sed -i "s/static let stamped = \"dev\"/static let stamped = \"${GITHUB_REF_NAME#v}\"/" \
+            Sources/PRBarCore/API/APIServer.swift
+          grep -q "stamped = \"${GITHUB_REF_NAME#v}\"" Sources/PRBarCore/API/APIServer.swift
+
+      - name: Build
+        run: swift build -c release --static-swift-stdlib --product prbar-review
+
+      - name: Package
+        run: |
+          NAME="prbar-review-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}"
+          mkdir -p "dist/$NAME"
+          cp .build/release/prbar-review "dist/$NAME/"
+          (cd /tmp && "$GITHUB_WORKSPACE/dist/$NAME/prbar-review" --help 2>&1 | grep -q usage)
+          tar -C dist -czf "$NAME.tar.gz" "$NAME"
+          echo "TARBALL=$NAME.tar.gz" >>"$GITHUB_ENV"
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: prbar-review-linux-${{ matrix.arch }}
+          path: ${{ env.TARBALL }}
+          if-no-files-found: error
+
   build:
+    needs: linux-cli
     runs-on: macos-26
     steps:
       - name: Checkout
@@ -128,6 +172,14 @@ jobs:
               (git commit -m "release: appcast for ${GITHUB_REF_NAME}" && \
                git push origin gh-pages)))
 
+      - name: Collect Linux CLI builds
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/download-artifact@v5
+        with:
+          pattern: prbar-review-linux-*
+          path: build/release/cli
+          merge-multiple: true
+
       # Publish via `gh` directly (not softprops) so we can:
       #   1. preserve hand-written release notes when a draft exists,
       #      otherwise auto-generate from the merged PRs / commits via
@@ -146,13 +198,15 @@ jobs:
           FOOTER=$(cat <<'EOF'
 
           ---
-          Universal (arm64 + x86_64), Developer ID signed and notarized by Apple. Drag PRBar.app into /Applications. Auto-update via [Sparkle appcast](https://lustefaniak.github.io/prbar/appcast.xml).
+          Universal (arm64 + x86_64), Developer ID signed and notarized by Apple. Drag PRBar.app into /Applications. Auto-update via [Sparkle appcast](https://lustefaniak.github.io/prbar/appcast.xml). The `prbar-review` command-line tool ships inside the app (Settings → General → Command-line tool); the `linux` tarballs are the same tool for Linux.
           EOF
           )
           if ! [ -f "$DMG_PATH" ]; then
             echo "::error::DMG not found at $DMG_PATH"
             exit 1
           fi
+          (cd build/release/cli && shasum -a 256 *.tar.gz >SHA256SUMS)
+          ASSETS=("$DMG_PATH" build/release/cli/*.tar.gz build/release/cli/SHA256SUMS)
           # `gh release edit` doesn't have --generate-notes; use the
           # REST endpoint to render notes (Markdown body of merged PRs +
           # contributors since the previous tag) and apply via --notes.
@@ -169,11 +223,11 @@ jobs:
             else
               echo "Preserving existing release notes ($(echo "$EXISTING_BODY" | wc -c | tr -d ' ') chars)."
             fi
-            gh release upload "$TAG" "$DMG_PATH" --clobber
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
             gh release edit "$TAG" --draft=false
           else
             GEN=$(generate_notes)
-            gh release create "$TAG" "$DMG_PATH" \
+            gh release create "$TAG" "${ASSETS[@]}" \
               --title "$TAG" \
               --notes "${GEN}${FOOTER}"
           fi

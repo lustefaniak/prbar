@@ -45,18 +45,11 @@ targets:
       # (and on Linux in CI). Compiled into the same module as the app.
       - path: Sources/PRBarCore
         excludes:
-          # Resources are added explicitly below as folder references;
-          # letting the source glob see them nests a second Resources/
-          # inside the bundle. CLI/ is the headless entry point, built
-          # only by SwiftPM.
+          # Prompts and the schema are compiled in from
+          # EmbeddedResources.swift (bin/gen-resources). CLI/ is the
+          # headless entry point, built only by SwiftPM.
           - Resources/**
           - CLI/**
-      - path: Sources/PRBarCore/Resources/schemas
-        buildPhase: resources
-        type: folder
-      - path: Sources/PRBarCore/Resources/prompts
-        buildPhase: resources
-        type: folder
       - path: Resources/Assets.xcassets
         buildPhase: resources
     dependencies:
@@ -64,6 +57,14 @@ targets:
       - package: NetworkImage
       - package: Sparkle
       - package: Yams
+      # The CLI / server, shipped inside the app as
+      # Contents/MacOS/prbar-review so it is signed, notarized and updated
+      # with it. Settings → "Install command-line tool" symlinks it.
+      - target: prbar-review
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
     # Custom Info.plist — Sparkle keys (SUFeedURL / SUPublicEDKey / SUEnableInstallerLauncherService)
     # are not in Apple's INFOPLIST_KEY_* allow-list, so GENERATE_INFOPLIST_FILE silently drops them.
     # Generating a real plist via XcodeGen is the only way to embed them.
@@ -113,6 +114,36 @@ targets:
           ENABLE_HARDENED_RUNTIME: YES
           OTHER_CODE_SIGN_FLAGS: "--timestamp"
           CODE_SIGN_ENTITLEMENTS: Resources/PRBar.entitlements
+
+  # The same binary SwiftPM builds as `prbar-review`, built here from the
+  # same sources so the app can carry it. PRBarCore is compiled into this
+  # module (no framework), which is why main.swift guards its import.
+  prbar-review:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/PRBarCore
+        excludes:
+          - Resources/**
+      - path: Sources/prbar-review
+    dependencies:
+      - package: Yams
+    settings:
+      base:
+        PRODUCT_NAME: prbar-review
+        PRODUCT_BUNDLE_IDENTIFIER: dev.lustefaniak.prbar.cli
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        # Only ever installed inside the app; without this an archive
+        # also exports it as a product of its own.
+        SKIP_INSTALL: YES
+      configs:
+        Debug:
+          ENABLE_HARDENED_RUNTIME: NO
+        Release:
+          ENABLE_HARDENED_RUNTIME: YES
+          OTHER_CODE_SIGN_FLAGS: "--timestamp"
 
   PRBarTests:
     type: bundle.unit-test

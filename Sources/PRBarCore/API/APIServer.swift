@@ -14,11 +14,15 @@ enum ServerLocation {
 }
 
 enum PRBarBuild {
-    /// The app's marketing version and build number; "dev" for a binary
-    /// built outside the app bundle (SwiftPM, Linux).
+    /// Stamped by the release workflow into Linux builds, which have no
+    /// Info.plist to read. Leave it "dev" in the source.
+    static let stamped = "dev"
+
+    /// The app's marketing version and build number (the bundled CLI reads
+    /// the app's Info.plist too), else the stamped version.
     static var version: String {
         let info = Bundle.main.infoDictionary ?? [:]
-        guard let marketing = info["CFBundleShortVersionString"] as? String else { return "dev" }
+        guard let marketing = info["CFBundleShortVersionString"] as? String else { return stamped }
         if let build = info["CFBundleVersion"] as? String { return "\(marketing) (\(build))" }
         return marketing
     }
