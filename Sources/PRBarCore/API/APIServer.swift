@@ -165,7 +165,7 @@ final class APIServer {
 
     private func broadcast(_ event: PRBarRuntime.Event) {
         guard !subscribers.isEmpty else { return }
-        let message = RPCRequest(id: nil, method: APIMethod.event.rawValue, params: Self.apiEvent(event))
+        let message = RPCRequest(id: nil, method: APIMethod.event.rawValue, params: apiEvent(event))
         guard let line = try? RPCLine.encode(message) else { return }
         for (key, connection) in subscribers where !connection.send(line) {
             subscribers[key] = nil
@@ -318,16 +318,30 @@ final class APIServer {
         }
     }
 
-    static func apiEvent(_ event: PRBarRuntime.Event) -> APIEvent {
+    func apiEvent(_ event: PRBarRuntime.Event) -> APIEvent {
         switch event {
         case .inboxChanged(let prs):
             return APIEvent(kind: .inboxChanged, count: prs.count)
         case .reviewSettled(let nodeId):
-            return APIEvent(kind: .reviewSettled, prNodeId: nodeId)
+            let pr = runtime.poller.prs.first { $0.nodeId == nodeId }
+            return APIEvent(
+                kind: .reviewSettled, prNodeId: nodeId,
+                pr: pr.map { "\($0.nameWithOwner)#\($0.number)" },
+                detail: runtime.queue.reviews[nodeId].map { Self.outcome($0.status) })
         case .actionCompleted(let pr):
             return APIEvent(kind: .actionCompleted, prNodeId: pr.nodeId, pr: "\(pr.nameWithOwner)#\(pr.number)")
         case .configChanged:
             return APIEvent(kind: .configChanged)
+        }
+    }
+
+    nonisolated static func outcome(_ status: ReviewState.Status) -> String {
+        switch status {
+        case .queued: return "queued"
+        case .running: return "running"
+        case .completed(let review): return "\(review.verdict.displayName), \(review.annotations.count) findings"
+        case .failed(let message): return "failed: \(message)"
+        case .skipped(let reason): return "skipped: \(reason.short)"
         }
     }
 
@@ -540,7 +554,11 @@ final class APIServer {
             }
         case .historyReviews:
             return await reply(line, id, HistoryParams.self) { params in
-                Self.limited(self.runtime.reviewLog.entries, params?.limit)
+                var entries = self.runtime.reviewLog.entries
+                if let pr = params?.pr {
+                    entries = entries.filter { Self.matches($0.owner, $0.repo, $0.prNumber, pr) }
+                }
+                return Self.limited(entries, params?.limit)
             }
         case .poll:
             return await reply(line, id, APIEmpty.self) { _ in
@@ -677,19 +695,22 @@ final class APIServer {
             reviewsRunning: states.filter { if case .running = $0.status { return true }; return false }.count,
             configPath: runtime.repoConfigs.fileURL.path,
             configIssue: runtime.repoConfigs.loadIssue,
-            configWarnings: runtime.repoConfigs.warnings
+            configWarnings: runtime.repoConfigs.warnings,
+            agents: runtime.repoConfigs.config.agents
         )
+    }
+
+    nonisolated static func matches(_ owner: String, _ repo: String, _ number: Int, _ ref: PRReference) -> Bool {
+        guard let refOwner = ref.owner, let refRepo = ref.repo, let refNumber = ref.number else { return false }
+        return owner.caseInsensitiveCompare(refOwner) == .orderedSame
+            && repo.caseInsensitiveCompare(refRepo) == .orderedSame
+            && number == refNumber
     }
 
     private func findPR(_ ref: PRReference) -> InboxPR? {
         let prs = runtime.poller.prs
         if let nodeId = ref.nodeId { return prs.first { $0.nodeId == nodeId } }
-        guard let owner = ref.owner, let repo = ref.repo, let number = ref.number else { return nil }
-        return prs.first {
-            $0.owner.caseInsensitiveCompare(owner) == .orderedSame
-                && $0.repo.caseInsensitiveCompare(repo) == .orderedSame
-                && $0.number == number
-        }
+        return prs.first { Self.matches($0.owner, $0.repo, $0.number, ref) }
     }
 
     // MARK: - Encoding

@@ -59,7 +59,7 @@ final class MCPSessionTests: XCTestCase {
     func testToolsList() async throws {
         let reply = try await send(MCPSession(socketURL: socketURL), #"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#)
         let tools = try XCTUnwrap((reply["result"] as? [String: Any])?["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.compactMap { $0["name"] as? String }, ["status", "list_inbox", "get_review", "run_review", "get_history"])
+        XCTAssertEqual(tools.compactMap { $0["name"] as? String }, ["status", "list_inbox", "get_review", "run_review", "get_history", "watch"])
         for tool in tools {
             XCTAssertEqual((tool["inputSchema"] as? [String: Any])?["type"] as? String, "object", "\(tool)")
         }
@@ -186,6 +186,70 @@ final class MCPSessionTests: XCTestCase {
         let state = ReviewState(prNodeId: pr.nodeId, headSha: pr.headSha, triggeredAt: Date(), status: .completed(review), costUsd: 0)
         let text = MCPText.review(ReviewResult(pr: pr, review: state))
         XCTAssertEqual(text.components(separatedBy: "Leaks the handle").count - 1, 1, text)
+    }
+
+    func testWatchWaitsForTheReviewToFinish() async throws {
+        let runtime = try startServer()
+        runtime.queue.providerLookup = { _ in StubReviewProvider() }
+        let session = MCPSession(socketURL: socketURL)
+        let idle = try await call(session, "watch", #"{"timeout_seconds":1}"#)
+        XCTAssertFalse(idle.isError, idle.text)
+        XCTAssertTrue(idle.text.contains("Nothing happened in 1s"), idle.text)
+        let cursor = try XCTUnwrap(Int(String(idle.text.components(separatedBy: "cursor: ").last?.prefix { $0.isNumber } ?? "")), idle.text)
+
+        // The review may finish before the next watch starts: the cursor
+        // is what keeps that from being missed.
+        _ = try await call(session, "run_review", #"{"pr":"o/r#1"}"#)
+        let news = try await call(session, "watch", #"{"pr":"o/r#1","since":\#(cursor),"timeout_seconds":30}"#)
+        XCTAssertTrue(news.text.contains("review finished: o/r#1, Approve"), news.text)
+        XCTAssertTrue(news.text.contains("Next: get_review"), news.text)
+        await session.close()
+    }
+
+    func testArgumentTypesAreChecked() async throws {
+        try startServer()
+        let session = MCPSession(socketURL: socketURL)
+        let flag = try await call(session, "get_history", #"{"limit":true}"#)
+        XCTAssertTrue(flag.text.contains("limit must be an integer"), flag.text)
+        let number = try await call(session, "get_review", #"{"pr":"o/r#1","full":1}"#)
+        XCTAssertTrue(number.text.contains("full must be a boolean"), number.text)
+        let none = try await call(session, "status", #"{"verbose":true}"#)
+        XCTAssertTrue(none.text.contains("status takes no arguments"), none.text)
+        await session.close()
+    }
+
+    func testStatusSaysWhatAgentsMayDo() async throws {
+        try startServer()
+        let session = MCPSession(socketURL: socketURL)
+        let status = try await call(session, "status")
+        XCTAssertTrue(status.text.contains("agents:     read allow, review allow, post ask, merge off"), status.text)
+        await session.close()
+    }
+
+    func testInboxLeadsWithCountsAndSaysWhenEmpty() async throws {
+        try startServer()
+        let session = MCPSession(socketURL: socketURL)
+        let inbox = try await call(session, "list_inbox")
+        XCTAssertTrue(inbox.text.hasPrefix("1 pull request: 1 awaiting the user's review, 0 authored by the user."), inbox.text)
+        XCTAssertFalse(inbox.text.contains("https://"), "no per-PR URLs: \(inbox.text)")
+        let mine = try await call(session, "list_inbox", #"{"filter":"mine"}"#)
+        XCTAssertEqual(mine.text, "The user has no open pull requests.")
+        await session.close()
+    }
+
+    func testLongTextIsCutShortUnlessFull() {
+        let pr = RuntimeFixtures.requestedPR()
+        let long = String(repeating: "word ", count: 400)
+        let review = Self.review(annotations: [
+            DiffAnnotation(path: "a.swift", lineStart: 1, lineEnd: 1, severity: .warning, title: "Long", body: long),
+        ])
+        let state = ReviewState(prNodeId: pr.nodeId, headSha: pr.headSha, triggeredAt: Date(), status: .completed(review), costUsd: 0)
+        let short = MCPText.review(ReviewResult(pr: pr, review: state))
+        XCTAssertTrue(short.contains("[cut short]"), short)
+        XCTAssertTrue(short.contains("get_review with full true"), short)
+        let whole = MCPText.review(ReviewResult(pr: pr, review: state), full: true)
+        XCTAssertFalse(whole.contains("[cut short]"))
+        XCTAssertGreaterThan(whole.count, long.count)
     }
 
     static func review(annotations: [DiffAnnotation]) -> AggregatedReview {

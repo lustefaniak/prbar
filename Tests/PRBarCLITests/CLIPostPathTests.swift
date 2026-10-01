@@ -120,7 +120,7 @@ private actor Recorder {
 
 /// Never spawns anything. A CLI test that reached the real provider would
 /// make a paid API call on every run.
-private struct StubReviewProvider: ReviewProvider {
+struct StubReviewProvider: ReviewProvider {
     let id = "claude"
     let displayName = "Claude (stub)"
 

@@ -174,6 +174,8 @@ struct ServerStatus: Codable, Sendable, Equatable {
     var configPath: String
     var configIssue: String?
     var configWarnings: [String]
+    /// What `agents:` lets coding agents do. Nil from an older server.
+    var agents: AgentPolicy?
 
     /// Problems a client should surface, empty when everything is fine.
     var problems: [String] {
@@ -309,6 +311,10 @@ struct PopoverVisibility: Codable, Sendable {
 struct HistoryParams: Codable, Sendable {
     /// Newest first; nil means all of it.
     var limit: Int?
+    /// Only this PR's entries (`owner`, `repo`, `number`; a `nodeId` is
+    /// ignored). A server older than this field returns every PR's, so a
+    /// client still checks what comes back.
+    var pr: PRReference?
 }
 
 /// Something changed in the server. Clients refresh what they show from
