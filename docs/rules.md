@@ -119,6 +119,33 @@ For each stage:
    they did before you had rules. So rules can take over one case at a time: a
    rule for bots, a rule for docs, the settings for everything else.
 
+### Adjusting the settings instead of restating them: `below`
+
+Every rule can read `below`: what would be decided if no rule matched, with
+`below.action` and `below.reason`. That lets a rule change one thing about the
+settings' answer and leave the rest to them. Auto-approve stays on in
+`prbar.yaml`, but only for the people on a list:
+
+```yaml
+# rules/decide/10-approve-only-oldest.yaml
+name: approve-only-oldest
+rule:
+  match:
+    - condition: below.action == "approve" && !(pr.author in lists.oldest)
+      output:
+        rule: approve-only-oldest
+        action: share
+```
+
+```yaml
+# rules/lists.yaml
+oldest: [alice, bob]
+```
+
+A PR the settings would approve gets its findings shared instead when its
+author isn't on the list. Every other case matches nothing, so the settings
+decide as usual, thresholds and all, without a rule repeating them.
+
 A `select` rule's `review` overrides the settings that would skip (drafts, AI
 review off, title patterns). Two checks still follow it, because they only stop
 a repeat: a review that already failed at this commit, and a verdict some PRBar
@@ -388,6 +415,24 @@ rule:
         reason: untouched for 30 days
 ```
 
+A group of rules for some repositories only: nest them under one condition,
+so the scope is written once. When none of the inner rules matches, the next
+file decides:
+
+```yaml
+# rules/select/45-acme.yaml
+name: acme
+rule:
+  match:
+    - condition: glob(pr.repo, lists.acme_repos)
+      rule:
+        match:
+          - condition: pr.draft
+            output: {rule: acme-drafts, action: skip}
+          - condition: has(pr.idle) && pr.idle > duration("336h")
+            output: {rule: acme-stale, action: skip, reason: untouched for two weeks}
+```
+
 Review only what your team was asked about, not requests through other teams:
 
 ```yaml
@@ -612,6 +657,17 @@ with, without the part that needs commit history.
 | `subreviews` | list | per monorepo folder: `path` (empty for the root), `verdict`, `confidence`, `findings` (a count) |
 | `prior` | list | reviews of earlier commits of this PR that were never posted, oldest first: `head_sha`, `verdict`, `confidence`, `findings` (a count), `max_severity` |
 
+### `below`
+
+What would be decided if no rule matched: the `prbar.yaml` settings' answer.
+
+| Field | Type | |
+|---|---|---|
+| `action` | string | `select`: `review` or `skip`. `decide`: `approve`, `request_changes`, `comment`, `share`, `flag` or `none` |
+| `reason` | string | why, in words, when there is a reason: why the settings skip, or why they post nothing (for example `confidence 0.72 below Claude threshold 0.85`) |
+| `rule` | string | the id of the rule that decided, empty when the settings did |
+| `source` | string | `settings` |
+
 ### Others
 
 | Name | Type | |
@@ -658,6 +714,9 @@ reviewed nor skipped, usually for a second or two.
   `math.least`, …).
 - `glob(path, pattern)`: the patterns `repoGlobs` use. `*` stays inside one
   folder, `**` crosses folders, `?` is one character.
+- `glob(path, patterns)`: a list of patterns, read the way `repoGlobs` reads
+  them: later patterns win, and `!` excludes. `glob(pr.repo, lists.team_repos)`
+  with `team_repos: ["acme/*", "!acme/legacy"]` in `lists.yaml`.
 - `touches(pr.files, pattern)`: some changed file matches.
 - `only(pr.files, pattern)`: every changed file matches. False when there are
   no files, so "only docs changed" never holds for a change PRBar knows nothing

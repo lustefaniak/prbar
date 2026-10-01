@@ -32,9 +32,10 @@ enum AutoReviewPlan {
         now: Date = Date(),
         onRule: ((DecideFacts, RuleDecision?) -> Void)? = nil
     ) -> Outcome {
+        let settings = AutoReviewPolicy.evaluate(pr: pr, review: review, providerId: providerId, config: config)
         if let rules = config.rules, !rules.decide.isEmpty || rules.failure != nil {
             let facts = decideFacts(pr: pr, review: review, providerId: providerId, diffText: diffText,
-                                    prior: prior, lazy: lazy, rules: rules, now: now)
+                                    prior: prior, lazy: lazy, rules: rules, now: now, below: .settings(settings))
             // The diff is in hand, so the files are never pending here.
             do {
                 switch try rules.decide(facts, pending: lazy.pending.subtracting([.files])) {
@@ -52,7 +53,7 @@ enum AutoReviewPlan {
                 return .none(reason: "a decide rule failed, nothing posted: \(error)")
             }
         }
-        switch AutoReviewPolicy.evaluate(pr: pr, review: review, providerId: providerId, config: config) {
+        switch settings {
         case .skip(let reason):
             return .none(reason: reason)
 
@@ -128,12 +129,12 @@ enum AutoReviewPlan {
 
     static func decideFacts(
         pr: InboxPR, review: AggregatedReview, providerId: ProviderID, diffText: String,
-        prior: [PriorReview], lazy: LazyFactValues, rules: Rules, now: Date
+        prior: [PriorReview], lazy: LazyFactValues, rules: Rules, now: Date, below: BelowFacts? = nil
     ) -> DecideFacts {
         DecideFacts(
             pr: ChangeFacts(pr, now: now, files: FileFacts.list(diff: diffText), committers: lazy.committers),
             review: ReviewFacts(review, provider: providerId, prior: prior),
-            viewer: pr.viewerLogin, lists: rules.lists, now: now)
+            viewer: pr.viewerLogin, lists: rules.lists, now: now, below: below)
     }
 
     /// What a decide rule asked for, made concrete.

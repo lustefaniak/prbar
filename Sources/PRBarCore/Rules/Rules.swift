@@ -144,9 +144,16 @@ struct Rules: Sendable {
         try Environment(
             .enumConstants(AnnotationSeverity.self, namespace: "severity", options: coding),
             .library(.strings), .library(.lists), .library(.sets), .library(.math),
-            .function("glob", .overload("glob_string_string") { (value: String, pattern: String) in
-                GlobMatcher.match(pattern, value)
-            }),
+            .function(
+                "glob",
+                .overload("glob_string_string") { (value: String, pattern: String) in
+                    GlobMatcher.match(pattern, value)
+                },
+                // Any of the patterns, later ones winning and `!` excluding,
+                // as `repoGlobs` reads them: glob(pr.repo, lists.team_repos).
+                .overload("glob_string_list") { (value: String, patterns: [String]) in
+                    GlobMatcher.anyMatch(patterns, value)
+                }),
             // Whether any changed file matches. Taking the list rather than
             // `pr` keeps a rule waiting on the files alone, not on every
             // lazy fact of the PR. The list arrives as a plain value since

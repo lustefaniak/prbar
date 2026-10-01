@@ -829,7 +829,9 @@ final class APIServer {
         let now = Date()
         var lazy = await selectFacts(pr, config: config)
         var select = config.rules.map {
-            $0.explainSelect(ReviewAdmission.selectFacts(pr: pr, rules: $0, trigger: .reviewRequested, lazy: lazy, now: now))
+            $0.explainSelect(ReviewAdmission.selectFacts(
+                pr: pr, rules: $0, trigger: .reviewRequested, lazy: lazy, now: now,
+                below: ReviewAdmission.below(pr: pr, config: config)))
         } ?? "No rules in \(runtime.repoConfigs.rulesURL.path); the repo settings in prbar.yaml decide."
         select += "\n\nOutcome: " + Self.describe(
             ReviewAdmission.evaluate(pr: pr, config: config, existing: existing, lazy: lazy, now: now))
@@ -844,7 +846,9 @@ final class APIServer {
             let rules = config.rules.map {
                 var facts = AutoReviewPlan.decideFacts(
                     pr: pr, review: review, providerId: existing.providerId, diffText: "",
-                    prior: existing.priorReviews, lazy: lazy, rules: $0, now: now)
+                    prior: existing.priorReviews, lazy: lazy, rules: $0, now: now,
+                    below: .settings(AutoReviewPolicy.evaluate(
+                        pr: pr, review: review, providerId: existing.providerId, config: config)))
                 facts.pr.files = lazy.files
                 return $0.explainDecide(facts)
             } ?? "No rules; the repo settings in prbar.yaml decide."

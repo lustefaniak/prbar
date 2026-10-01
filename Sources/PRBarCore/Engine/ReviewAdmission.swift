@@ -51,7 +51,9 @@ enum ReviewAdmission {
         // still yields to a failure at this commit and to a verdict some
         // PRBar already posted for it: those save repeating a run, they
         // aren't a policy a rule should have to restate.
-        switch selectRule(pr: pr, rules: config.rules, trigger: trigger, lazy: lazy, now: now, onRule: onRule) {
+        let settings = settingsSkip(pr: pr, config: config)
+        let below = settings.map { BelowFacts.settings("skip", reason: $0.detail) } ?? .settings("review")
+        switch selectRule(pr: pr, rules: config.rules, trigger: trigger, lazy: lazy, now: now, below: below, onRule: onRule) {
         case .needs(let facts)?:
             return .needs(facts)
         case let .skip(id, reason)?:
@@ -61,28 +63,34 @@ enum ReviewAdmission {
         case nil:
             break
         }
+        if let settings { return .skip(settings) }
+        return sharedGates(pr: pr, existing: existing) ?? .review
+    }
+
+    /// The prbar.yaml settings' answer: why they skip, or nil to review.
+    private static func settingsSkip(pr: InboxPR, config: ResolvedRepoConfig) -> ReviewState.SkipReason? {
         // Also a poller filter, but the poller is not the only entry
         // point: the CLI is handed a PR directly and never polls.
         if TitleExclusion.isExcluded(title: pr.title, patterns: config.excludeTitlePatterns) {
-            return .skip(.titleExcluded)
+            return .titleExcluded
         }
         // Repo opted out of AI triage entirely → ReadinessCoordinator
         // marks these as "ready" immediately on the human side.
         if !config.aiReviewEnabled {
-            return .skip(.aiReviewDisabled)
+            return .aiReviewDisabled
         }
         // Drafts churn a lot and reviewing them burns cost on
         // intermediate state.
         if pr.isDraft && !config.reviewDrafts {
-            return .skip(.draftNotReviewed)
+            return .draftNotReviewed
         }
         // Another human already reviewed, so it's covered. Inbox
         // visibility is governed separately by the opt-in hide filter
         // (same predicate); manual Re-run still works regardless.
         if config.skipAIIfReviewedByOthers && pr.isReviewedByOthers {
-            return .skip(.reviewedByOthers)
+            return .reviewedByOthers
         }
-        return sharedGates(pr: pr, existing: existing) ?? .review
+        return nil
     }
 
     private enum SelectOutcome {
@@ -92,19 +100,24 @@ enum ReviewAdmission {
     }
 
     static func selectFacts(
-        pr: InboxPR, rules: Rules, trigger: RuleTrigger, lazy: LazyFactValues, now: Date
+        pr: InboxPR, rules: Rules, trigger: RuleTrigger, lazy: LazyFactValues, now: Date, below: BelowFacts? = nil
     ) -> SelectFacts {
         SelectFacts(
             pr: ChangeFacts(pr, now: now, files: lazy.files, committers: lazy.committers),
-            trigger: trigger, viewer: pr.viewerLogin, lists: rules.lists, now: now)
+            trigger: trigger, viewer: pr.viewerLogin, lists: rules.lists, now: now, below: below)
+    }
+
+    /// What `below` is for `pr`: the settings' answer.
+    static func below(pr: InboxPR, config: ResolvedRepoConfig) -> BelowFacts {
+        settingsSkip(pr: pr, config: config).map { BelowFacts.settings("skip", reason: $0.detail) } ?? .settings("review")
     }
 
     private static func selectRule(
-        pr: InboxPR, rules: Rules?, trigger: RuleTrigger, lazy: LazyFactValues, now: Date,
+        pr: InboxPR, rules: Rules?, trigger: RuleTrigger, lazy: LazyFactValues, now: Date, below: BelowFacts,
         onRule: ((SelectFacts, RuleSelection?) -> Void)?
     ) -> SelectOutcome? {
         guard let rules, !rules.select.isEmpty else { return nil }
-        let facts = selectFacts(pr: pr, rules: rules, trigger: trigger, lazy: lazy, now: now)
+        let facts = selectFacts(pr: pr, rules: rules, trigger: trigger, lazy: lazy, now: now, below: below)
         do {
             let selection: RuleSelection
             switch try rules.select(facts, pending: lazy.pending) {

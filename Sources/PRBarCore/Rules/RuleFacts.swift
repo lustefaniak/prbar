@@ -284,6 +284,39 @@ struct ReviewFacts: Codable, Sendable, Hashable, CELNamedType {
     }
 }
 
+/// What the layers under a rule would decide: the prbar.yaml settings, or a
+/// lower layer of rules. A rule reads it to adjust that answer instead of
+/// restating it: `below.action == "approve" && !(pr.author in lists.oldest)`.
+struct BelowFacts: Codable, Sendable, Hashable, CELNamedType {
+    static let celTypeName = "prbar.Below"
+
+    /// `select`: `review` or `skip`. `decide`: `approve`, `request_changes`,
+    /// `comment`, `share`, `flag` or `none`.
+    var action: String
+    /// Why, in words; empty when there is nothing to say.
+    var reason: String
+    /// The id of the rule that decided, empty when the settings did.
+    var rule: String
+    /// `settings`, or `repo` for the reviewed repository's rules.
+    var source: String
+
+    static func settings(_ action: String, reason: String = "") -> BelowFacts {
+        BelowFacts(action: action, reason: reason, rule: "", source: "settings")
+    }
+
+    /// What the settings' auto-review decision means as an action.
+    static func settings(_ decision: AutoReviewPolicy.Decision) -> BelowFacts {
+        switch decision {
+        case .approve: return .settings("approve")
+        case .share: return .settings("share")
+        case .deny(.requestChanges): return .settings("request_changes")
+        case .deny(.comment): return .settings("comment")
+        case .deny(.flagOnly), .deny(.off): return .settings("flag")
+        case .skip(let reason): return .settings("none", reason: reason)
+        }
+    }
+}
+
 /// Why a review is being considered.
 enum RuleTrigger: String, Codable, Sendable, Hashable, CaseIterable {
     /// A poll found the viewer requested on it.
@@ -303,6 +336,8 @@ struct SelectFacts: Codable, Sendable, Hashable {
     /// `rules/lists.yaml`, e.g. `pr.author in lists.trusted`.
     var lists: [String: [String]]
     var now: Date
+    /// Null only in records written before it existed.
+    var below: BelowFacts?
 }
 
 /// The `decide` stage: what to post once the review is in.
@@ -312,6 +347,7 @@ struct DecideFacts: Codable, Sendable, Hashable {
     var viewer: String
     var lists: [String: [String]]
     var now: Date
+    var below: BelowFacts?
 }
 
 /// Severities compare by rank in rules (`f.severity >= severity.warning`),
