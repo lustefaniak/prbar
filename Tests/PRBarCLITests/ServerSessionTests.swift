@@ -263,6 +263,38 @@ final class ServerSessionTests: XCTestCase {
     /// A write the server never got is a visible failure with Retry, not a
     /// silent drop: the UI clears the review draft and moves on only once
     /// the server has accepted it.
+    /// A hand edit to prbar.yaml landing while a Settings edit is on its
+    /// way: the whole-config write must not erase it, and Settings must end
+    /// up showing the file rather than its own stale copy.
+    func testHandEditDuringASettingsWriteWins() async throws {
+        let (runtime, server) = makeServer(prs: [])
+        let session = ServerSession(client: server.connectInProcess())
+        defer { session.stop() }
+        try await session.start()
+        let model = session.config
+        let file = runtime.repoConfigs.fileURL
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        var edited = false
+        server._beforeHandling = { method in
+            guard method == .setConfig, !edited else { return }
+            edited = true
+            try? "defaults:\n  maxCostUsdPerSubreview: 42\n".write(to: file, atomically: true, encoding: .utf8)
+            runtime.repoConfigs.reloadIfChanged()
+        }
+        model.defaults.reviewTimeoutSeconds = 123
+        try await until { model.defaults.maxCostUsdPerSubreview == 42 }
+        XCTAssertEqual(runtime.repoConfigs.defaults.maxCostUsdPerSubreview, 42, "the hand edit survived")
+        XCTAssertNotEqual(runtime.repoConfigs.defaults.reviewTimeoutSeconds, 123, "the stale write was refused")
+        XCTAssertTrue(model.loadIssue?.contains("changed while you were editing") ?? false, model.loadIssue ?? "")
+
+        // The next edit is based on the file's state and saves.
+        model.defaults.reviewTimeoutSeconds = 321
+        try await until { runtime.repoConfigs.defaults.reviewTimeoutSeconds == 321 }
+        XCTAssertEqual(runtime.repoConfigs.defaults.maxCostUsdPerSubreview, 42)
+        try await until { model.loadIssue == nil }
+    }
+
     func testWritesThatNeverReachTheServerAreShownAsFailed() async throws {
         let (runtime, server) = makeServer(prs: [RuntimeFixtures.requestedPR()])
         let posted = PostedHeads()
