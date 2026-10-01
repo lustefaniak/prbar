@@ -43,3 +43,29 @@ final class ServeCommandTests: XCTestCase {
         XCTAssertNotNil(runtime.queue.reviews["PR_1"])
     }
 }
+
+@MainActor
+final class RuntimeMaintenanceTests: XCTestCase {
+    /// Whatever hosts the runtime evicts old history: before this ran in
+    /// the runtime, only the app did, so a long-running `serve` kept
+    /// everything forever.
+    func testMaintenanceEvictsOldHistoryAndCaches() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prbar-maint-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let runtime = RuntimeFixtures.make(dir, ownsAutomation: false)
+        let pr = RuntimeFixtures.requestedPR()
+        let now = Date()
+        runtime.actionLog.record(kind: ActionLogKind.allCases[0], outcome: .success, pr: pr,
+                                 timestamp: now.addingTimeInterval(-StoreRetention.actionLog - 86400))
+        runtime.actionLog.record(kind: ActionLogKind.allCases[0], outcome: .success, pr: pr, timestamp: now)
+        let cache = dir.appendingPathComponent("cache")
+        let diffs = FileCache(directory: cache.appendingPathComponent("diffs"))
+        diffs.write("old", Data("x".utf8))
+        let old = now.addingTimeInterval(-StoreRetention.diffCache - 86400)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: diffs.url(for: "old").path)
+
+        await runtime.runMaintenance(cacheDirectory: cache, now: now)
+        XCTAssertEqual(runtime.actionLog.entries.count, 1)
+        XCTAssertNil(diffs.read("old"))
+    }
+}

@@ -136,6 +136,7 @@ enum ServeCommand {
             return 2
         }
 
+        runtime.startMaintenance(cacheDirectory: env.cacheDirectory)
         log("serving \(socketURL.path); config \(configURL.path); state in \(env.stateDirectory.path)")
         await stop.wait()
         log("stopping")

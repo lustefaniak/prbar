@@ -184,7 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
-        let n = runtime.notifier, q = runtime.queue
+        let n = runtime.notifier
         self.runtime = runtime
         super.init()
         let server = APIServer(runtime: runtime, holder: "PRBar.app")
@@ -222,12 +222,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.notificationRouter = router
         // In screenshot mode we deliberately skip the OS auth prompt
         // (would steal focus from the very window we're trying to
-        // capture) and the worktree GC pass (no real repos exist).
+        // capture). The worktree sweep is part of the runtime's
+        // maintenance pass, started at launch.
         if !ScreenshotMode.isActive {
             Task { await n.requestAuthorization() }
-            if let mgr = q.checkoutManager {
-                Task { await mgr.sweepStaleWorktrees() }
-            }
         }
     }
 
@@ -307,14 +305,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let preShown = Self.findExistingSettingsWindow() {
             preShown.orderOut(nil)
         }
-        // Evict aged-out history and cache files. The cache sweep is a
-        // directory walk, so it runs detached.
         if !ScreenshotMode.isActive {
-            let cacheDirectory = AppPaths.cache
-            Task.detached { StoreRetention.sweepCaches(in: cacheDirectory) }
-            let now = Date()
-            actionLog.prune(before: now.addingTimeInterval(-StoreRetention.actionLog))
-            reviewLog.prune(before: now.addingTimeInterval(-StoreRetention.reviewLog))
+            runtime.startMaintenance(cacheDirectory: AppPaths.cache)
         }
 
         installStatusItem()

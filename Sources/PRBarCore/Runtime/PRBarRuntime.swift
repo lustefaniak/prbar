@@ -87,6 +87,31 @@ final class PRBarRuntime {
         wire()
     }
 
+    // MARK: - Maintenance
+
+    private var maintenanceTask: Task<Void, Never>?
+
+    /// Evicts aged-out history and cache files and stale review worktrees,
+    /// now and then once a day. Any host runs it: a server that stays up for
+    /// weeks needs it as much as an app relaunched every morning.
+    func startMaintenance(cacheDirectory: URL, every interval: Duration = .seconds(24 * 60 * 60)) {
+        maintenanceTask?.cancel()
+        maintenanceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runMaintenance(cacheDirectory: cacheDirectory)
+                try? await Task.sleep(for: interval)
+            }
+        }
+    }
+
+    func runMaintenance(cacheDirectory: URL, now: Date = Date()) async {
+        // A directory walk, so off the main actor.
+        await Task.detached { StoreRetention.sweepCaches(in: cacheDirectory, now: now) }.value
+        actionLog.prune(before: now.addingTimeInterval(-StoreRetention.actionLog))
+        reviewLog.prune(before: now.addingTimeInterval(-StoreRetention.reviewLog))
+        await queue.checkoutManager?.sweepStaleWorktrees()
+    }
+
     private func wire() {
         let p = poller, q = queue, a = actionQueue, rc = repoConfigs, coord = readiness
 
