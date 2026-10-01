@@ -109,8 +109,9 @@ final class ServerSessionTests: XCTestCase {
     }
 
     /// "Reload diff" is invalidate then load, back to back, and must reach
-    /// `gh` again. (The ordering it depends on is pinned deterministically
-    /// by `testCommandsAreSentInOrderBeforeReturning`.)
+    /// `gh` exactly once more. Order on the wire is pinned by
+    /// `testCommandsAreSentInOrderBeforeReturning`, order in the server by
+    /// `RequestOrderTests`.
     func testReloadingADiffFetchesItAgain() async throws {
         let fetches = PostedHeads()
         let (_, server) = makeServer(prs: [RuntimeFixtures.requestedPR()]) { _, _, _ in
@@ -125,13 +126,15 @@ final class ServerSessionTests: XCTestCase {
         session.diffs.ensureLoaded(for: pr)
         try await until { if case .loaded(let hunks) = session.diffs.status(for: pr) { return !hunks.isEmpty }; return false }
 
-        for _ in 0..<5 {
-            session.diffs.invalidate(for: pr)
-            session.diffs.ensureLoaded(for: pr)
-        }
+        let before = await fetches.heads.count
+        XCTAssertEqual(before, 1)
+        session.diffs.invalidate(for: pr)
+        session.diffs.ensureLoaded(for: pr)
+        try await until { await fetches.heads.count == 2 }
         try await until { if case .loaded = session.diffs.status(for: pr) { return true }; return false }
-        let count = await fetches.heads.count
-        XCTAssertGreaterThanOrEqual(count, 2, "the reload must reach gh again")
+        try await Task.sleep(for: .milliseconds(100))
+        let after = await fetches.heads.count
+        XCTAssertEqual(after, 2, "one reload, one fetch: neither skipped (load before invalidate) nor doubled")
     }
 
     /// Commands leave in the order the UI issues them, before `send`

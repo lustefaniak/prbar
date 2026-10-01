@@ -91,13 +91,9 @@ final class InProcessServerEnd: APIConnection, @unchecked Sendable {
 extension APIServer {
     /// A client connected to this server inside the same process.
     func connectInProcess() -> APIClient {
-        let server = self
         let end = InProcessServerEnd()
-        let transport = InProcessClientTransport(serverEnd: end) { line in
-            Task { @MainActor in
-                if let reply = await server.handle(line, from: end) { end.send(reply) }
-            }
-        }
+        let requests = serve(end)
+        let transport = InProcessClientTransport(serverEnd: end) { line in requests.yield(line) }
         register(end)
         return APIClient(transport: transport)
     }

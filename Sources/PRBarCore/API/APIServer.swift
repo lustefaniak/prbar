@@ -122,18 +122,29 @@ final class APIServer {
         connections[ObjectIdentifier(connection)] = connection
     }
 
+    /// Handles one connection's requests one at a time, in arrival order.
+    /// A task per line would let a slow request be overtaken by the next
+    /// one, and clients depend on order ("Reload diff" is invalidate then
+    /// load). The cost: a slow request delays that client's later ones.
+    func serve(_ connection: any APIConnection) -> AsyncStream<Data>.Continuation {
+        let (lines, sink) = AsyncStream<Data>.makeStream()
+        Task { [weak self] in
+            for await line in lines {
+                guard let self else { return }
+                if let reply = await self.handle(line, from: connection) { connection.send(reply) }
+            }
+        }
+        return sink
+    }
+
     private func attach(_ connection: LineConnection) {
         let key = ObjectIdentifier(connection)
         register(connection)
+        let requests = serve(connection)
         connection.startReading(
-            onLine: { line in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    let reply = await self.handle(line, from: connection)
-                    if let reply { connection.send(reply) }
-                }
-            },
+            onLine: { line in requests.yield(line) },
             onClose: {
+                requests.finish()
                 Task { @MainActor [weak self] in
                     self?.connections[key] = nil
                     self?.subscribers[key] = nil
