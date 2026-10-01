@@ -45,6 +45,9 @@ final class APIServer {
     var onShutdown: (@MainActor () -> Void)?
     /// The process this server exits with, reported in `hello`.
     var exitsWith: Int32?
+    /// Tests only: runs at the start of every request, so a test can make
+    /// one request slower than the next.
+    var _beforeHandling: (@MainActor (APIMethod) async -> Void)?
 
     private var socketURL: URL?
     private let stopFlag = StopFlag()
@@ -324,6 +327,7 @@ final class APIServer {
             return Self.failure(id: header.id, RPCError(code: RPCError.methodNotFound, message: "unknown method \(name)"))
         }
         let id = header.id
+        await _beforeHandling?(method)
         if method != .hello, let connection, let client = clients[ObjectIdentifier(connection)],
            client.agent == true, let denial = Self.denial(of: method, by: client, under: runtime.repoConfigs.config.agents) {
             PRBarLog.lifecycle.notice("API: refused \(method.rawValue, privacy: .public) from \(client.client, privacy: .public)")
