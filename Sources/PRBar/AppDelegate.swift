@@ -178,18 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
-        let p = runtime.poller, n = runtime.notifier, q = runtime.queue, a = runtime.actionQueue
-        // Daily cost cap — both presence (toggle) and value persist
-        // separately so the cap survives flipping the toggle off/on. A
-        // machine-local preference, so it stays in UserDefaults.
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: "dailyCostCapEnabled") != nil {
-            q.dailyCostCapEnabled = defaults.bool(forKey: "dailyCostCapEnabled")
-        }
-        let storedCap = defaults.double(forKey: "dailyCostCapUsd")
-        if storedCap > 0 {
-            q.dailyCostCap = storedCap
-        }
+        let n = runtime.notifier, q = runtime.queue
         self.runtime = runtime
         super.init()
         let server = APIServer(runtime: runtime, holder: "PRBar.app")
@@ -206,12 +195,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // inbox; `start` then subscribes and follows updates.
         session.apply(server.snapshot())
         self.session = session
+        // Machine-local preferences live in UserDefaults and are handed to
+        // the server. The cost cap's presence and value persist separately
+        // so the cap survives flipping the toggle off and on.
+        let defaults = UserDefaults.standard
+        let storedCap = defaults.double(forKey: "dailyCostCapUsd")
+        session.setPreferences(PreferencesParams(
+            dailyCostCapEnabled: defaults.object(forKey: "dailyCostCapEnabled").map { _ in defaults.bool(forKey: "dailyCostCapEnabled") },
+            dailyCostCapUsd: storedCap > 0 ? storedCap : nil,
+            notifyAuthoredDrafts: !MyDraftHandling.current(defaults).silencesAuthoredDrafts))
         Task { try? await session.start() }
         // Install the notification action router *before* requesting
         // authorization so the registered categories are visible the
         // first time macOS shows the auth prompt — otherwise the user
         // may grant permission on a stale category set with no buttons.
-        let router = NotificationActionRouter(poller: p, actionQueue: a)
+        let router = NotificationActionRouter(inbox: session.inbox, actions: session.actions)
         router.install()
         self.notificationRouter = router
         // In screenshot mode we deliberately skip the OS auth prompt
@@ -535,10 +533,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.action = #selector(statusItemClicked(_:))
     }
 
-    /// Observe `poller.prs` via the Observation framework — every time
+    /// Observe the inbox via the Observation framework — every time
     /// the inbox changes, recompute the badge count. Re-arms itself
     /// inside the change handler since `withObservationTracking` only
     /// fires once per registration.
+    private var lastSentNotifyDrafts: Bool?
+
     private func startBadgeObservation() {
         refreshBadge()
         observePollerOnce()
@@ -546,7 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func observePollerOnce() {
         withObservationTracking {
-            _ = poller.prs
+            _ = inbox.prs
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -568,10 +568,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ciFailed:       defaults.object(forKey: Self.kBadgeCIFailed) as? Bool ?? true,
             includeAuthoredDrafts: !draftHandling.silencesAuthoredDrafts
         )
-        // Keep the poller's notification gate in lockstep so author-side
+        // Keep the server's notification gate in lockstep so author-side
         // CI / ready-to-merge events agree with the badge.
-        poller.includeAuthoredDrafts = !draftHandling.silencesAuthoredDrafts
-        let title = BadgeCounter.title(prs: poller.prs, sources: sources)
+        let notifyDrafts = !draftHandling.silencesAuthoredDrafts
+        if notifyDrafts != lastSentNotifyDrafts {
+            lastSentNotifyDrafts = notifyDrafts
+            session.setPreferences(PreferencesParams(notifyAuthoredDrafts: notifyDrafts))
+        }
+        let title = BadgeCounter.title(prs: inbox.prs, sources: sources)
         guard let button = statusItem?.button else { return }
         // A leading hair-space (U+200A) keeps the count from kissing the
         // glyph; AppKit doesn't auto-pad image+title status items.

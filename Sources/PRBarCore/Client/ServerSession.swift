@@ -83,6 +83,10 @@ final class ServerSession {
         }
     }
 
+    func setPreferences(_ preferences: PreferencesParams) {
+        send(.setPreferences, preferences)
+    }
+
     /// While the user is looking at PRBar, the server holds notifications.
     func setPopoverVisible(_ visible: Bool) {
         send(.setPopoverVisible, PopoverVisibility(visible: visible))
@@ -152,11 +156,11 @@ final class ReviewQueueModel {
     /// setting one hands it to the server.
     @ObservationIgnored
     var dailyCostCapEnabled = true {
-        didSet { session?.send(.setCostCap, CostCapParams(enabled: dailyCostCapEnabled)) }
+        didSet { session?.send(.setPreferences, PreferencesParams(dailyCostCapEnabled: dailyCostCapEnabled)) }
     }
     @ObservationIgnored
     var dailyCostCap: Double = 0 {
-        didSet { session?.send(.setCostCap, CostCapParams(usd: dailyCostCap)) }
+        didSet { session?.send(.setPreferences, PreferencesParams(dailyCostCapUsd: dailyCostCap)) }
     }
 
     @ObservationIgnored

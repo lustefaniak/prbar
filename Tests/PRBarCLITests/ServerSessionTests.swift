@@ -68,7 +68,7 @@ final class ServerSessionTests: XCTestCase {
 
     func testUserOnlyControlsAreRefusedToAgents() {
         let agent = HelloParams(client: "mcp:x", protocolVersion: 1, agent: true)
-        for method in [APIMethod.autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setCostCap, .checkoutPrune] {
+        for method in [APIMethod.autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setPreferences, .checkoutPrune] {
             XCTAssertEqual(APIServer.denial(of: method, by: agent, under: AgentPolicy())?.code, RPCError.notPermitted, method.rawValue)
         }
     }

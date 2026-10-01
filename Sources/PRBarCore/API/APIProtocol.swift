@@ -32,7 +32,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case autoReviewUndo = "autoReview.undo"
     case autoReviewPostNow = "autoReview.postNow"
     case autoReviewDismissFlagged = "autoReview.dismissFlagged"
-    case setCostCap = "costCap.set"
+    case setPreferences = "preferences.set"
     case checkoutUsage = "checkouts.usage"
     case checkoutPrune = "checkouts.prune"
     case fullReview = "history.review"
@@ -245,11 +245,14 @@ struct ActionTarget: Codable, Sendable {
     var prNodeId: String
 }
 
-/// The daily cost cap is a machine-local preference the front end owns and
-/// hands to the server; nil leaves a field as it is.
-struct CostCapParams: Codable, Sendable {
-    var enabled: Bool?
-    var usd: Double?
+/// Machine-local preferences the front end owns (in its own settings, not
+/// `prbar.yaml`) and hands to the server. Nil leaves a field as it is.
+struct PreferencesParams: Codable, Sendable {
+    var dailyCostCapEnabled: Bool?
+    var dailyCostCapUsd: Double?
+    /// Whether drafts you authored raise CI and ready-to-merge
+    /// notifications.
+    var notifyAuthoredDrafts: Bool?
 }
 
 struct CheckoutUsage: Codable, Sendable {

@@ -427,10 +427,11 @@ final class APIServer {
                 self.runtime.queue.dismissAllFlaggedDenials()
                 return APIEmpty()
             }
-        case .setCostCap:
-            return await reply(line, id, CostCapParams.self) { params in
-                if let enabled = params?.enabled { self.runtime.queue.dailyCostCapEnabled = enabled }
-                if let usd = params?.usd { self.runtime.queue.dailyCostCap = max(0, usd) }
+        case .setPreferences:
+            return await reply(line, id, PreferencesParams.self) { params in
+                if let enabled = params?.dailyCostCapEnabled { self.runtime.queue.dailyCostCapEnabled = enabled }
+                if let usd = params?.dailyCostCapUsd { self.runtime.queue.dailyCostCap = max(0, usd) }
+                if let drafts = params?.notifyAuthoredDrafts { self.runtime.poller.includeAuthoredDrafts = drafts }
                 return APIEmpty()
             }
         case .checkoutUsage:
@@ -495,7 +496,7 @@ final class APIServer {
             capability = .post
         case .shutdown:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
-        case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setCostCap, .checkoutUsage, .checkoutPrune,
+        case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setPreferences, .checkoutUsage, .checkoutPrune,
              .setConfig, .clearReviewHistory, .setPopoverVisible:
             return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
         }

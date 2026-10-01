@@ -38,12 +38,12 @@ enum NotificationUserInfoKey {
 /// main actor — so the router hops to MainActor before dispatching.
 @MainActor
 final class NotificationActionRouter: NSObject {
-    private weak var poller: PRPoller?
-    private weak var actionQueue: ActionQueue?
+    private weak var inbox: InboxModel?
+    private weak var actions: ActionQueueModel?
 
-    init(poller: PRPoller, actionQueue: ActionQueue) {
-        self.poller = poller
-        self.actionQueue = actionQueue
+    init(inbox: InboxModel, actions: ActionQueueModel) {
+        self.inbox = inbox
+        self.actions = actions
         super.init()
     }
 
@@ -116,12 +116,12 @@ final class NotificationActionRouter: NSObject {
     }
 
     private func mergeAllReadyPRs(payload: Payload) {
-        guard let poller, let actionQueue else { return }
+        guard let inbox, let actions else { return }
         guard !payload.nodeIds.isEmpty else {
             openPrimaryURL(payload: payload)
             return
         }
-        let byId = Dictionary(uniqueKeysWithValues: poller.prs.map { ($0.nodeId, $0) })
+        let byId = Dictionary(uniqueKeysWithValues: inbox.prs.map { ($0.nodeId, $0) })
         for id in payload.nodeIds {
             guard let pr = byId[id] else { continue }
             guard EventDeriver.isReadyToMerge(pr) else { continue }
@@ -129,7 +129,7 @@ final class NotificationActionRouter: NSObject {
             // fall back to whatever the repo allows. The queue's per-PR
             // dedup absorbs a double tap on "Merge all".
             let method = preferredMergeMethod(for: pr) ?? .squash
-            actionQueue.enqueue(pr, kind: .merge(method: method))
+            actions.enqueue(pr, kind: .merge(method: method))
         }
     }
 
