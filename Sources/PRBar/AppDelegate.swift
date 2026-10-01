@@ -121,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // time we're here we're already the only PRBar.
         let runtime: PRBarRuntime
         var socketURL: URL?
+        var importsHistory: URL?
         if ScreenshotMode.isActive {
             // Screenshot launch path: never poll, never call gh, never
             // touch the network or the user's files. Inert services seeded
@@ -168,20 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 socketURL = ServerLocation.socketURL(stateDirectory: env.stateDirectory)
             }
             if !Self.isHostingTests {
-                let log = runtime.actionLog, rlog = runtime.reviewLog
-                LegacyHistoryMigration.migrateInBackground(
-                    historyDirectory: env.historyDirectory,
-                    progress: { [weak log, weak rlog] p in
-                        log?.importStatus = .running(p)
-                        rlog?.importStatus = .running(p)
-                    },
-                    finished: { [weak log, weak rlog] error in
-                        log?.reload()
-                        rlog?.reload()
-                        log?.importStatus = error.map { .failed($0) }
-                        rlog?.importStatus = error.map { .failed($0) }
-                    }
-                )
+                importsHistory = env.historyDirectory
             }
         }
         let n = runtime.notifier
@@ -211,6 +199,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dailyCostCapEnabled: defaults.object(forKey: "dailyCostCapEnabled").map { _ in defaults.bool(forKey: "dailyCostCapEnabled") },
             dailyCostCapUsd: storedCap > 0 ? storedCap : nil,
             notifyAuthoredDrafts: !MyDraftHandling.current(defaults).silencesAuthoredDrafts))
+        // The one-time import of history from before v0.15.0. It reads the
+        // old SwiftData store, which only the app can open, and reports to
+        // whichever server hosts the logs.
+        if let historyDirectory = importsHistory {
+            LegacyHistoryMigration.migrateInBackground(
+                historyDirectory: historyDirectory,
+                progress: { [weak session] p in session?.reportHistoryImport(.running(p), finished: false) },
+                finished: { [weak session] error in
+                    session?.reportHistoryImport(error.map { .failed($0) }, finished: true)
+                }
+            )
+        }
         let showsNotifications = !ScreenshotMode.isActive
         Task { try? await session.start(deliverer: showsNotifications ? UNNotificationDeliverer() : nil) }
         // Install the notification action router *before* requesting

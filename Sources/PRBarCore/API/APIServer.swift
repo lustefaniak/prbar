@@ -402,6 +402,18 @@ final class APIServer {
                 self.runtime.reviewLog.clearAll()
                 return APIEmpty()
             }
+        case .reportHistoryImport:
+            return await reply(line, id, HistoryImportState.self) { params in
+                self.runtime.actionLog.importStatus = params?.actions
+                self.runtime.reviewLog.importStatus = params?.reviews
+                return APIEmpty()
+            }
+        case .reloadHistory:
+            return await reply(line, id, APIEmpty.self) { _ in
+                self.runtime.actionLog.reload()
+                self.runtime.reviewLog.reload()
+                return APIEmpty()
+            }
         case .setPopoverVisible:
             return await reply(line, id, PopoverVisibility.self) { params in
                 guard let params else { throw Self.missingParams }
@@ -527,7 +539,7 @@ final class APIServer {
         case .shutdown:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
         case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setPreferences, .checkoutUsage, .checkoutPrune,
-             .setConfig, .clearReviewHistory, .setPopoverVisible:
+             .setConfig, .clearReviewHistory, .setPopoverVisible, .reportHistoryImport, .reloadHistory:
             return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
         }
         switch policy[capability] {

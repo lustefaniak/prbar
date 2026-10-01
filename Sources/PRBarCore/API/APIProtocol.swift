@@ -37,6 +37,8 @@ enum APIMethod: String, CaseIterable, Sendable {
     case checkoutPrune = "checkouts.prune"
     case fullReview = "history.review"
     case clearReviewHistory = "history.clearReviews"
+    case reportHistoryImport = "history.importStatus"
+    case reloadHistory = "history.reload"
     case setPopoverVisible = "ui.popoverVisible"
     case historyActions = "history.actions"
     case historyReviews = "history.reviews"

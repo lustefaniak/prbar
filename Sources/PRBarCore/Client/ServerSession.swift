@@ -97,6 +97,14 @@ final class ServerSession {
         }
     }
 
+    /// The one-time import of pre-file history runs in the app (it reads
+    /// the old SwiftData store); the server shows its progress and reloads
+    /// the logs when it's done.
+    func reportHistoryImport(_ status: HistoryImportStatus?, finished: Bool) {
+        send(.reportHistoryImport, HistoryImportState(actions: status, reviews: status))
+        if finished { send(.reloadHistory, APIEmpty()) }
+    }
+
     func setPreferences(_ preferences: PreferencesParams) {
         send(.setPreferences, preferences)
     }

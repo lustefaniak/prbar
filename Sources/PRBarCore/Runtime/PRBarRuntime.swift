@@ -203,6 +203,28 @@ struct RuntimeEnvironment {
 
     var historyDirectory: URL { stateDirectory.appendingPathComponent("history") }
 
+    /// Writes the files a runtime would otherwise read through the legacy
+    /// fallbacks (config, review state, inbox, notified SHAs), so a server
+    /// with no fallbacks of its own, such as one in another process, starts
+    /// from the same state. Leaves any file that exists alone.
+    @MainActor
+    func materializeLegacyFiles() {
+        let fm = FileManager.default
+        if let legacyConfig, !fm.fileExists(atPath: configFile.path) {
+            // Constructing the store migrates: it writes what `legacyConfig`
+            // returns as the new file.
+            _ = RepoConfigStore(fileURL: configFile, lastGoodURL: lastGoodConfig, legacy: legacyConfig)
+        }
+        func write<Value: Codable & Sendable>(_ name: String, _ fallback: (@Sendable () -> Value?)?) {
+            let file = JSONStateFile<Value>(url: stateDirectory.appendingPathComponent(name))
+            guard !fm.fileExists(atPath: file.url.path), let value = fallback?() else { return }
+            file.save(value)
+        }
+        write("review-state.json", legacyReviewStates)
+        write("inbox.json", legacyInbox)
+        write("notified.json", legacyNotified)
+    }
+
     /// The XDG locations the CLI and the app share by default.
     static func standard(configFile: URL = ConfigLocation.userConfigURL()) -> RuntimeEnvironment {
         RuntimeEnvironment(

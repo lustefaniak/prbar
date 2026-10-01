@@ -69,3 +69,32 @@ final class RuntimeMaintenanceTests: XCTestCase {
         XCTAssertNil(diffs.read("old"))
     }
 }
+
+@MainActor
+final class LegacyMaterializationTests: XCTestCase {
+    /// A server in another process has no legacy fallbacks, so whatever the
+    /// app could only read from the old store has to be on disk first.
+    func testWritesMissingFilesFromTheFallbacksOnce() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prbar-legacy-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        var env = RuntimeEnvironment(
+            configFile: dir.appendingPathComponent("config/prbar.yaml"), lastGoodConfig: nil,
+            stateDirectory: dir.appendingPathComponent("state"), cacheDirectory: dir.appendingPathComponent("cache"))
+        var legacy = PRBarConfig()
+        legacy.defaults.maxCostUsdPerSubreview = 7
+        env.legacyConfig = { legacy }
+        env.legacyInbox = { [RuntimeFixtures.requestedPR()] }
+        env.legacyNotified = { ["PR_1": "abc123"] }
+
+        env.materializeLegacyFiles()
+        XCTAssertEqual(try ConfigFile.load(url: env.configFile).config.defaults.maxCostUsdPerSubreview, 7)
+        XCTAssertEqual(SnapshotCache(stateDirectory: env.stateDirectory).load().map(\.nodeId), ["PR_1"])
+        XCTAssertEqual(FileNotifiedSHAStore(stateDirectory: env.stateDirectory).load(), ["PR_1": "abc123"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: env.stateDirectory.appendingPathComponent("review-state.json").path),
+                       "no fallback, no file")
+
+        env.legacyInbox = { [] }
+        env.materializeLegacyFiles()
+        XCTAssertEqual(SnapshotCache(stateDirectory: env.stateDirectory).load().count, 1, "an existing file is left alone")
+    }
+}
