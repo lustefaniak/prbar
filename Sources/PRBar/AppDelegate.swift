@@ -120,7 +120,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runtime = Self.screenshotRuntime()
         } else if hosting == .external {
             // The server is `prbar-review serve` (the copy inside this app),
-            // started on demand and left running when the app quits. It
+            // started on demand and tied to this process: it exits when the
+            // app does, crash included. A server the user started with
+            // `prbar-review serve` is used as it is and left running. It
             // can't read the old SwiftData store, so whatever only that
             // store held is written to files first.
             let env = RuntimeEnvironment.app()
@@ -128,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             importsHistory = env.historyDirectory
             external = ServerLauncher.Executable(
                 path: CommandLineTool.bundledBinary.path,
+                arguments: ["serve", "--exit-with", String(getpid())],
                 log: env.stateDirectory.appendingPathComponent("server.log"))
         } else {
             let env = RuntimeEnvironment.app()
@@ -281,6 +284,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// own process there is nothing to flush: it keeps running.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         server?.stop()
+        // A server this app started goes with it; asked now so it stops at
+        // once rather than when it notices the app is gone.
+        if case .connected(let hello) = session?.connection, hello.exitsWith == getpid() {
+            session?.send(.shutdown, APIEmpty())
+        }
         session?.stop()
         guard let queue = runtime?.queue else { return .terminateNow }
         Task { @MainActor in

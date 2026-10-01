@@ -43,6 +43,8 @@ final class APIServer {
     /// How a client's `shutdown` request is carried out. Nil refuses it:
     /// the app hosting the server is not something a CLI should quit.
     var onShutdown: (@MainActor () -> Void)?
+    /// The process this server exits with, reported in `hello`.
+    var exitsWith: Int32?
 
     private var socketURL: URL?
     private let stopFlag = StopFlag()
@@ -341,7 +343,7 @@ final class APIServer {
                 return HelloResult(
                     minProtocolVersion: APIVersion.supported.lowerBound,
                     maxProtocolVersion: APIVersion.supported.upperBound,
-                    holder: self.holder, build: self.build, pid: getpid())
+                    holder: self.holder, build: self.build, pid: getpid(), exitsWith: self.exitsWith)
             }
         case .status:
             return await reply(line, id, APIEmpty.self) { _ in self.status() }

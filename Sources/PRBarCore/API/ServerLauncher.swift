@@ -37,8 +37,9 @@ enum ServerLauncher {
     }
 
     /// Connects, starting `executable` first when nobody listens. With
-    /// `expectedBuild`, a server of ours from another build (the old one,
-    /// still running after an update) is asked to exit and replaced.
+    /// `expectedBuild`, a server an app started from another build (the old
+    /// one, after an update) is asked to exit and replaced. A server someone
+    /// started on purpose is used as it is, whatever its build.
     static func connect(
         socketURL: URL,
         client: String,
@@ -49,7 +50,9 @@ enum ServerLauncher {
     ) async throws -> ServerConnection.Connected {
         do {
             let connected = try await ServerConnection.connect(socketURL: socketURL, client: client)
-            guard let expectedBuild, connected.hello.build != expectedBuild, connected.hello.holder == holder else {
+            guard let expectedBuild, connected.hello.build != expectedBuild,
+                  connected.hello.holder == holder, connected.hello.exitsWith != nil
+            else {
                 return connected
             }
             PRBarLog.lifecycle.notice("server build \(connected.hello.build, privacy: .public) is not \(expectedBuild, privacy: .public); restarting it")
@@ -121,6 +124,15 @@ enum ServerLauncher {
         let result = posix_spawn(&pid, executable.path, &actions, &attributes, argv, envp)
         guard result == 0 else { throw LaunchError.spawn(executable.path, result) }
         PRBarLog.lifecycle.notice("started PRBar server pid \(pid, privacy: .public)")
+        // Reap it when it exits (replaced, crashed, or told to stop), or it
+        // stays a zombie for as long as this process runs.
+        let child = pid
+        let reaper = Thread {
+            var status: Int32 = 0
+            while waitpid(child, &status, 0) == -1 && errno == EINTR {}
+        }
+        reaper.name = "prbar-server-reaper"
+        reaper.start()
     }
 
     #if canImport(Darwin)

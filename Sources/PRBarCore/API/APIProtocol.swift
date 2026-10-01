@@ -142,6 +142,9 @@ struct HelloResult: Codable, Sendable, Equatable {
     var holder: String
     var build: String
     var pid: Int32
+    /// Set when the server lives and dies with that process (one the app
+    /// started); nil for a server someone started on purpose.
+    var exitsWith: Int32?
 
     var protocolVersions: ClosedRange<Int> { minProtocolVersion...maxProtocolVersion }
 }

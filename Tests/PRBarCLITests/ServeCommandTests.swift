@@ -10,6 +10,8 @@ final class ServeCommandTests: XCTestCase {
         XCTAssertNil(ServeCommand.Options(args: ["--daily-cap", "-1"]))
         XCTAssertNil(ServeCommand.Options(args: ["--config"]))
         XCTAssertNil(ServeCommand.Options(args: ["owner/repo#1"]))
+        XCTAssertEqual(ServeCommand.Options(args: ["--exit-with", "4242"])?.exitWith, 4242)
+        XCTAssertNil(ServeCommand.Options(args: ["--exit-with", "zero"]))
     }
 
     /// One automating PRBar per state directory: a second holder is

@@ -5,9 +5,10 @@ enum ServerHosting: Equatable {
     /// Inside the app, as it always has. The default.
     case inProcess
     /// `prbar-review serve`, the copy bundled in the app, as a process of
-    /// its own that keeps running when the app quits. Opt-in while it is
-    /// new: `defaults write dev.lustefaniak.prbar serverHosting external`,
-    /// or `PRBAR_SERVER=external` in the environment.
+    /// its own that starts and stops with the app (or one the user started
+    /// with `prbar-review serve`, which the app leaves alone). Opt-in while
+    /// it is new: `defaults write dev.lustefaniak.prbar serverHosting
+    /// external`, or `PRBAR_SERVER=external` in the environment.
     case external
 
     static let defaultsKey = "serverHosting"

@@ -1,8 +1,8 @@
 # Review rules redesign
 
 Status: draft, working notes. Phases 1 and 2 (core split, files instead of SwiftData, `prbar.yaml`) shipped in
-v0.15.0. Client-server (phase 3) on `main` since: 3.1 to 3.4 done, 3.5 done except the LaunchAgent (the app can
-run against a separate `prbar-review serve` it starts itself, opt-in), 3.6 not started.
+v0.15.0. Client-server (phase 3) on `main` since: 3.1 to 3.5 done (the app can run against a separate
+`prbar-review serve` it starts and stops itself, opt-in), 3.6 next.
 
 Goal: replace the per-repo settings model with a rule-based configuration that lives in files, is shared by
 the app and the `prbar-review` CLI, can be exported/imported/versioned, and can explain for any repo + PR which
@@ -92,7 +92,7 @@ a view reaching into a queue doesn't build.
 
 | Surface | Role |
 |---|---|
-| `prbar-review serve` | The server. On macOS the binary bundled in the app, started by a LaunchAgent; on Linux a systemd user unit or started on demand. |
+| `prbar-review serve` | The server. Started by the app (the copy bundled in it) and stopped with it, or started on purpose from a shell, a systemd unit, or on demand by a CLI call. |
 | PRBar.app | UI only. Renders what the server reports, sends commands, delivers macOS notifications for the server's "notify" events. |
 | `prbar-review <pr>` | Asks the server to review one PR and streams progress back as the same NDJSON on stdout. brahmanda sees no difference. |
 | `prbar-review mcp` | Translates MCP calls into API calls. |
@@ -129,18 +129,22 @@ The app, the CLI and the MCP adapter all reach the server through one function i
 The socket is bound only after the runtime is wired, so accepting a connection means the server is ready. The
 socket is mode 0600: filesystem permissions are the authentication.
 
-Keeping it running:
+Who runs it, decided 2026-10-01: **PRBar runs while the app runs, or when started on purpose.** No LaunchAgent,
+no second login item, no "keeps reviewing after you quit the app" by default.
 
-- **macOS:** the app registers the bundled server as a LaunchAgent (`SMAppService.agent`) with `KeepAlive`, so
-  launchd restarts it after a crash and it keeps working when the app quits.
-- **Linux:** `prbar-review install-service` writes a systemd user unit for `serve`.
-- **Neither** (dev builds, a CI box): `ensureServer()` starts one. A server started that way exits after a
-  stretch with no clients and no automation configured, so a one-off `prbar-review <pr>` doesn't leave a daemon
-  behind.
+- **With the app:** the app starts the bundled server with `serve --exit-with <app pid>`. The server exits when
+  the app does, crash included, and the app also asks it to shut down on quit so it stops at once. If it
+  crashes while the app runs, the app's reconnect loop starts a new one. "Start at login" stays what it is: it
+  opens the app, which starts the server.
+- **On purpose:** `prbar-review serve` from a shell, a systemd user unit on Linux, a tmux pane. The app connects
+  to such a server and leaves it alone: never asks it to exit, never replaces it, whatever its build. `hello`
+  says which kind a server is (`exitsWith`).
+- **On demand from the CLI** (3.6): a one-off `prbar-review <pr>` with nothing running starts one that exits
+  after a stretch with no clients, so it doesn't leave a daemon behind.
 
-**After an update** the old server keeps running from memory while the new app starts. The `hello` build check
-catches it: the new client asks the server to exit, waits for the lock to be released, and `ensureServer()` (or
-launchd) starts the new binary. The LaunchAgent plist path doesn't change, so nothing needs re-registering.
+**After an update** the old server keeps running while the new app starts. The `hello` build check catches it for
+a server an app started: the new app asks it to exit, waits for the socket to go quiet, and starts the new
+binary.
 
 Transports:
 
@@ -175,10 +179,6 @@ Costs to accept:
   which a binary inside the bundle reads through `Bundle.main`.
 - `bin/release-dmg` signs it with Developer ID + hardened runtime + `--timestamp` before the app, inside-out, the
   way it re-signs Sparkle's helpers. It is notarized as part of the DMG.
-- LaunchAgent: `Contents/Library/LaunchAgents/dev.lustefaniak.prbar.server.plist`, `BundleProgram` pointing at
-  the helper with the `serve` argument. The app registers it at launch. If the user turns it off in Login Items
-  (`.requiresApproval`), Settings says so and the app falls back to `ensureServer()`. Registration needs the app
-  in `/Applications`, the same as launch at login.
 - "Install command-line tool" in Settings symlinks `~/.local/bin/prbar-review` to the bundled binary, the way VS
   Code installs `code`. A symlink follows Sparkle updates. `claude mcp add prbar -- prbar-review mcp` is then
   the whole MCP setup.
@@ -983,8 +983,9 @@ Main loop it enables: agent working on a PR in Claude Code calls `get_review`, f
       command-line tool". Prompts compiled into the binary; Linux tarballs on every release.
    4. The app's views onto client-side models fed by the event stream, over the in-process transport. The app
       still hosts the runtime; nothing about deployment changes, but every surface goes through the API.
-   5. The LaunchAgent: the app switches to the socket transport and stops hosting the runtime. The views don't
-      change, because step 4 already moved them.
+   5. The app optionally runs the server as a separate process it starts and stops (`serverHosting external`),
+      over the socket transport. The views didn't change, because step 4 already moved them. No LaunchAgent: see
+      "Who runs it" above.
    6. `prbar-review <pr>` as a client of the server, keeping its NDJSON contract; idle exit for servers started
       on demand. Check with the brahmanda setup first.
 4. Split observe / schedule / admit: poller emits events only, gates run at admit time on a fresh fetch.

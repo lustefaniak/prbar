@@ -19,6 +19,9 @@ enum ServeCommand {
         var configPath: String?
         /// Nil keeps the app's default cap; `0` turns it off.
         var dailyCapUsd: Double?
+        /// Exit when this process does: how the app ties a server it
+        /// started to its own lifetime, crash included.
+        var exitWith: Int32?
 
         init?(args: [String]) {
             var i = args.startIndex
@@ -28,6 +31,10 @@ enum ServeCommand {
                     i += 1
                     guard i < args.endIndex else { return nil }
                     configPath = args[i]
+                case "--exit-with":
+                    i += 1
+                    guard i < args.endIndex, let pid = Int32(args[i]), pid > 0 else { return nil }
+                    exitWith = pid
                 case "--daily-cap":
                     i += 1
                     guard i < args.endIndex else { return nil }
@@ -48,7 +55,7 @@ enum ServeCommand {
     static let holder = ServerLauncher.serveHolder
 
     static let usage = """
-    usage: prbar-review serve [--config <path>] [--daily-cap <usd>|off]
+    usage: prbar-review serve [--config <path>] [--daily-cap <usd>|off] [--exit-with <pid>]
 
     Runs the PRBar server headless: polls your GitHub inbox, reviews
     requested PRs, posts what prbar.yaml allows, records history in the
@@ -61,6 +68,8 @@ enum ServeCommand {
                           ~/.config/prbar/prbar.yaml (the app's)
       --daily-cap <usd>   stop starting reviews once today's spend reaches
                           this; `off` disables it (default: 5.00)
+      --exit-with <pid>   stop when that process exits (PRBar.app passes its
+                          own pid for a server it starts)
 
     """
 
@@ -122,6 +131,7 @@ enum ServeCommand {
 
         let stop = StopSignal()
         let server = APIServer(runtime: runtime, holder: holder)
+        server.exitsWith = options.exitWith
         server.relayNotifications(from: relay)
         server.onShutdown = {
             log("shutdown requested by a client")
@@ -137,6 +147,15 @@ enum ServeCommand {
         }
 
         runtime.startMaintenance(cacheDirectory: env.cacheDirectory)
+        if let owner = options.exitWith {
+            Task { @MainActor in
+                while Self.isRunning(owner) {
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                log("process \(owner) exited; stopping with it")
+                stop.fire()
+            }
+        }
         log("serving \(socketURL.path); config \(configURL.path); state in \(env.stateDirectory.path)")
         await stop.wait()
         log("stopping")
@@ -144,6 +163,12 @@ enum ServeCommand {
         await runtime.queue.flushPendingSaves()
         lock.release()
         return 0
+    }
+
+    /// `kill(pid, 0)` delivers nothing and only checks the process exists;
+    /// EPERM means it exists but belongs to someone else.
+    static func isRunning(_ pid: Int32) -> Bool {
+        kill(pid, 0) == 0 || errno == EPERM
     }
 
     static func log(_ message: String) {
