@@ -192,9 +192,12 @@ rule:
 
 The first rule that matches decides; when none does, the settings above decide
 as before. Rules are checked when they load, with the file and line of any
-mistake. `prbar-review rules check` validates them, and `prbar-review rules
-explain <pr>` shows every condition evaluated for a PR, with the facts it read.
-[docs/rules.md](docs/rules.md) lists the stages, the facts and the actions.
+mistake. `prbar-review rules check` validates them, `prbar-review rules explain
+<pr>` shows every condition evaluated for a PR with the facts it read, and every
+decision is recorded with its facts so `prbar-review rules replay <id> --watch`
+can rerun it against your edits as you save them.
+[docs/rules.md](docs/rules.md) is the guide: a first rule, the workflow, a
+cookbook, and every fact and function.
 
 ### Reviewing work before it's a PR
 

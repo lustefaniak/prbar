@@ -8,6 +8,8 @@ enum GraphQLQueries {
     private static let prFieldsFragment: String = """
     fragment PRFields on PullRequest {
       id number title body url isDraft additions deletions changedFiles state
+      createdAt updatedAt authorAssociation
+      labels(first: 20) { nodes { name } }
       repository {
         nameWithOwner
         mergeCommitAllowed
@@ -16,12 +18,12 @@ enum GraphQLQueries {
         autoMergeAllowed
         deleteBranchOnMerge
       }
-      author { login }
+      author { login __typename }
       headRefName baseRefName
       mergeable mergeStateStatus reviewDecision
       autoMergeRequest { enabledBy { login } mergeMethod }
       reviewRequests(first: 10) {
-        nodes { requestedReviewer { ... on User { login } } }
+        nodes { requestedReviewer { ... on User { login } ... on Team { slug } } }
       }
       reviews(last: 20) {
         nodes { state author { login } submittedAt body }

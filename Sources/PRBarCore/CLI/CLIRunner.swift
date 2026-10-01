@@ -18,6 +18,8 @@ struct Runner {
     /// fetch, and that is exactly what needs testing.
     var diffFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
     var reviewThreadFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> ReviewThreadPage
+    /// What rules read only when they need it; nil leaves those facts null.
+    var lazyFactFetcher: LazyFactFetcher? = nil
     /// Posts the staged auto-review. Injected for the same reason as the
     /// fetches — a test must be able to drive the post path without `gh`.
     var reviewPoster: @Sendable (
@@ -66,6 +68,7 @@ struct Runner {
         worker.configResolver = config.resolver()
         config.applyAgentDefaults(to: worker)
         worker.reviewThreadFetcher = reviewThreadFetcher
+        worker.lazyFactFetcher = lazyFactFetcher
         // No human is watching a banner, so the staged batch fires as soon
         // as the run settles.
         worker.undoWindow = 0
@@ -148,7 +151,9 @@ struct Runner {
         } else {
             // Not `enqueue`: this applies the repo gates (AI off, draft,
             // already reviewed by a human, an AI verdict already posted at
-            // this SHA) and records a typed skip reason for each.
+            // this SHA) and records a typed skip reason for each. Facts a
+            // select rule reads lazily are fetched first, so it decides now.
+            _ = await worker.prefetchSelectFacts(pr, config: config.resolver()(pr.owner, pr.repo), trigger: .command)
             worker.enqueueNewReviewRequests(from: [pr], providerOverride: providerOverride, trigger: .command)
         }
 

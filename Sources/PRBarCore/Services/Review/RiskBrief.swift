@@ -162,11 +162,6 @@ struct RiskBrief: Sendable, Hashable, Codable {
         churn: ChurnWindow? = nil,
         markedGenerated: Set<String> = []
     ) -> RiskBrief {
-        let paths = subdiff.filePaths
-        guard !paths.isEmpty else {
-            return RiskBrief(rows: [], changesSourceWithoutAnyTest: false, churnSummary: nil)
-        }
-
         var added: [String: Int] = [:]
         var removed: [String: Int] = [:]
         for hunk in subdiff.hunks {
@@ -177,6 +172,22 @@ struct RiskBrief: Sendable, Hashable, Codable {
                 case .context: break
                 }
             }
+        }
+        return compute(
+            paths: subdiff.filePaths, added: added, removed: removed, churn: churn, markedGenerated: markedGenerated)
+    }
+
+    /// `compute` from per-file line counts, for a file list without its
+    /// diff (GitHub's list of a PR's files).
+    static func compute(
+        paths: [String],
+        added: [String: Int],
+        removed: [String: Int],
+        churn: ChurnWindow? = nil,
+        markedGenerated: Set<String> = []
+    ) -> RiskBrief {
+        guard !paths.isEmpty else {
+            return RiskBrief(rows: [], changesSourceWithoutAnyTest: false, churnSummary: nil)
         }
 
         let classes = Dictionary(uniqueKeysWithValues: paths.map { path in

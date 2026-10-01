@@ -425,9 +425,14 @@ final class APIServer {
                 let pr = try await self.resolvePR(params.pr, fetch: params.fetch ?? false)
                 let force = params.force ?? false
                 let config = self.runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
-                if self.isAgent(connection) {
+                let agent = self.isAgent(connection)
+                // What the select rules read lazily is fetched here, so the
+                // answer below is the decision, not "waiting for facts".
+                let lazy = await self.selectFacts(
+                    pr, config: config, requireRequested: !agent, trigger: agent ? .agent : .command)
+                if agent {
                     if let refusal = Self.agentReviewRefusal(
-                        pr: pr, config: config, existing: self.runtime.queue.reviews[pr.nodeId], force: force) {
+                        pr: pr, config: config, existing: self.runtime.queue.reviews[pr.nodeId], force: force, lazy: lazy) {
                         throw refusal
                     }
                 }
@@ -456,7 +461,7 @@ final class APIServer {
                 } else {
                     pr = try await self.resolvePR(ref, fetch: true)
                 }
-                return self.explanation(of: pr)
+                return await self.explanation(of: pr)
             }
         case .reviewLocal:
             return await reply(line, id, LocalReviewParams.self) { params in
@@ -731,14 +736,17 @@ final class APIServer {
     }
 
     nonisolated static func agentReviewRefusal(
-        pr: InboxPR, config: ResolvedRepoConfig, existing: ReviewState?, force: Bool
+        pr: InboxPR, config: ResolvedRepoConfig, existing: ReviewState?, force: Bool,
+        lazy: LazyFactValues = LazyFactValues()
     ) -> RPCError? {
         func refused(_ message: String) -> RPCError { RPCError(code: RPCError.refused, message: message) }
         if config.excluded {
             return refused("\(pr.nameWithOwner) is excluded from PRBar in prbar.yaml.")
         }
-        switch ReviewAdmission.evaluate(pr: pr, config: config, existing: existing, requireRequested: false, trigger: .agent) {
-        case .review:
+        switch ReviewAdmission.evaluate(
+            pr: pr, config: config, existing: existing, requireRequested: false, trigger: .agent, lazy: lazy
+        ) {
+        case .review, .needs:
             return nil
         case .skip(let reason) where reason == .aiReviewDisabled || reason == .titleExcluded:
             return refused("\(reason.detail) Coding agents can't override that; the user can in prbar.yaml.")
@@ -807,22 +815,42 @@ final class APIServer {
         return PRReference(nodeId: LocalChanges.Snapshot.nodeId(root: try await LocalChanges.root(of: path)))
     }
 
-    func explanation(of pr: InboxPR) -> RulesExplanation {
+    /// Fetches the lazy facts the select rules need for `pr` (each kind
+    /// once per head commit, kept by the worker), and returns them.
+    func selectFacts(
+        _ pr: InboxPR, config: ResolvedRepoConfig, requireRequested: Bool = true, trigger: RuleTrigger = .reviewRequested
+    ) async -> LazyFactValues {
+        await runtime.queue.prefetchSelectFacts(pr, config: config, requireRequested: requireRequested, trigger: trigger)
+    }
+
+    func explanation(of pr: InboxPR) async -> RulesExplanation {
         let config = runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
         let existing = runtime.queue.reviews[pr.nodeId]
+        let now = Date()
+        var lazy = await selectFacts(pr, config: config)
         var select = config.rules.map {
-            $0.explainSelect(SelectFacts(pr: ChangeFacts(pr), trigger: .reviewRequested, viewer: pr.viewerLogin, lists: $0.lists))
+            $0.explainSelect(ReviewAdmission.selectFacts(pr: pr, rules: $0, trigger: .reviewRequested, lazy: lazy, now: now))
         } ?? "No rules in \(runtime.repoConfigs.rulesURL.path); the repo settings in prbar.yaml decide."
-        select += "\n\nOutcome: " + Self.describe(ReviewAdmission.evaluate(pr: pr, config: config, existing: existing))
+        select += "\n\nOutcome: " + Self.describe(
+            ReviewAdmission.evaluate(pr: pr, config: config, existing: existing, lazy: lazy, now: now))
 
         var decide: String?
         if let existing, existing.headSha == pr.headSha, case .completed(let review) = existing.status {
+            // The run's diff is gone; the files come from GitHub instead.
+            if !lazy.fetched.contains(.files) || !lazy.fetched.contains(.committers) {
+                lazy.merge(await runtime.queue.fetchLazyFacts(pr, lazy.pending))
+                runtime.queue.rememberLazyFacts(lazy, for: pr)
+            }
             let rules = config.rules.map {
-                $0.explainDecide(DecideFacts(
-                    pr: ChangeFacts(pr), review: ReviewFacts(review, provider: existing.providerId),
-                    viewer: pr.viewerLogin, lists: $0.lists))
+                var facts = AutoReviewPlan.decideFacts(
+                    pr: pr, review: review, providerId: existing.providerId, diffText: "",
+                    prior: existing.priorReviews, lazy: lazy, rules: $0, now: now)
+                facts.pr.files = lazy.files
+                return $0.explainDecide(facts)
             } ?? "No rules; the repo settings in prbar.yaml decide."
-            let outcome = AutoReviewPlan.plan(pr: pr, review: review, config: config, providerId: existing.providerId, diffText: "")
+            let outcome = AutoReviewPlan.plan(
+                pr: pr, review: review, config: config, providerId: existing.providerId, diffText: "",
+                prior: existing.priorReviews, lazy: lazy, now: now)
             decide = rules + "\n\nOutcome: " + Self.describe(outcome)
         }
         return RulesExplanation(pr: pr, select: select, decide: decide)
@@ -834,6 +862,7 @@ final class APIServer {
         case .skip(let reason): return "skipped. \(reason.detail)"
         case .ignore(.notRequested): return "not reviewed on its own: you aren't a requested reviewer."
         case .ignore(.failedAtCurrentSha): return "not reviewed again: the review of this commit failed."
+        case .needs(let facts): return "undecided: the rules need \(facts.map(\.rawValue).sorted().joined(separator: ", ")), which couldn't be fetched."
         }
     }
 
@@ -841,6 +870,7 @@ final class APIServer {
         switch outcome {
         case .none(let reason): return "nothing posted (\(reason))."
         case .flag: return "flagged in PRBar, nothing posted."
+        case .needs(let facts): return "undecided: the rules need \(facts.map(\.rawValue).sorted().joined(separator: ", ")), which couldn't be fetched."
         case .post(let staged):
             let kind = staged.source == .sharedFindings ? "the findings, as a comment" : staged.action?.rawValue ?? "nothing"
             return "posts \(kind)."
@@ -876,12 +906,14 @@ final class APIServer {
             queue.enqueue(pr, force: params.force ?? false, providerOverride: params.provider)
             return nil
         }
-        switch ReviewAdmission.evaluate(pr: pr, config: config, existing: queue.reviews[pr.nodeId], trigger: .command) {
+        switch ReviewAdmission.evaluate(
+            pr: pr, config: config, existing: queue.reviews[pr.nodeId], trigger: .command, lazy: queue.lazyFacts(for: pr)
+        ) {
         case .ignore(.notRequested):
             return "no review request for the authenticated user (pass --force to review anyway)"
         case .ignore(.failedAtCurrentSha):
             return "PRBar's review of this commit already failed (pass --force to try again)"
-        case .review, .skip:
+        case .review, .skip, .needs:
             queue.enqueueNewReviewRequests(from: [pr], providerOverride: params.provider, trigger: .command)
             return nil
         }

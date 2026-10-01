@@ -16,6 +16,9 @@ enum AutoReviewPlan {
         case post(ReviewQueueWorker.StagedAutoReview)
         /// `autoDeny.action == .flagOnly`: surface in PRBar, post nothing.
         case flag(ReviewQueueWorker.StagedAutoReview)
+        /// A decide rule depends on facts not fetched yet; fetch them and
+        /// plan again.
+        case needs(Set<LazyFact>)
     }
 
     static func plan(
@@ -24,15 +27,24 @@ enum AutoReviewPlan {
         config: ResolvedRepoConfig,
         providerId: ProviderID,
         diffText: String,
-        now: Date = Date()
+        prior: [PriorReview] = [],
+        lazy: LazyFactValues = LazyFactValues(),
+        now: Date = Date(),
+        onRule: ((DecideFacts, RuleDecision?) -> Void)? = nil
     ) -> Outcome {
         if let rules = config.rules, !rules.decide.isEmpty || rules.failure != nil {
-            let facts = DecideFacts(
-                pr: ChangeFacts(pr), review: ReviewFacts(review, provider: providerId),
-                viewer: pr.viewerLogin, lists: rules.lists)
+            let facts = decideFacts(pr: pr, review: review, providerId: providerId, diffText: diffText,
+                                    prior: prior, lazy: lazy, rules: rules, now: now)
+            // The diff is in hand, so the files are never pending here.
             do {
-                if let decision = try rules.decide(facts) {
+                switch try rules.decide(facts, pending: lazy.pending.subtracting([.files])) {
+                case .needs(let needed):
+                    return .needs(needed)
+                case .decided(let decision?):
+                    onRule?(facts, decision)
                     return plan(decision, pr: pr, review: review, diffText: diffText, now: now)
+                case .decided(nil):
+                    onRule?(facts, nil)
                 }
             } catch {
                 // Posting nothing is the side that can't go wrong in public.
@@ -112,6 +124,16 @@ enum AutoReviewPlan {
             )
             return denyAction == .flagOnly ? .flag(staged) : .post(staged)
         }
+    }
+
+    static func decideFacts(
+        pr: InboxPR, review: AggregatedReview, providerId: ProviderID, diffText: String,
+        prior: [PriorReview], lazy: LazyFactValues, rules: Rules, now: Date
+    ) -> DecideFacts {
+        DecideFacts(
+            pr: ChangeFacts(pr, now: now, files: FileFacts.list(diff: diffText), committers: lazy.committers),
+            review: ReviewFacts(review, provider: providerId, prior: prior),
+            viewer: pr.viewerLogin, lists: rules.lists, now: now)
     }
 
     /// What a decide rule asked for, made concrete.

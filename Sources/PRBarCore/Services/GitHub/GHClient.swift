@@ -104,6 +104,31 @@ actor GHClient {
         return result.stdoutString ?? ""
     }
 
+    /// The GitHub logins that authored or committed a PR's commits, each
+    /// once. `web-flow` (GitHub committing for a web edit or merge) and
+    /// commits with no linked account are left out.
+    func fetchCommitters(owner: String, repo: String, number: Int) async throws -> [String] {
+        let rows = try await tsv(
+            "repos/\(owner)/\(repo)/pulls/\(number)/commits",
+            jq: ".[] | [.author.login // \"\", .committer.login // \"\"] | @tsv")
+        var seen: [String] = []
+        for login in rows.flatMap({ $0 }) where !login.isEmpty && login != "web-flow" && !seen.contains(login) {
+            seen.append(login)
+        }
+        return seen
+    }
+
+    private func tsv(_ path: String, jq: String) async throws -> [[String]] {
+        let result = try await ProcessRunner.run(
+            executable: executablePath, args: ["api", "--paginate", path, "--jq", jq])
+        guard result.succeeded else {
+            throw GHError.execFailed(stderr: result.stderrString ?? "", exitCode: result.exitCode)
+        }
+        return (result.stdoutString ?? "").split(separator: "\n").map {
+            $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        }
+    }
+
     /// Fetch the raw log for a single failed Actions job. Uses the
     /// REST endpoint `repos/{o}/{r}/actions/jobs/{jobId}/logs` (302 →
     /// short-lived signed URL → plain text). `gh api` follows the

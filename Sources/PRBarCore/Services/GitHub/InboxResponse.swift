@@ -56,6 +56,16 @@ struct InboxResponse: Decodable, Sendable {
         let reviews: NodeList<Review>
         let comments: NodeList<Comment>
         let commits: NodeList<CommitNode>
+        // Optional so the raw fixtures that predate them still decode.
+        let createdAt: String?
+        let updatedAt: String?
+        /// MEMBER, OWNER, COLLABORATOR, CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, …
+        let authorAssociation: String?
+        let labels: NodeList<Label>?
+    }
+
+    struct Label: Decodable, Sendable {
+        let name: String
     }
 
     struct Repository: Decodable, Sendable {
@@ -69,6 +79,13 @@ struct InboxResponse: Decodable, Sendable {
 
     struct Author: Decodable, Sendable {
         let login: String
+        /// `User`, `Bot`, …; asked for on the PR's author only.
+        let typename: String?
+
+        enum CodingKeys: String, CodingKey {
+            case login
+            case typename = "__typename"
+        }
     }
 
     struct AutoMergeRequest: Decodable, Sendable {
@@ -87,6 +104,8 @@ struct InboxResponse: Decodable, Sendable {
 
     struct ReviewRequester: Decodable, Sendable {
         let login: String?
+        /// Set when a team was requested rather than a person.
+        let slug: String?
     }
 
     struct Review: Decodable, Sendable {

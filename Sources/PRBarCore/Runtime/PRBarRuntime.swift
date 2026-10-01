@@ -109,6 +109,7 @@ final class PRBarRuntime {
         await Task.detached { StoreRetention.sweepCaches(in: cacheDirectory, now: now) }.value
         actionLog.prune(before: now.addingTimeInterval(-StoreRetention.actionLog))
         reviewLog.prune(before: now.addingTimeInterval(-StoreRetention.reviewLog))
+        queue.ruleLog?.prune(before: now.addingTimeInterval(-StoreRetention.ruleLog))
         await queue.checkoutManager?.sweepStaleWorktrees()
     }
 
@@ -263,10 +264,14 @@ extension PRBarRuntime {
             cache: ReviewStateFile(stateDirectory: environment.stateDirectory, fallback: environment.legacyReviewStates),
             failureLogStore: failureLogs
         )
+        queue.ruleLog = .rules(in: environment.historyDirectory)
         queue.reviewThreadFetcher = { owner, repo, number in
             let c = try client ?? GHClient()
             return try await c.fetchReviewThreads(owner: owner, repo: repo, number: number)
         }
+        queue.lazyFactFetcher = LazyFactFetcher(committers: { owner, repo, number in
+            try await (client ?? GHClient()).fetchCommitters(owner: owner, repo: repo, number: number)
+        })
         let poller = PRPoller(
             fetcher: {
                 let c = try client ?? GHClient()

@@ -13,6 +13,9 @@ enum ReviewAdmission {
         case skip(ReviewState.SkipReason)
         /// Not a candidate at all; nothing is recorded.
         case ignore(IgnoreReason)
+        /// A select rule's outcome depends on facts not fetched yet. Fetch
+        /// them and ask again; nothing is recorded meanwhile.
+        case needs(Set<LazyFact>)
     }
 
     enum IgnoreReason: String, Sendable, Hashable {
@@ -36,7 +39,10 @@ enum ReviewAdmission {
         config: ResolvedRepoConfig,
         existing: ReviewState?,
         requireRequested: Bool = true,
-        trigger: RuleTrigger = .reviewRequested
+        trigger: RuleTrigger = .reviewRequested,
+        lazy: LazyFactValues = LazyFactValues(),
+        now: Date = Date(),
+        onRule: ((SelectFacts, RuleSelection?) -> Void)? = nil
     ) -> Decision {
         guard !requireRequested || pr.role == .reviewRequested || pr.role == .both else {
             return .ignore(.notRequested)
@@ -45,7 +51,9 @@ enum ReviewAdmission {
         // still yields to a failure at this commit and to a verdict some
         // PRBar already posted for it: those save repeating a run, they
         // aren't a policy a rule should have to restate.
-        switch selectRule(pr: pr, rules: config.rules, trigger: trigger) {
+        switch selectRule(pr: pr, rules: config.rules, trigger: trigger, lazy: lazy, now: now, onRule: onRule) {
+        case .needs(let facts)?:
+            return .needs(facts)
         case let .skip(id, reason)?:
             return .skip(.rule(id, reason: reason))
         case .review?:
@@ -77,16 +85,37 @@ enum ReviewAdmission {
         return sharedGates(pr: pr, existing: existing) ?? .review
     }
 
-    private enum RuleOutcome {
+    private enum SelectOutcome {
         case review
         case skip(String, String?)
+        case needs(Set<LazyFact>)
     }
 
-    private static func selectRule(pr: InboxPR, rules: Rules?, trigger: RuleTrigger) -> RuleOutcome? {
+    static func selectFacts(
+        pr: InboxPR, rules: Rules, trigger: RuleTrigger, lazy: LazyFactValues, now: Date
+    ) -> SelectFacts {
+        SelectFacts(
+            pr: ChangeFacts(pr, now: now, files: lazy.files, committers: lazy.committers),
+            trigger: trigger, viewer: pr.viewerLogin, lists: rules.lists, now: now)
+    }
+
+    private static func selectRule(
+        pr: InboxPR, rules: Rules?, trigger: RuleTrigger, lazy: LazyFactValues, now: Date,
+        onRule: ((SelectFacts, RuleSelection?) -> Void)?
+    ) -> SelectOutcome? {
         guard let rules, !rules.select.isEmpty else { return nil }
-        let facts = SelectFacts(pr: ChangeFacts(pr), trigger: trigger, viewer: pr.viewerLogin, lists: rules.lists)
+        let facts = selectFacts(pr: pr, rules: rules, trigger: trigger, lazy: lazy, now: now)
         do {
-            guard let selection = try rules.select(facts) else { return nil }
+            let selection: RuleSelection
+            switch try rules.select(facts, pending: lazy.pending) {
+            case .needs(let needed): return .needs(needed)
+            case .decided(nil):
+                onRule?(facts, nil)
+                return nil
+            case .decided(let decided?):
+                onRule?(facts, decided)
+                selection = decided
+            }
             switch selection.action {
             case .review: return .review
             case .skip: return .skip(selection.rule, selection.reason)

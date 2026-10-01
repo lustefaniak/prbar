@@ -1,7 +1,62 @@
 import CEL
+import CELExtensions
 import CELPolicy
 import CELSwift
 import Foundation
+
+/// Facts that cost a GitHub call, fetched only when a rule's outcome
+/// depends on them: the rules first run with them unknown (CEL partial
+/// evaluation), and a result that is still undecided names exactly which
+/// ones it needs.
+enum LazyFact: String, Sendable, Hashable, CaseIterable, Codable {
+    case files
+    case committers
+
+    var pattern: UnknownPattern { UnknownPattern("pr").qualified(by: rawValue) }
+
+    func names(_ trail: AttributeTrail) -> Bool {
+        let text = trail.description
+        let prefix = "pr.\(rawValue)"
+        guard text.hasPrefix(prefix) else { return false }
+        let rest = text.dropFirst(prefix.count)
+        return rest.isEmpty || rest.hasPrefix(".") || rest.hasPrefix("[")
+    }
+}
+
+/// The lazy facts fetched for one head commit. A fact in `fetched` with a
+/// nil value is one whose fetch failed: rules see null, so `has()` is false.
+struct LazyFactValues: Sendable, Hashable {
+    var files: [FileFacts]?
+    var committers: [String]?
+    var fetched: Set<LazyFact> = []
+
+    var pending: Set<LazyFact> { Set(LazyFact.allCases).subtracting(fetched) }
+
+    mutating func merge(_ other: LazyFactValues) {
+        if other.fetched.contains(.files) { files = other.files }
+        if other.fetched.contains(.committers) { committers = other.committers }
+        fetched.formUnion(other.fetched)
+    }
+}
+
+/// Where the lazy facts that aren't in the diff come from: GitHub through
+/// `gh` in production. The files come from the diff the worker fetches.
+struct LazyFactFetcher: Sendable {
+    var committers: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> [String]
+}
+
+extension LazyFactFetcher {
+    init(_ client: GHClient) {
+        self.init(committers: { try await client.fetchCommitters(owner: $0, repo: $1, number: $2) })
+    }
+}
+
+/// A stage's answer: decided (a rule's output, or nil when none matched),
+/// or waiting for lazy facts.
+enum RuleOutcome<Output: Sendable>: Sendable {
+    case decided(Output?)
+    case needs(Set<LazyFact>)
+}
 
 /// The `select` policy's output.
 struct RuleSelection: Codable, Sendable, Hashable, CELNamedType {
@@ -72,6 +127,8 @@ struct Rules: Sendable {
     let decide: [TypedProgram<DecideFacts, RuleDecision?>]
     let lists: [String: [String]]
     let sources: [Source]
+    /// Tells versions of the rules apart, in history records.
+    let digest: String
     /// Set when the rules didn't compile at launch, with nothing earlier to
     /// keep. Nothing is posted on its own until they do: `decide` answers
     /// `none` for every review.
@@ -86,10 +143,39 @@ struct Rules: Sendable {
     static func environment() throws -> Environment {
         try Environment(
             .enumConstants(AnnotationSeverity.self, namespace: "severity", options: coding),
+            .library(.strings), .library(.lists), .library(.sets), .library(.math),
             .function("glob", .overload("glob_string_string") { (value: String, pattern: String) in
                 GlobMatcher.match(pattern, value)
+            }),
+            // Whether any changed file matches. Taking the list rather than
+            // `pr` keeps a rule waiting on the files alone, not on every
+            // lazy fact of the PR. The list arrives as a plain value since
+            // it is null when the fetch failed, which matches nothing.
+            .function("touches", fileListOverload("touches_files_string") { files, pattern in
+                files.contains { GlobMatcher.match(pattern, $0.path) }
+            }),
+            // Whether every changed file matches; false with no files, so
+            // "only docs changed" never holds for a change it knows nothing of.
+            .function("only", fileListOverload("only_files_string") { files, pattern in
+                !files.isEmpty && files.allSatisfy { GlobMatcher.match(pattern, $0.path) }
             })
         )
+    }
+
+    /// `(files, glob) -> bool`, with `files` taken as dyn: it is null when
+    /// fetching it failed, which answers false.
+    private static func fileListOverload(
+        _ id: String, _ test: @escaping @Sendable ([FileFacts], String) -> Bool
+    ) -> FunctionDecl.Option {
+        .overload(id, argumentTypes: [.dyn, .string], resultType: .bool, .binaryBinding { files, pattern in
+            guard case .string(let glob) = pattern else { return .error(EvalError("the pattern must be a string")) }
+            if case .null = files { return .bool(false) }
+            do {
+                return .bool(test(try files.decoded(as: [FileFacts].self, options: coding), glob))
+            } catch {
+                return .error(EvalError("not a list of files: \(error)"))
+            }
+        })
     }
 
     /// - Throws: `ValidationError` with every problem, positioned in its file.
@@ -102,32 +188,58 @@ struct Rules: Sendable {
         }
         return Rules(
             select: try select.map(load), decide: try decide.map(load), lists: lists,
-            sources: select + decide, failure: nil)
+            sources: select + decide, digest: digest(select + decide, lists: lists), failure: nil)
     }
 
     static func unloaded(_ reason: String) -> Rules {
-        Rules(select: [], decide: [], lists: [:], sources: [], failure: reason)
+        Rules(select: [], decide: [], lists: [:], sources: [], digest: "unloaded", failure: reason)
     }
 
     static let unloadedRuleID = "rules-not-loaded"
     /// The id a decision carries when evaluating the rules failed.
     static let errorRuleID = "rule-error"
 
-    /// Nil when no select policy matches.
+    /// Nil when no select policy matches. Every fact must be known.
     func select(_ facts: SelectFacts) throws -> RuleSelection? {
-        for program in select {
-            if let selection = try program.evaluate(facts) { return selection }
-        }
-        return nil
+        guard case .decided(let selection) = try select(facts, pending: []) else { return nil }
+        return selection
     }
 
-    /// Nil when no decide policy matches.
+    /// `pending`: the lazy facts not fetched yet, unknown to the rules.
+    func select(_ facts: SelectFacts, pending: Set<LazyFact>) throws -> RuleOutcome<RuleSelection> {
+        try Self.first(select, facts, pending: pending)
+    }
+
+    /// Nil when no decide policy matches. Every fact must be known.
     func decide(_ facts: DecideFacts) throws -> RuleDecision? {
-        if failure != nil { return RuleDecision(rule: Self.unloadedRuleID, action: .none) }
-        for program in decide {
-            if let decision = try program.evaluate(facts) { return decision }
+        guard case .decided(let decision) = try decide(facts, pending: []) else { return nil }
+        return decision
+    }
+
+    func decide(_ facts: DecideFacts, pending: Set<LazyFact>) throws -> RuleOutcome<RuleDecision> {
+        if failure != nil { return .decided(RuleDecision(rule: Self.unloadedRuleID, action: .none)) }
+        return try Self.first(decide, facts, pending: pending)
+    }
+
+    /// The first policy that matches, in order. A policy whose result
+    /// depends on a pending fact stops the search: a later one can't decide
+    /// before an earlier one has.
+    private static func first<F, O>(
+        _ programs: [TypedProgram<F, O?>], _ facts: F, pending: Set<LazyFact>
+    ) throws -> RuleOutcome<O> {
+        let unknowns = pending.sorted { $0.rawValue < $1.rawValue }.map(\.pattern)
+        for program in programs {
+            switch try program.evaluate(facts, unknowns: unknowns) {
+            case .value(let output?):
+                return .decided(output)
+            case .value(nil):
+                continue
+            case .unknown(let missing):
+                let needed = pending.filter { fact in missing.contains(where: fact.names) }
+                return .needs(needed.isEmpty ? pending : needed)
+            }
         }
-        return nil
+        return .decided(nil)
     }
 }
 
@@ -141,6 +253,14 @@ extension Rules {
     func explainDecide(_ facts: DecideFacts) -> String {
         if let failure { return "The rules didn't load, so nothing is posted on its own:\n\(failure)" }
         return Self.explain(decide, facts, sources: sources, stage: "decide", fallback: "the repo settings in prbar.yaml decide")
+    }
+
+    private static func describeOutput(_ output: Any) -> String {
+        switch output {
+        case let selection as RuleSelection: return describe(selection)
+        case let decision as RuleDecision: return describe(decision)
+        default: return String(describing: output)
+        }
     }
 
     private static func explain<F, O>(
@@ -159,7 +279,7 @@ extension Rules {
             var text = explanation.conditions.isEmpty ? "" : String(describing: explanation).components(separatedBy: "\n").dropLast().joined(separator: "\n")
             switch explanation.result {
             case .success(let output?):
-                text += (text.isEmpty ? "" : "\n") + "matched: \(describe(output))"
+                text += (text.isEmpty ? "" : "\n") + "matched: \(describeOutput(output))"
                 blocks.append(text)
                 return blocks.joined(separator: "\n\n")
             case .success(nil):
@@ -175,21 +295,6 @@ extension Rules {
         return blocks.joined(separator: "\n\n")
     }
 
-    private static func describe(_ output: Any) -> String {
-        switch output {
-        case let selection as RuleSelection:
-            return "\(selection.rule): \(selection.action.rawValue)\(selection.reason.map { " (\($0))" } ?? "")"
-        case let decision as RuleDecision:
-            var parts = [decision.action.rawValue]
-            if let inline = decision.inline { parts.append("inline \(inline)") }
-            if let floor = decision.minSeverity { parts.append("from \(floor.rawValue)") }
-            if let cap = decision.maxComments { parts.append("at most \(cap)") }
-            if decision.attribution == true { parts.append("with attribution") }
-            return "\(decision.rule): \(parts.joined(separator: ", "))"
-        default:
-            return String(describing: output)
-        }
-    }
 }
 
 extension Rules: Hashable {

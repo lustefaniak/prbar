@@ -35,11 +35,11 @@ final class RulesTests: XCTestCase {
     }
 
     static func selectFacts(_ pr: InboxPR) -> SelectFacts {
-        SelectFacts(pr: ChangeFacts(pr), trigger: .reviewRequested, viewer: "me", lists: ["trusted": ["alice"]])
+        SelectFacts(pr: ChangeFacts(pr, now: Date()), trigger: .reviewRequested, viewer: "me", lists: ["trusted": ["alice"]], now: Date())
     }
 
     static func decideFacts(_ pr: InboxPR, _ review: AggregatedReview) -> DecideFacts {
-        DecideFacts(pr: ChangeFacts(pr), review: ReviewFacts(review, provider: .claude), viewer: "me", lists: ["trusted": ["alice"]])
+        DecideFacts(pr: ChangeFacts(pr, now: Date()), review: ReviewFacts(review, provider: .claude), viewer: "me", lists: ["trusted": ["alice"]], now: Date())
     }
 
     static func review(

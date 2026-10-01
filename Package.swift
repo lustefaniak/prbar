@@ -20,9 +20,10 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/jpsim/Yams", from: "6.2.2"),
-        // The rules engine. Pinned to a commit until cel-swift tags 0.1.0;
-        // project.yml pins the same one.
-        .package(url: "https://github.com/lustefaniak/cel-swift", revision: "cded182490b9aa36d55051c4519b2e238ec46f23"),
+        // The rules engine. 0.1.0 plus the explanation fix for conditions
+        // that start with a function call; back to a version once that is
+        // tagged. project.yml pins the same commit.
+        .package(url: "https://github.com/lustefaniak/cel-swift", revision: "d3b65e5bbd3e47e6b5324d4b77aca058831c3084"),
     ],
     targets: [
         .target(
@@ -30,6 +31,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "CEL", package: "cel-swift"),
+                .product(name: "CELExtensions", package: "cel-swift"),
                 .product(name: "CELPolicy", package: "cel-swift"),
                 .product(name: "CELSwift", package: "cel-swift"),
             ],

@@ -41,9 +41,9 @@ final class RuleDirectoryTests: XCTestCase {
         XCTAssertEqual(loaded.select.count, 2)
         XCTAssertEqual(loaded.lists, ["trusted": ["alice"]])
 
-        var pr = ChangeFacts(RuntimeFixtures.requestedPR(isDraft: true))
+        var pr = ChangeFacts(RuntimeFixtures.requestedPR(isDraft: true), now: Date())
         pr.author = "alice"
-        let facts = SelectFacts(pr: pr, trigger: .reviewRequested, viewer: "me", lists: loaded.lists)
+        let facts = SelectFacts(pr: pr, trigger: .reviewRequested, viewer: "me", lists: loaded.lists, now: Date())
         XCTAssertEqual(try loaded.select(facts)?.rule, "first")
         var stranger = facts
         stranger.pr.author = "bob"

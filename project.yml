@@ -29,7 +29,7 @@ packages:
   # The rules engine (Package.swift pins the same commit).
   cel-swift:
     url: https://github.com/lustefaniak/cel-swift
-    revision: cded182490b9aa36d55051c4519b2e238ec46f23
+    revision: d3b65e5bbd3e47e6b5324d4b77aca058831c3084
 
 settings:
   base:
@@ -63,6 +63,8 @@ targets:
       - package: Yams
       - package: cel-swift
         product: CEL
+      - package: cel-swift
+        product: CELExtensions
       - package: cel-swift
         product: CELPolicy
       - package: cel-swift
@@ -140,6 +142,8 @@ targets:
       - package: Yams
       - package: cel-swift
         product: CEL
+      - package: cel-swift
+        product: CELExtensions
       - package: cel-swift
         product: CELPolicy
       - package: cel-swift

@@ -12,6 +12,9 @@ import Foundation
 enum StoreRetention {
     static let reviewLog: TimeInterval = days(90)
     static let actionLog: TimeInterval = days(180)
+    /// Rule evaluations carry the full facts, PR bodies included; a month
+    /// or two is what replaying an edit against recent PRs needs.
+    static let ruleLog: TimeInterval = days(60)
     static let failureLogCache: TimeInterval = days(30)
     static let diffCache: TimeInterval = days(14)
 

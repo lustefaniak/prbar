@@ -356,6 +356,11 @@ final class ReviewQueueWorker {
 
     /// Fetches a PR's review threads. Injected so tests don't shell out;
     /// nil disables the resolve-on-triage path entirely.
+    /// Fetches the facts rules read only when they need them (changed
+    /// files, commit authors). Nil leaves them null, so `has()` is false.
+    @ObservationIgnored
+    var lazyFactFetcher: LazyFactFetcher?
+
     @ObservationIgnored
     var reviewThreadFetcher: (@Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> ReviewThreadPage)?
 
@@ -766,9 +771,43 @@ final class ReviewQueueWorker {
     ) {
         pruneReviews(keeping: prs)
         for pr in prs {
-            let cfg = configResolver(pr.owner, pr.repo)
-            switch ReviewAdmission.evaluate(pr: pr, config: cfg, existing: reviews[pr.nodeId], trigger: trigger) {
-            case .review:
+            admit(pr, providerOverride: providerOverride, trigger: trigger)
+        }
+    }
+
+    /// One PR through admission. A select rule waiting on lazy facts gets
+    /// them fetched, then the PR comes through here again; nothing is
+    /// recorded meanwhile, and a second poll while the fetch runs doesn't
+    /// start another.
+    private func admit(_ pr: InboxPR, providerOverride: ProviderID?, trigger: RuleTrigger) {
+        let cfg = configResolver(pr.owner, pr.repo)
+        let lazy = lazyFacts(for: pr)
+        let onRule: (SelectFacts, RuleSelection?) -> Void = { [weak self] facts, selection in
+            guard let self, let rules = cfg.rules else { return }
+            self.recordRuleEvaluation(
+                .select, pr: pr, rules: rules, fetched: lazy.fetched, rule: selection?.rule,
+                outcome: Rules.describe(selection), select: facts)
+        }
+        switch ReviewAdmission.evaluate(
+            pr: pr, config: cfg, existing: reviews[pr.nodeId], trigger: trigger, lazy: lazy, onRule: onRule
+        ) {
+        case .needs(let facts):
+            let key = "\(pr.nodeId)@\(pr.headSha)"
+            guard !lazyFetching.contains(key) else { return }
+            lazyFetching.insert(key)
+            PRBarLog.triage.debug("auto-enqueue fetching facts=\(facts.map(\.rawValue).sorted().joined(separator: ","), privacy: .public) pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let values = await self.fetchLazyFacts(pr, facts, waitingOnFailure: false)
+                self.lazyFetching.remove(key)
+                self.storeLazyFacts(values, for: pr)
+                // A fact that failed waits out its backoff; the poll after
+                // that tries again, so a rate limit holds the PR back
+                // rather than deciding it on a missing fact.
+                guard values.fetched.isSuperset(of: facts) else { return }
+                self.admit(pr, providerOverride: providerOverride, trigger: trigger)
+            }
+        case .review:
                 enqueue(pr, providerOverride: providerOverride)
             case .skip(let reason):
                 let tag = Self.logTag(reason)
@@ -781,9 +820,145 @@ final class ReviewQueueWorker {
             case .ignore(.failedAtCurrentSha):
                 PRBarLog.triage.debug("auto-enqueue skip reason=failed-at-current-sha pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public)")
             case .ignore(.notRequested):
-                continue
+                return
+        }
+    }
+
+    // MARK: - lazy rule facts
+
+    /// What rules asked for and got, per PR, for its current head only: a
+    /// push makes them stale.
+    private var lazyFactCache: [String: (headSha: String, values: LazyFactValues)] = [:]
+    private var lazyFetching: Set<String> = []
+
+    func lazyFacts(for pr: InboxPR) -> LazyFactValues {
+        guard let cached = lazyFactCache[pr.nodeId], cached.headSha == pr.headSha else { return LazyFactValues() }
+        return cached.values
+    }
+
+    /// Where rule evaluations are kept for `rules replay`; nil keeps none.
+    @ObservationIgnored var ruleLog: RuleEvaluationLog?
+    /// The last record per PR and stage, so a poll that decides what the
+    /// previous one did writes nothing.
+    private var lastRuleRecord: [String: String] = [:]
+
+    private func recordRuleEvaluation(
+        _ stage: RuleEvaluation.Stage, pr: InboxPR, rules: Rules, fetched: Set<LazyFact>, rule: String?,
+        outcome: String, select: SelectFacts? = nil, decide: DecideFacts? = nil
+    ) {
+        guard let ruleLog else { return }
+        let key = "\(pr.nodeId)#\(stage.rawValue)"
+        let signature = "\(pr.headSha)|\(rules.digest)|\(outcome)|\(fetched.map(\.rawValue).sorted())"
+        guard lastRuleRecord[key] != signature else { return }
+        lastRuleRecord[key] = signature
+        let record = RuleEvaluation(
+            id: UUID(), at: Date(), stage: stage, repo: pr.nameWithOwner, number: pr.number, title: pr.title,
+            headSha: pr.headSha, select: select, decide: decide, rule: rule, outcome: outcome,
+            rulesDigest: rules.digest, ruleFiles: rules.sources.map(\.path),
+            fetched: fetched.sorted { $0.rawValue < $1.rawValue })
+        do {
+            try ruleLog.append(record)
+        } catch {
+            PRBarLog.triage.error("rule evaluation not recorded: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Fetches what the select rules need for `pr` until they can decide,
+    /// for callers that must answer now rather than on a later pass.
+    func prefetchSelectFacts(
+        _ pr: InboxPR, config: ResolvedRepoConfig, requireRequested: Bool = true, trigger: RuleTrigger = .reviewRequested
+    ) async -> LazyFactValues {
+        var lazy = lazyFacts(for: pr)
+        while case .needs(let facts) = ReviewAdmission.evaluate(
+            pr: pr, config: config, existing: reviews[pr.nodeId], requireRequested: requireRequested,
+            trigger: trigger, lazy: lazy
+        ), !facts.subtracting(lazy.fetched).isEmpty {
+            lazy.merge(await fetchLazyFacts(pr, facts.subtracting(lazy.fetched)))
+            storeLazyFacts(lazy, for: pr)
+        }
+        return lazy
+    }
+
+    func rememberLazyFacts(_ values: LazyFactValues, for pr: InboxPR) {
+        storeLazyFacts(values, for: pr)
+    }
+
+    private func storeLazyFacts(_ values: LazyFactValues, for pr: InboxPR) {
+        var merged = lazyFacts(for: pr)
+        merged.merge(values)
+        lazyFactCache[pr.nodeId] = (pr.headSha, merged)
+    }
+
+    /// Fetches what a rule needs. The files come from the PR's diff, kept
+    /// for the review run so it isn't downloaded twice; the committers from
+    /// GitHub's commit list.
+    ///
+    /// A failed fetch is tried again `lazyFetchAttempts` times before the
+    /// fact is given up on and recorded as fetched with no value (null to
+    /// the rules). `waitingOnFailure`: wait between attempts here, for a
+    /// caller that must answer now; otherwise the fact stays unfetched and
+    /// is only tried again once `lazyRetryDelay` has passed, by a later poll.
+    func fetchLazyFacts(_ pr: InboxPR, _ facts: Set<LazyFact>, waitingOnFailure: Bool = true) async -> LazyFactValues {
+        var values = LazyFactValues()
+        for fact in facts {
+            let key = "\(pr.nodeId)@\(pr.headSha)#\(fact.rawValue)"
+            if let backoff = lazyBackoff[key], backoff.notBefore > Date() { continue }
+            while true {
+                do {
+                    switch fact {
+                    case .files:
+                        values.files = FileFacts.list(diff: try await diffText(for: pr))
+                    case .committers:
+                        guard let fetcher = lazyFactFetcher else { throw LazyFactError.noFetcher }
+                        values.committers = try await fetcher.committers(pr.owner, pr.repo, pr.number)
+                    }
+                    values.fetched.insert(fact)
+                    lazyBackoff[key] = nil
+                    break
+                } catch {
+                    let attempts = (lazyBackoff[key]?.attempts ?? 0) + 1
+                    PRBarLog.triage.error("rule fact fetch failed fact=\(fact.rawValue, privacy: .public) attempt=\(attempts, privacy: .public) pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                    if attempts >= lazyFetchAttempts || error is LazyFactError {
+                        values.fetched.insert(fact)
+                        lazyBackoff[key] = nil
+                        break
+                    }
+                    if waitingOnFailure {
+                        lazyBackoff[key] = (attempts, Date())
+                        try? await Task.sleep(for: .seconds(2 * attempts))
+                        continue
+                    }
+                    lazyBackoff[key] = (attempts, Date().addingTimeInterval(lazyRetryDelay))
+                    break
+                }
             }
         }
+        return values
+    }
+
+    /// Tries per lazy fact and head commit, and how long a poll waits before
+    /// the next one. Long, because the usual failure worth waiting out is a
+    /// GitHub rate limit.
+    @ObservationIgnored var lazyFetchAttempts = 3
+    @ObservationIgnored var lazyRetryDelay: TimeInterval = 300
+    private var lazyBackoff: [String: (attempts: Int, notBefore: Date)] = [:]
+
+    private enum LazyFactError: Error {
+        case noFetcher
+    }
+
+    /// Diffs fetched for a select rule, kept until the review run takes
+    /// them so the same diff isn't downloaded twice.
+    private var fetchedDiffs: [String: (headSha: String, text: String)] = [:]
+
+    /// The PR's diff: a local checkout's, the one a select rule already
+    /// fetched for this head, or GitHub's.
+    private func diffText(for pr: InboxPR) async throws -> String {
+        if let local = pr.local { return try await LocalChanges.diff(local) }
+        if let kept = fetchedDiffs[pr.nodeId], kept.headSha == pr.headSha { return kept.text }
+        let text = try await diffFetcher(pr.owner, pr.repo, pr.number)
+        fetchedDiffs[pr.nodeId] = (pr.headSha, text)
+        return text
     }
 
     private static func logTag(_ reason: ReviewState.SkipReason) -> String {
@@ -893,12 +1068,8 @@ final class ReviewQueueWorker {
                 )
                 return
             }
-            let diffText: String
-            if let local = pr.local {
-                diffText = try await LocalChanges.diff(local)
-            } else {
-                diffText = try await diffFetcher(pr.owner, pr.repo, pr.number)
-            }
+            let diffText = try await diffText(for: pr)
+            fetchedDiffs[pr.nodeId] = nil
             // Provider resolution: per-run override > repo override > app default.
             let chosenProviderId = item.providerOverride
                 ?? config.providerOverride
@@ -1101,6 +1272,12 @@ final class ReviewQueueWorker {
                 )
                 return
             }
+            // Decided before the review reads as complete, so a client
+            // waiting for "complete and nothing staged" can't mistake a
+            // rule still fetching its facts for "nothing to post".
+            let autoPlan = pr.local == nil
+                ? await planAutoReview(pr: pr, review: aggregated, config: config, providerId: chosenProviderId, diffText: diffText)
+                : nil
             let runElapsedMs = Int(Date().timeIntervalSince(runStart) * 1000)
             PRBarLog.triage.notice("run done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) verdict=\(aggregated.verdict.rawValue, privacy: .public) confidence=\(self.fmt(aggregated.confidence), privacy: .public) cost=\(self.fmt(aggregated.costUsd), privacy: .public) annotations=\(aggregated.annotations.count, privacy: .public) elapsedMs=\(runElapsedMs, privacy: .public)")
             reviews[pr.nodeId]?.status = .completed(aggregated)
@@ -1115,11 +1292,8 @@ final class ReviewQueueWorker {
                 triggeredAt: triggeredAt, completedAt: Date(), review: aggregated
             )
             // A working directory has nowhere to post to.
-            if pr.local == nil {
-                stageAutoReviewIfEligible(
-                    pr: pr, review: aggregated, config: config,
-                    providerId: chosenProviderId, diffText: diffText
-                )
+            if let autoPlan {
+                stageAutoReview(pr: pr, plan: autoPlan)
                 await resolveAddressedThreads(pr: pr, review: aggregated, config: config)
             }
         } catch {
@@ -1247,13 +1421,29 @@ final class ReviewQueueWorker {
     /// with the run's `diffText` still in scope so inline comments can be
     /// correlated against the diff now — `fireBatch` runs after the undo
     /// window and no longer has one.
-    private func stageAutoReviewIfEligible(
-        pr: InboxPR,
-        review: AggregatedReview,
-        config: ResolvedRepoConfig,
-        providerId: ProviderID,
-        diffText: String
-    ) {
+    private func planAutoReview(
+        pr: InboxPR, review: AggregatedReview, config: ResolvedRepoConfig, providerId: ProviderID, diffText: String
+    ) async -> AutoReviewPlan.Outcome {
+        let prior = reviews[pr.nodeId]?.priorReviews ?? []
+        var lazy = lazyFacts(for: pr)
+        while true {
+            let fetched = lazy.fetched.union([.files])
+            let outcome = AutoReviewPlan.plan(
+                pr: pr, review: review, config: config, providerId: providerId, diffText: diffText,
+                prior: prior, lazy: lazy
+            ) { [weak self] facts, decision in
+                guard let self, let rules = config.rules else { return }
+                self.recordRuleEvaluation(
+                    .decide, pr: pr, rules: rules, fetched: fetched, rule: decision?.rule,
+                    outcome: Rules.describe(decision), decide: facts)
+            }
+            guard case .needs(let facts) = outcome, !facts.subtracting(lazy.fetched).isEmpty else { return outcome }
+            lazy.merge(await fetchLazyFacts(pr, facts.subtracting(lazy.fetched)))
+            storeLazyFacts(lazy, for: pr)
+        }
+    }
+
+    private func stageAutoReview(pr: InboxPR, plan: AutoReviewPlan.Outcome) {
         // A fresh verdict supersedes whatever the previous run decided for
         // this PR — including a still-counting-down staged post from an
         // older SHA, which would otherwise fire against a review nobody
@@ -1266,9 +1456,9 @@ final class ReviewQueueWorker {
             cancelAutoReviewBatch()
         }
 
-        switch AutoReviewPlan.plan(
-            pr: pr, review: review, config: config, providerId: providerId, diffText: diffText
-        ) {
+        switch plan {
+        case .needs(let facts):
+            PRBarLog.triage.error("auto-review undecided pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) still needs=\(facts.map(\.rawValue).sorted().joined(separator: ","), privacy: .public)")
         case .none(let reason):
             PRBarLog.triage.debug("auto-review skip pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=\(reason, privacy: .public)")
         case .flag(let staged):

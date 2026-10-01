@@ -162,6 +162,18 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
     /// (`LocalChanges`): the snapshot the review reads, never posted.
     var local: LocalChanges.Snapshot? = nil
 
+    var createdAt: Date? = nil
+    var updatedAt: Date? = nil
+    /// GitHub's `authorAssociation`: MEMBER, OWNER, COLLABORATOR,
+    /// CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, NONE. Empty when
+    /// unknown (a local review, a payload from before it was fetched).
+    var authorAssociation: String = ""
+    var authorIsBot: Bool = false
+    var labels: [String] = []
+    /// Logins and team slugs with a pending review request.
+    var requestedReviewers: [String] = []
+    var requestedTeams: [String] = []
+
     var nameWithOwner: String { "\(owner)/\(repo)" }
 
     /// Plain string form of the PR number — avoids SwiftUI's
@@ -267,6 +279,7 @@ extension InboxPR {
         case humanReviews, issueComments, viewerLogin
         case hasPRBarVerdictAtHead
         case local
+        case createdAt, updatedAt, authorAssociation, authorIsBot, labels, requestedReviewers, requestedTeams
     }
 
     /// Explicit decode so payloads cached before `humanReviews` /
@@ -311,6 +324,13 @@ extension InboxPR {
         self.hasPRBarVerdictAtHead =
             try c.decodeIfPresent(Bool.self, forKey: .hasPRBarVerdictAtHead) ?? false
         self.local = try c.decodeIfPresent(LocalChanges.Snapshot.self, forKey: .local)
+        self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
+        self.updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+        self.authorAssociation = try c.decodeIfPresent(String.self, forKey: .authorAssociation) ?? ""
+        self.authorIsBot = try c.decodeIfPresent(Bool.self, forKey: .authorIsBot) ?? false
+        self.labels = try c.decodeIfPresent([String].self, forKey: .labels) ?? []
+        self.requestedReviewers = try c.decodeIfPresent([String].self, forKey: .requestedReviewers) ?? []
+        self.requestedTeams = try c.decodeIfPresent([String].self, forKey: .requestedTeams) ?? []
     }
 
     init(node: InboxResponse.PullRequestNode, viewerLogin: String) {
@@ -353,6 +373,13 @@ extension InboxPR {
 
         let isAuthor = (node.author?.login == viewerLogin)
         let reviewerLogins = node.reviewRequests.nodes.compactMap { $0.requestedReviewer?.login }
+        self.requestedReviewers = reviewerLogins
+        self.requestedTeams = node.reviewRequests.nodes.compactMap { $0.requestedReviewer?.slug }
+        self.createdAt = InboxPR.parseISO(node.createdAt)
+        self.updatedAt = InboxPR.parseISO(node.updatedAt)
+        self.authorAssociation = node.authorAssociation ?? ""
+        self.authorIsBot = node.author?.typename == "Bot" || (node.author?.login ?? "").hasSuffix("[bot]")
+        self.labels = node.labels?.nodes.map(\.name) ?? []
         let isReviewRequested = reviewerLogins.contains(viewerLogin)
         switch (isAuthor, isReviewRequested) {
         case (true, true): self.role = .both
