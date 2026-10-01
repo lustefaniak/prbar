@@ -32,6 +32,34 @@ final class PRBarRuntime {
     /// twice. Polling, the UI and manual actions keep working either way.
     var ownsAutomation: Bool
 
+    /// What happened, for anyone outside the runtime that needs to follow
+    /// along (the API server, `watch`'s log). The service hooks themselves
+    /// are single closures owned by `wire()`; observing here never
+    /// replaces them.
+    enum Event {
+        case inboxChanged([InboxPR])
+        case reviewSettled(prNodeId: String)
+        case actionCompleted(InboxPR)
+        case configChanged
+    }
+
+    private var observers: [UUID: @MainActor (Event) -> Void] = [:]
+
+    @discardableResult
+    func observe(_ observer: @escaping @MainActor (Event) -> Void) -> UUID {
+        let id = UUID()
+        observers[id] = observer
+        return id
+    }
+
+    func removeObserver(_ id: UUID) {
+        observers[id] = nil
+    }
+
+    private func emit(_ event: Event) {
+        for observer in observers.values { observer(event) }
+    }
+
     init(
         poller: PRPoller,
         notifier: Notifier,
@@ -71,7 +99,8 @@ final class PRBarRuntime {
         // GitHub's GraphQL read-model lags the REST write, so refresh now
         // for the optimistic intermediate state and again after ~1.2s as a
         // belt-and-suspenders catch for the propagation.
-        a.onActionCompleted = { [weak p] pr in
+        a.onActionCompleted = { [weak self, weak p] pr in
+            self?.emit(.actionCompleted(pr))
             p?.refreshPR(pr)
             Task { @MainActor [weak p] in
                 try? await Task.sleep(for: .seconds(1.2))
@@ -99,8 +128,9 @@ final class PRBarRuntime {
         // Provider / model / effort defaults come from prbar.yaml. "auto"
         // resolves to whichever CLI is installed (claude wins ties).
         rc.config.applyAgentDefaults(to: q)
-        rc.onChange = { [weak q, weak rc, weak p] in
+        rc.onChange = { [weak self, weak q, weak rc, weak p] in
             guard let q, let rc else { return }
+            self?.emit(.configChanged)
             q.configResolver = rc.makeResolver()
             p?.configResolver = rc.makeResolver()
             rc.config.applyAgentDefaults(to: q)
@@ -112,8 +142,9 @@ final class PRBarRuntime {
         // Hand AI-triage settlement to the coordinator so it can flip the
         // per-PR ready bit and (when the queue idles) flush a batched
         // "ready for review" notification.
-        q.onReviewSettled = { [weak coord] prNodeId, isWorkerSettled in
+        q.onReviewSettled = { [weak self, weak coord] prNodeId, isWorkerSettled in
             coord?.noteReviewSettled(prNodeId: prNodeId, isWorkerSettled: isWorkerSettled)
+            self?.emit(.reviewSettled(prNodeId: prNodeId))
         }
         // Feed each successful poll into the coordinator so it can spot
         // newly-arrived review-requested PRs and forget ones that left the
@@ -124,6 +155,7 @@ final class PRBarRuntime {
             if self?.ownsAutomation ?? false {
                 q?.enqueueNewReviewRequests(from: prs)
             }
+            self?.emit(.inboxChanged(prs))
         }
         p.notifier = notifier
     }

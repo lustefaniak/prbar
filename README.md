@@ -156,19 +156,35 @@ the PR: it posts findings as a comment and never casts a verdict.
 
 ### Running it continuously
 
-`prbar-review watch` is the menu-bar app without the menu bar: it polls your
+`prbar-review serve` is the menu-bar app without the menu bar: it polls your
 inbox, reviews incoming review requests, posts whatever `prbar.yaml` allows, and
 keeps the same history and state files as the app (under `~/.local/state/prbar`).
-Notifications and progress go to stderr; Ctrl-C stops it.
+Notifications and progress go to stderr; Ctrl-C stops it. (`watch` is the older
+name and still works.)
 
 ```sh
-prbar-review watch                      # uses ~/.config/prbar/prbar.yaml
-prbar-review watch --config team.yaml --daily-cap 20
+prbar-review serve                      # uses ~/.config/prbar/prbar.yaml
+prbar-review serve --config team.yaml --daily-cap 20
 ```
 
-Only one PRBar per machine automates: `watch` refuses to start while the app is
-running it, and the app, if started while `watch` runs, still shows everything
-but leaves reviewing and posting to `watch`.
+Only one PRBar per machine runs the automation: `serve` refuses to start while the
+app is running it, and the app, if started while `serve` runs, still shows
+everything but leaves reviewing and posting to `serve`.
+
+### Asking the running PRBar
+
+Whichever PRBar runs the automation (the app or `serve`) also answers on a socket
+in `~/.local/state/prbar`, readable only by your user:
+
+```sh
+prbar-review status                     # last poll, queue, config problems
+prbar-review inbox                      # the PRs it tracks
+prbar-review history reviews --limit 5  # or `actions`; --json for jq
+prbar-review events                     # follow changes, one JSON line each
+```
+
+`status` exits 1 when the server reports a problem (a failed poll, a broken
+config) and 3 when no PRBar is running.
 
 ### Getting the findings without posting them
 

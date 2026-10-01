@@ -16,12 +16,19 @@ import Foundation
 public enum PRBarReviewCLI {
     public static func main() async -> Int32 {
         let args = Array(CommandLine.arguments.dropFirst())
-        if args.first == "watch" {
-            guard let options = WatchCommand.Options(args: Array(args.dropFirst())) else {
-                FileHandle.standardError.write(Data(WatchCommand.usage.utf8))
+        if args.first == "serve" || args.first == "watch" {
+            guard let options = ServeCommand.Options(args: Array(args.dropFirst())) else {
+                FileHandle.standardError.write(Data(ServeCommand.usage.utf8))
                 return 2
             }
-            return await WatchCommand.run(options)
+            return await ServeCommand.run(options)
+        }
+        if let name = args.first, ClientCommand.names.contains(name) {
+            guard let command = ClientCommand(args: args) else {
+                FileHandle.standardError.write(Data(ClientCommand.usage.utf8))
+                return 2
+            }
+            return await command.run()
         }
         guard let invocation = Invocation(args: args) else {
             FileHandle.standardError.write(Data(Self.usage.utf8))
@@ -156,7 +163,10 @@ public enum PRBarReviewCLI {
 
     Emits brahmanda NDJSON on stdout, one event per line. Logs go to stderr.
 
-    prbar-review watch [options]   run the review automation headless;
-                                   see `prbar-review watch --help`
+    prbar-review serve [options]   run the PRBar server headless;
+                                   see `prbar-review serve --help`
+    prbar-review status | inbox | history | events
+                                   ask the running server; see
+                                   `prbar-review status --help`
     """
 }

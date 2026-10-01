@@ -59,6 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     let runtime: PRBarRuntime
     private var runtimeLock: RuntimeLock?
+    /// The API socket, served while this app holds the runtime lock, so
+    /// `prbar-review status` and other clients reach the running app.
+    private var apiServer: APIServer?
 
     var poller: PRPoller { runtime.poller }
     var notifier: Notifier { runtime.notifier }
@@ -143,6 +146,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.runtimeLock = lock
             runtime = PRBarRuntime.live(env, deliverer: UNNotificationDeliverer(), ownsAutomation: owns)
+            if owns && !Self.isHostingTests {
+                let server = APIServer(runtime: runtime, holder: "PRBar.app")
+                do {
+                    try server.start(socketURL: ServerLocation.socketURL(stateDirectory: env.stateDirectory))
+                    self.apiServer = server
+                } catch {
+                    PRBarLog.lifecycle.error("API socket not served: \(error.localizedDescription, privacy: .public)")
+                }
+            }
             if !Self.isHostingTests {
                 let log = runtime.actionLog, rlog = runtime.reviewLog
                 LegacyHistoryMigration.migrateInBackground(
@@ -214,6 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// that can await anything; the timeout is there so a wedged SQLite
     /// write can't hold a quit open indefinitely.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        apiServer?.stop()
         Task { @MainActor in
             let flush = Task { await self.queue.flushPendingSaves() }
             let timeout = Task { try? await Task.sleep(for: .seconds(3)) }

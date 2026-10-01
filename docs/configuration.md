@@ -155,4 +155,4 @@ explaining it. A few keys exist only on repo rules: `repoGlobs` (required),
 
 Machine-local preferences stay in the app's own settings: launch at login, the
 menu-bar badge, notification and inbox display options, the daily cost cap (the
-CLI's `watch --daily-cap`), and whether merges ask for confirmation by default.
+CLI's `serve --daily-cap`), and whether merges ask for confirmation by default.
