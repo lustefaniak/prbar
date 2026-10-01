@@ -33,6 +33,8 @@ final class APIClient: @unchecked Sendable {
     private let lock = NSLock()
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<Data, Error>] = [:]
+    /// Replies to `post`s, which nobody awaits.
+    private var detached: [Int: @Sendable (Data?) -> Void] = [:]
     private var isClosed = false
 
     init(transport: any APIClientTransport) {
@@ -87,6 +89,41 @@ final class APIClient: @unchecked Sendable {
         try await call(method, APIEmpty(), as: type)
     }
 
+    /// Sends a request now, on the caller's thread, without waiting for the
+    /// reply. Requests posted one after another reach the server in that
+    /// order, which separate `call`s from separate tasks don't promise
+    /// (invalidate-then-load must not arrive as load-then-invalidate).
+    /// `onFailure` gets the server's error, or `disconnected`.
+    func post<P: Codable & Sendable>(
+        _ method: APIMethod, _ params: P, onFailure: (@Sendable (Error) -> Void)? = nil
+    ) {
+        let id = lock.withLock {
+            defer { nextId += 1 }
+            return nextId
+        }
+        guard let line = try? RPCLine.encode(RPCRequest(id: id, method: method.rawValue, params: params)) else { return }
+        let registered = lock.withLock {
+            if isClosed { return false }
+            detached[id] = { reply in
+                guard let reply else {
+                    onFailure?(APIClientError.disconnected)
+                    return
+                }
+                if let error = (try? RPCLine.decode(RPCHeader.self, from: reply))?.error {
+                    onFailure?(error)
+                }
+            }
+            return true
+        }
+        guard registered else {
+            onFailure?(APIClientError.disconnected)
+            return
+        }
+        if !connection.send(line) {
+            lock.withLock { detached.removeValue(forKey: id) }?(nil)
+        }
+    }
+
     func close() {
         connection.close()
     }
@@ -94,7 +131,11 @@ final class APIClient: @unchecked Sendable {
     private func receive(_ line: Data) {
         guard let header = try? RPCLine.decode(RPCHeader.self, from: line) else { return }
         if let id = header.id, header.method == nil {
-            lock.withLock { pending.removeValue(forKey: id) }?.resume(returning: line)
+            let (waiter, handler) = lock.withLock {
+                (pending.removeValue(forKey: id), detached.removeValue(forKey: id))
+            }
+            waiter?.resume(returning: line)
+            handler?(line)
         } else if header.method == APIMethod.event.rawValue,
                   let event = try? RPCLine.decode(RPCRequest<APIEvent>.self, from: line).params {
             eventSink.yield(event)
@@ -105,12 +146,16 @@ final class APIClient: @unchecked Sendable {
     }
 
     private func failAll() {
-        let waiting = lock.withLock {
+        let (waiting, handlers) = lock.withLock {
             isClosed = true
-            defer { pending.removeAll() }
-            return Array(pending.values)
+            defer {
+                pending.removeAll()
+                detached.removeAll()
+            }
+            return (Array(pending.values), Array(detached.values))
         }
         for continuation in waiting { continuation.resume(throwing: APIClientError.disconnected) }
+        for handler in handlers { handler(nil) }
         eventSink.finish()
         stateSink.finish()
     }

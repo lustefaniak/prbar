@@ -12,7 +12,7 @@ import Observation
 @MainActor
 @Observable
 final class DiffStore {
-    enum LoadStatus: Sendable, Hashable {
+    enum LoadStatus: Sendable, Hashable, Codable {
         case idle
         case loading
         case loaded([Hunk])
@@ -52,14 +52,14 @@ final class DiffStore {
     /// main actor. Disk hydration happens asynchronously in `ensureLoaded`,
     /// which every call site already pairs this with.
     func status(for pr: InboxPR) -> LoadStatus {
-        statuses[key(for: pr)] ?? .idle
+        statuses[Self.key(for: pr)] ?? .idle
     }
 
     /// Fetch (and parse) the diff if we don't already have it. Idempotent
     /// — calling while loading is a no-op; calling after success is a no-op.
     /// A prior failure is retried.
     func ensureLoaded(for pr: InboxPR) {
-        let k = key(for: pr)
+        let k = Self.key(for: pr)
         if let s = statuses[k] {
             switch s {
             case .loading, .loaded: return
@@ -96,7 +96,7 @@ final class DiffStore {
     /// Test/preview only: pre-populate parsed hunks so screenshots can
     /// render the diff section without a real `gh pr diff` call.
     func _setLoadedForScreenshot(pr: InboxPR, hunks: [Hunk]) {
-        statuses[key(for: pr)] = .loaded(hunks)
+        statuses[Self.key(for: pr)] = .loaded(hunks)
     }
 
     /// Drop the cached diff (e.g. on Re-run after a force-push).
@@ -109,13 +109,14 @@ final class DiffStore {
     /// invalidated and returned without calling `gh pr diff`. The stale
     /// hunks then also decided which annotations could be posted inline.
     func invalidate(for pr: InboxPR) {
-        let k = key(for: pr)
+        let k = Self.key(for: pr)
         statuses[k] = .idle
         invalidatedKeys.insert(k)
         Task.detached { [cache] in cache?.delete(k) }
     }
 
-    private func key(for pr: InboxPR) -> String {
+    /// Shared with the front ends' mirror, which keys the same way.
+    nonisolated static func key(for pr: InboxPR) -> String {
         "\(pr.nodeId)@\(pr.headSha)"
     }
 

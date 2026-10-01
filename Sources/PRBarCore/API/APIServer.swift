@@ -150,7 +150,7 @@ final class APIServer {
 
     private func trackState() {
         let poller = runtime.poller, queue = runtime.queue, actionQueue = runtime.actionQueue
-        var sentReviews = queue.reviews
+        let diffs = runtime.diffStore, ciLogs = runtime.failureLogs
         trackers = [
             StateTracker(read: { poller.prs }) { [weak self] prs in
                 self?.publish(StateUpdate(prs: prs))
@@ -158,13 +158,14 @@ final class APIServer {
             StateTracker(read: { Self.polling(poller) }) { [weak self] polling in
                 self?.publish(StateUpdate(polling: polling))
             },
-            StateTracker(read: { queue.reviews }) { [weak self] reviews in
-                let changed = reviews.filter { sentReviews[$0.key] != $0.value }
-                let removed = sentReviews.keys.filter { reviews[$0] == nil }
-                sentReviews = reviews
-                self?.publish(StateUpdate(
-                    reviews: changed.isEmpty ? nil : changed,
-                    removedReviews: removed.isEmpty ? nil : removed.sorted()))
+            trackEntries(read: { queue.reviews }) { changed, removed in
+                StateUpdate(reviews: changed, removedReviews: removed)
+            },
+            trackEntries(read: { diffs.statuses }) { changed, removed in
+                StateUpdate(diffs: changed, removedDiffs: removed)
+            },
+            trackEntries(read: { ciLogs.statuses }) { changed, removed in
+                StateUpdate(ciLogs: changed, removedCILogs: removed)
             },
             StateTracker(read: { queue.liveProgress }) { [weak self] progress in
                 self?.publish(StateUpdate(progress: progress))
@@ -178,6 +179,21 @@ final class APIServer {
         ]
     }
 
+    /// Follows a dictionary and publishes only the entries that changed or
+    /// went away, for state where each entry can be large.
+    private func trackEntries<Value: Equatable>(
+        read: @escaping @MainActor () -> [String: Value],
+        update: @escaping @MainActor (_ changed: [String: Value]?, _ removed: [String]?) -> StateUpdate
+    ) -> StateTracker<[String: Value]> {
+        var sent = read()
+        return StateTracker(read: read) { [weak self] current in
+            let changed = current.filter { sent[$0.key] != $0.value }
+            let removed = sent.keys.filter { current[$0] == nil }.sorted()
+            sent = current
+            self?.publish(update(changed.isEmpty ? nil : changed, removed.isEmpty ? nil : removed))
+        }
+    }
+
     /// Everything a front end renders, for a new state subscriber.
     func snapshot() -> StateUpdate {
         let queue = runtime.queue
@@ -187,7 +203,9 @@ final class APIServer {
             reviews: queue.reviews,
             progress: queue.liveProgress,
             autoReview: Self.autoReview(queue),
-            actions: Self.actions(runtime.actionQueue))
+            actions: Self.actions(runtime.actionQueue),
+            diffs: runtime.diffStore.statuses,
+            ciLogs: runtime.failureLogs.statuses)
     }
 
     private static func actions(_ queue: ActionQueue) -> ActionQueueState {
@@ -317,6 +335,30 @@ final class APIServer {
                 self.runtime.actionQueue.dismissFailure(params.prNodeId)
                 return APIEmpty()
             }
+        case .loadDiff:
+            return await reply(line, id, PRSnapshot.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.runtime.diffStore.ensureLoaded(for: params.pr)
+                return APIEmpty()
+            }
+        case .invalidateDiff:
+            return await reply(line, id, PRSnapshot.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.runtime.diffStore.invalidate(for: params.pr)
+                return APIEmpty()
+            }
+        case .loadCILog:
+            return await reply(line, id, CILogParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.runtime.failureLogs.ensureLoaded(for: params.pr, check: params.check)
+                return APIEmpty()
+            }
+        case .invalidateCILog:
+            return await reply(line, id, CILogParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.runtime.failureLogs.invalidate(for: params.pr, check: params.check)
+                return APIEmpty()
+            }
         case .autoReviewUndo:
             return await reply(line, id, APIEmpty.self) { _ in
                 self.runtime.queue.cancelAutoReviewBatch()
@@ -387,7 +429,8 @@ final class APIServer {
         switch method {
         case .hello, .event, .state:
             return nil
-        case .status, .inbox, .refreshPR, .review, .historyActions, .historyReviews, .poll, .subscribe:
+        case .status, .inbox, .refreshPR, .review, .historyActions, .historyReviews, .poll, .subscribe,
+             .loadDiff, .invalidateDiff, .loadCILog, .invalidateCILog:
             capability = .read
         case .runReview:
             capability = .review

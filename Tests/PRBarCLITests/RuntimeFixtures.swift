@@ -8,7 +8,10 @@ enum RuntimeFixtures {
     static let diff = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1 @@\n+x\n"
 
     @MainActor
-    static func make(_ dir: URL, ownsAutomation: Bool, prs: [InboxPR] = []) -> PRBarRuntime {
+    static func make(
+        _ dir: URL, ownsAutomation: Bool, prs: [InboxPR] = [],
+        prDiff: @escaping @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String = { _, _, _ in diff }
+    ) -> PRBarRuntime {
         let notifier = Notifier(deliverer: StderrDeliverer())
         let queue = ReviewQueueWorker(diffFetcher: { _, _, _ in diff })
         queue.providerLookup = { _ in NeverProvider() }
@@ -19,7 +22,7 @@ enum RuntimeFixtures {
             notifier: notifier,
             queue: queue,
             actionQueue: ActionQueue(),
-            diffStore: DiffStore(diffFetcher: { _, _, _ in "" }),
+            diffStore: DiffStore(diffFetcher: prDiff),
             failureLogs: FailureLogStore(logFetcher: { _, _, _ in "" }),
             repoConfigs: RepoConfigStore(fileURL: dir.appendingPathComponent("prbar.yaml"), lastGoodURL: nil),
             readiness: ReadinessCoordinator(notifier: notifier, store: FileNotifiedSHAStore(stateDirectory: dir)),

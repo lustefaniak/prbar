@@ -12,7 +12,7 @@ import Observation
 @MainActor
 @Observable
 final class FailureLogStore {
-    enum LoadStatus: Sendable, Hashable {
+    enum LoadStatus: Sendable, Hashable, Codable {
         case idle
         case loading
         case loaded(String)        // tailed log, timestamps stripped
@@ -39,7 +39,7 @@ final class FailureLogStore {
         guard let jobId = CIFailureLogTail.parseJobId(from: check.url) else {
             return .failed("No job log available for this check.")
         }
-        let k = key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)
+        let k = Self.key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)
         if let s = statuses[k] { return s }
         if let tail = readPersisted(cacheKey: k) {
             statuses[k] = .loaded(tail)
@@ -53,7 +53,7 @@ final class FailureLogStore {
     /// to force a refresh).
     func ensureLoaded(for pr: InboxPR, check: CheckSummary) {
         guard let jobId = CIFailureLogTail.parseJobId(from: check.url) else { return }
-        let k = key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)
+        let k = Self.key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)
         if statuses[k] == nil, let tail = readPersisted(cacheKey: k) {
             statuses[k] = .loaded(tail)
             return
@@ -86,7 +86,7 @@ final class FailureLogStore {
     /// affordance and by ReviewQueueWorker on Re-run.
     func invalidate(for pr: InboxPR, check: CheckSummary) {
         guard let jobId = CIFailureLogTail.parseJobId(from: check.url) else { return }
-        let k = key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)
+        let k = Self.key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)
         statuses[k] = .idle
         deletePersisted(cacheKey: k)
     }
@@ -95,7 +95,7 @@ final class FailureLogStore {
     /// expanded-log state deterministically.
     func _setLoadedForScreenshot(pr: InboxPR, check: CheckSummary, tail: String) {
         guard let jobId = CIFailureLogTail.parseJobId(from: check.url) else { return }
-        statuses[key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)] = .loaded(tail)
+        statuses[Self.key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)] = .loaded(tail)
     }
 
     /// Best-effort fetch of every parseable failed-check log on a PR.
@@ -131,14 +131,15 @@ final class FailureLogStore {
             else { continue }
             _setLoadedForScreenshot(pr: pr, check: check, tail: item.logTail)
             if let jobId = CIFailureLogTail.parseJobId(from: check.url) {
-                let k = key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)
+                let k = Self.key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)
                 writePersisted(cacheKey: k, tail: item.logTail)
             }
         }
         return out
     }
 
-    private func key(prNodeId: String, headSha: String, jobId: Int64) -> String {
+    /// Shared with the front ends' mirror, which keys the same way.
+    nonisolated static func key(prNodeId: String, headSha: String, jobId: Int64) -> String {
         "\(prNodeId)@\(headSha)#\(jobId)"
     }
 

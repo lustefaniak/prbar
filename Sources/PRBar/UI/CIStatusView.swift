@@ -14,7 +14,7 @@ struct CIStatusView: View {
     /// previews / list rows) pass nil and get the bare status panel.
     var pr: InboxPR? = nil
 
-    @Environment(FailureLogStore.self) private var failureLogs
+    @Environment(CILogModel.self) private var failureLogs
 
     @State private var showAll = false
     /// Per-check expansion of the inline failure log. Keyed by

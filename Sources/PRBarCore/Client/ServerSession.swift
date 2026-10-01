@@ -11,6 +11,8 @@ final class ServerSession {
     let inbox: InboxModel
     let reviews: ReviewQueueModel
     let actions: ActionQueueModel
+    let diffs: DiffModel
+    let ciLogs: CILogModel
 
     private let client: APIClient
     private var listener: Task<Void, Never>?
@@ -20,9 +22,13 @@ final class ServerSession {
         inbox = InboxModel()
         reviews = ReviewQueueModel()
         actions = ActionQueueModel()
+        diffs = DiffModel()
+        ciLogs = CILogModel()
         inbox.session = self
         reviews.session = self
         actions.session = self
+        diffs.session = self
+        ciLogs.session = self
     }
 
     /// Subscribes, applies the snapshot, then follows updates until the
@@ -48,6 +54,8 @@ final class ServerSession {
         inbox.apply(update)
         reviews.apply(update)
         actions.apply(update)
+        diffs.apply(update)
+        ciLogs.apply(update)
     }
 
     /// A request whose answer the caller needs.
@@ -55,16 +63,12 @@ final class ServerSession {
         try await client.call(method, params, as: type)
     }
 
-    /// Fire-and-forget command; a failure is logged, since the state the
-    /// UI shows comes back through `state` updates anyway.
+    /// Fire-and-forget command, sent before this returns so commands reach
+    /// the server in the order the UI issued them. A failure is logged: the
+    /// state the UI shows comes back through `state` updates anyway.
     func send<P: Codable & Sendable>(_ method: APIMethod, _ params: P) {
-        let client = self.client
-        Task {
-            do {
-                _ = try await client.call(method, params, as: APIEmpty.self)
-            } catch {
-                PRBarLog.lifecycle.error("API \(method.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-            }
+        client.post(method, params) { error in
+            PRBarLog.lifecycle.error("API \(method.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 }
@@ -206,5 +210,77 @@ final class ActionQueueModel {
 
     func dismissFailure(_ nodeId: String) {
         session?.send(.dismissAction, ActionTarget(prNodeId: nodeId))
+    }
+}
+
+/// Parsed diffs, loaded on request. Same names as `DiffStore`. A diff is
+/// `.idle` until the server's answer arrives, which is the window
+/// `InlineCommentReadiness` already waits out before posting.
+@MainActor
+@Observable
+final class DiffModel {
+    private(set) var statuses: [String: DiffStore.LoadStatus] = [:]
+
+    @ObservationIgnored
+    weak var session: ServerSession?
+
+    func apply(_ update: StateUpdate) {
+        if let changed = update.diffs { statuses.merge(changed) { _, new in new } }
+        for key in update.removedDiffs ?? [] { statuses[key] = nil }
+    }
+
+    func status(for pr: InboxPR) -> DiffStore.LoadStatus {
+        statuses[DiffStore.key(for: pr)] ?? .idle
+    }
+
+    func ensureLoaded(for pr: InboxPR) {
+        switch status(for: pr) {
+        case .loading, .loaded: return
+        case .idle, .failed: session?.send(.loadDiff, PRSnapshot(pr: pr))
+        }
+    }
+
+    /// Marks the diff idle at once, so a reload that follows straight away
+    /// asks the server again instead of seeing the old hunks.
+    func invalidate(for pr: InboxPR) {
+        statuses[DiffStore.key(for: pr)] = .idle
+        session?.send(.invalidateDiff, PRSnapshot(pr: pr))
+    }
+}
+
+/// CI failure log tails, loaded on request. Same names as
+/// `FailureLogStore`.
+@MainActor
+@Observable
+final class CILogModel {
+    private(set) var statuses: [String: FailureLogStore.LoadStatus] = [:]
+
+    @ObservationIgnored
+    weak var session: ServerSession?
+
+    func apply(_ update: StateUpdate) {
+        if let changed = update.ciLogs { statuses.merge(changed) { _, new in new } }
+        for key in update.removedCILogs ?? [] { statuses[key] = nil }
+    }
+
+    func status(for pr: InboxPR, check: CheckSummary) -> FailureLogStore.LoadStatus {
+        guard let jobId = CIFailureLogTail.parseJobId(from: check.url) else {
+            return .failed("No job log available for this check.")
+        }
+        return statuses[FailureLogStore.key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)] ?? .idle
+    }
+
+    func ensureLoaded(for pr: InboxPR, check: CheckSummary) {
+        switch status(for: pr, check: check) {
+        case .loading, .loaded: return
+        case .idle, .failed: session?.send(.loadCILog, CILogParams(pr: pr, check: check))
+        }
+    }
+
+    func invalidate(for pr: InboxPR, check: CheckSummary) {
+        if let jobId = CIFailureLogTail.parseJobId(from: check.url) {
+            statuses[FailureLogStore.key(prNodeId: pr.nodeId, headSha: pr.headSha, jobId: jobId)] = .idle
+        }
+        session?.send(.invalidateCILog, CILogParams(pr: pr, check: check))
     }
 }

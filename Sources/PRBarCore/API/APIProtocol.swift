@@ -24,6 +24,10 @@ enum APIMethod: String, CaseIterable, Sendable {
     case enqueueAction = "action.enqueue"
     case retryAction = "action.retry"
     case dismissAction = "action.dismiss"
+    case loadDiff = "diff.load"
+    case invalidateDiff = "diff.invalidate"
+    case loadCILog = "ciLog.load"
+    case invalidateCILog = "ciLog.invalidate"
     case autoReviewUndo = "autoReview.undo"
     case autoReviewPostNow = "autoReview.postNow"
     case autoReviewDismissFlagged = "autoReview.dismissFlagged"
@@ -215,6 +219,16 @@ struct EnqueueActionParams: Codable, Sendable {
     /// the commit the user reviewed, even if the PR has moved since.
     var pr: InboxPR
     var kind: GHActionKind
+}
+
+/// A PR as the client sees it, for loads keyed by its head SHA.
+struct PRSnapshot: Codable, Sendable {
+    var pr: InboxPR
+}
+
+struct CILogParams: Codable, Sendable {
+    var pr: InboxPR
+    var check: CheckSummary
 }
 
 struct ActionTarget: Codable, Sendable {

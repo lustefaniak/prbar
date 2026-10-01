@@ -13,7 +13,7 @@ struct PRListView: View {
     let onMergePR: (InboxPR, MergeMethod) -> Void
     let onSelect: (InboxPR) -> Void
 
-    @Environment(DiffStore.self) private var diffStore
+    @Environment(DiffModel.self) private var diffStore
     @Environment(ActionQueueModel.self) private var actionQueue
     @Environment(RepoConfigStore.self) private var repoConfigs
     @Environment(ReviewQueueModel.self) private var reviewQueue

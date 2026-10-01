@@ -20,10 +20,18 @@ struct StateUpdate: Codable, Sendable, Equatable {
     var progress: [String: ReviewProgress]?
     var autoReview: AutoReviewState?
     var actions: ActionQueueState?
+    /// Parsed diffs and CI log tails, per `DiffStore.key` /
+    /// `FailureLogStore.key`, only those someone asked for and only the
+    /// ones that changed: a diff can be megabytes.
+    var diffs: [String: DiffStore.LoadStatus]?
+    var removedDiffs: [String]?
+    var ciLogs: [String: FailureLogStore.LoadStatus]?
+    var removedCILogs: [String]?
 
     var isEmpty: Bool {
         prs == nil && polling == nil && reviews == nil && removedReviews == nil
             && progress == nil && autoReview == nil && actions == nil
+            && diffs == nil && removedDiffs == nil && ciLogs == nil && removedCILogs == nil
     }
 }
 

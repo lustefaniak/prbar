@@ -26,7 +26,7 @@ struct PRDetailView: View {
     @Environment(InboxModel.self) private var poller
     @Environment(ReviewQueueModel.self) private var queue
     @Environment(ActionQueueModel.self) private var actionQueue
-    @Environment(DiffStore.self) private var diffStore
+    @Environment(DiffModel.self) private var diffStore
     @Environment(RepoConfigStore.self) private var repoConfigs
 
     /// Global "skip merge confirmation" default; a per-repo
