@@ -168,8 +168,15 @@ agents:
 
 Those are the shipped values, so a missing `agents:` means exactly this.
 
-- PRBar itself enforces it, for every client that connects as an agent, whether the
-  app or `prbar-review serve` is running.
+- PRBar enforces it for every client that connects as an agent (`prbar-review mcp`
+  does), whether the app or `prbar-review serve` is running. It limits what PRBar
+  does on an agent's behalf; it is not a sandbox. An agent with a shell runs as
+  you and could run `gh pr merge` itself, or talk to PRBar's socket without saying
+  it's an agent. Use your agent's own permission settings to restrict its shell.
+- `review: allow` still respects the repository's own settings: an agent can't
+  start a review where `aiReviewEnabled` is off, the repo is `excluded`, or the
+  title matches `excludeTitlePatterns`. For drafts, already-reviewed PRs or a
+  failed review at the same commit it gets the reason, and can pass `force`.
 - `ask` means PRBar asks you before acting. Asking isn't built yet, so for now `ask`
   refuses, and the agent is told to have `allow` set if you want it.
 - A value other than `off`, `allow` or `ask` turns that capability **off**, rather

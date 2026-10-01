@@ -120,6 +120,22 @@ final class MCPSessionTests: XCTestCase {
         await session.close()
     }
 
+    /// The case found by hand: with AI review off for the repo, an agent's
+    /// run_review used to queue a real, billed review anyway.
+    func testRunReviewRespectsTheRepoOptOut() async throws {
+        let runtime = try startServer()
+        try "defaults:\n  aiReviewEnabled: false\n".write(to: dir.appendingPathComponent("prbar.yaml"), atomically: true, encoding: .utf8)
+        runtime.repoConfigs.reloadIfChanged()
+        let session = MCPSession(socketURL: socketURL)
+        for args in [#"{"pr":"o/r#1"}"#, #"{"pr":"o/r#1","force":true}"#] {
+            let refused = try await call(session, "run_review", args)
+            XCTAssertTrue(refused.isError, refused.text)
+            XCTAssertTrue(refused.text.contains("AI review is turned off"), refused.text)
+        }
+        XCTAssertNil(runtime.queue.reviews["PR_1"])
+        await session.close()
+    }
+
     func testReviewTextListsFindings() {
         let pr = RuntimeFixtures.requestedPR()
         let review = AggregatedReview(

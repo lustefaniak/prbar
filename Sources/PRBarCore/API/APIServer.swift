@@ -122,6 +122,10 @@ final class APIServer {
         connections[ObjectIdentifier(connection)] = connection
     }
 
+    func registerClient(_ connection: any APIConnection, _ hello: HelloParams) {
+        clients[ObjectIdentifier(connection)] = hello
+    }
+
     /// Handles one connection's requests one at a time, in arrival order.
     /// A task per line would let a slow request be overtaken by the next
     /// one, and clients depend on order ("Reload diff" is invalidate then
@@ -339,6 +343,11 @@ final class APIServer {
         }
         let id = header.id
         await _beforeHandling?(method)
+        // `hello` first: it agrees the protocol version and says whether the
+        // client is an agent, which every later check depends on.
+        if method != .hello, let connection, clients[ObjectIdentifier(connection)] == nil {
+            return Self.failure(id: id, RPCError(code: RPCError.invalidRequest, message: "send hello first"))
+        }
         if method != .hello, let connection, let client = clients[ObjectIdentifier(connection)],
            client.agent == true, let denial = Self.denial(of: method, by: client, under: runtime.repoConfigs.config.agents) {
             PRBarLog.lifecycle.notice("API: refused \(method.rawValue, privacy: .public) from \(client.client, privacy: .public)")
@@ -384,14 +393,20 @@ final class APIServer {
                 guard let params, let pr = self.findPR(params.pr) else {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
+                if self.isAgent(connection) {
+                    let config = self.runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo)
+                    if let refusal = Self.agentReviewRefusal(
+                        pr: pr, config: config, existing: self.runtime.queue.reviews[pr.nodeId], force: params.force ?? false) {
+                        throw refusal
+                    }
+                }
                 self.runtime.queue.enqueue(pr, force: params.force ?? false, providerOverride: params.provider)
                 return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId])
             }
         case .enqueueAction:
             return await reply(line, id, EnqueueActionParams.self) { params in
                 guard let params else { throw Self.missingParams }
-                if let connection, let client = self.clients[ObjectIdentifier(connection)], client.agent == true,
-                   let denial = Self.denial(of: params.kind, under: self.runtime.repoConfigs.config.agents) {
+                if self.isAgent(connection), let denial = Self.denial(of: params.kind, under: self.runtime.repoConfigs.config.agents) {
                     throw denial
                 }
                 self.runtime.actionQueue.enqueue(params.pr, kind: params.kind, source: .manual)
@@ -400,12 +415,14 @@ final class APIServer {
         case .retryAction:
             return await reply(line, id, ActionTarget.self) { params in
                 guard let params else { throw Self.missingParams }
+                try self.authorizeAgent(connection, onActionFor: params.prNodeId)
                 self.runtime.actionQueue.retry(params.prNodeId)
                 return APIEmpty()
             }
         case .dismissAction:
             return await reply(line, id, ActionTarget.self) { params in
                 guard let params else { throw Self.missingParams }
+                try self.authorizeAgent(connection, onActionFor: params.prNodeId)
                 self.runtime.actionQueue.dismissFailure(params.prNodeId)
                 return APIEmpty()
             }
@@ -548,12 +565,10 @@ final class APIServer {
             capability = .read
         case .runReview:
             capability = .review
-        case .enqueueAction:
+        case .enqueueAction, .retryAction, .dismissAction:
             // Post or merge depends on the action, so the handler decides
-            // with `denial(of:under:)` once it has read the params.
+            // with `denial(of:under:)` once it knows which action it is.
             return nil
-        case .retryAction, .dismissAction:
-            capability = .post
         case .shutdown:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
         case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setPreferences, .checkoutUsage, .checkoutPrune,
@@ -571,6 +586,48 @@ final class APIServer {
             return RPCError(
                 code: RPCError.notPermitted,
                 message: "PRBar's agents.\(capability.rawValue) is `ask`, and approving agent requests in PRBar isn't available yet; set it to `allow` to let agents do this")
+        }
+    }
+
+    private func isAgent(_ connection: (any APIConnection)?) -> Bool {
+        guard let connection else { return false }
+        return clients[ObjectIdentifier(connection)]?.agent == true
+    }
+
+    /// Retrying or dismissing a queued write needs the capability of that
+    /// write: retrying a failed merge is merging.
+    private func authorizeAgent(_ connection: (any APIConnection)?, onActionFor prNodeId: String) throws {
+        guard isAgent(connection) else { return }
+        guard let entry = runtime.actionQueue.entries[prNodeId] else {
+            throw RPCError(code: RPCError.notFound, message: "no queued action for that PR")
+        }
+        if let denial = Self.denial(of: entry.action.kind, under: runtime.repoConfigs.config.agents) {
+            throw denial
+        }
+    }
+
+    /// Why an agent's review request is refused, or nil to queue it. The
+    /// repo's own opt-outs hold even with `force`: they are the user's cost
+    /// decision, not a gate the agent may lift. The rest refuse with their
+    /// reason unless `force` is set.
+    nonisolated static func agentReviewRefusal(
+        pr: InboxPR, config: ResolvedRepoConfig, existing: ReviewState?, force: Bool
+    ) -> RPCError? {
+        func refused(_ message: String) -> RPCError { RPCError(code: RPCError.refused, message: message) }
+        if config.excluded {
+            return refused("\(pr.nameWithOwner) is excluded from PRBar in prbar.yaml.")
+        }
+        switch ReviewAdmission.evaluate(pr: pr, config: config, existing: existing, requireRequested: false) {
+        case .review:
+            return nil
+        case .skip(let reason) where reason == .aiReviewDisabled || reason == .titleExcluded:
+            return refused("\(reason.detail) Coding agents can't override that; the user can in prbar.yaml.")
+        case .skip(let reason):
+            return force ? nil : refused("Not reviewed: \(reason.detail) Pass force true to review it anyway.")
+        case .ignore(.failedAtCurrentSha):
+            return force ? nil : refused("PRBar's review of this commit failed. Pass force true to try again, or push a new commit.")
+        case .ignore(.notRequested):
+            return nil
         }
     }
 

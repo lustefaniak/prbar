@@ -28,12 +28,16 @@ enum ReviewAdmission {
     /// Gates in order. The order decides which reason a skipped PR shows,
     /// so the more specific repo-config reasons come first and the
     /// verdict-marker check comes last.
+    /// `requireRequested: false` applies every gate to a PR the viewer
+    /// wasn't asked to review, as when a coding agent asks for a review of
+    /// the PR it is working on.
     static func evaluate(
         pr: InboxPR,
         config: ResolvedRepoConfig,
-        existing: ReviewState?
+        existing: ReviewState?,
+        requireRequested: Bool = true
     ) -> Decision {
-        guard pr.role == .reviewRequested || pr.role == .both else {
+        guard !requireRequested || pr.role == .reviewRequested || pr.role == .both else {
             return .ignore(.notRequested)
         }
         // Also a poller filter, but the poller is not the only entry

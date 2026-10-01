@@ -32,12 +32,12 @@ enum RuntimeFixtures {
         )
     }
 
-    static func requestedPR(nodeId: String = "PR_1", number: Int = 1, headSha: String = "abc123") -> InboxPR {
+    static func requestedPR(nodeId: String = "PR_1", number: Int = 1, headSha: String = "abc123", isDraft: Bool = false) -> InboxPR {
         InboxPR(
             nodeId: nodeId, owner: "o", repo: "r", number: number,
             title: "t", body: "", url: URL(string: "https://github.com/o/r/pull/\(number)")!,
             author: "a", headRef: "h", baseRef: "main",
-            headSha: headSha, isDraft: false,
+            headSha: headSha, isDraft: isDraft,
             role: .reviewRequested,
             mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", reviewDecision: nil,
             checkRollupState: "PENDING",

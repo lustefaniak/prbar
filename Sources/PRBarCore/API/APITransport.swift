@@ -92,6 +92,8 @@ extension APIServer {
     /// A client connected to this server inside the same process.
     func connectInProcess() -> APIClient {
         let end = InProcessServerEnd()
+        // The app's own front end: no `hello` round trip, never an agent.
+        registerClient(end, HelloParams(client: "in-process", protocolVersion: APIVersion.current))
         let requests = serve(end)
         let transport = InProcessClientTransport(serverEnd: end) { line in requests.yield(line) }
         register(end)
