@@ -112,10 +112,16 @@ enum ConfigFile {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = dir.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         try Data(text.utf8).write(to: tmp)
-        if FileManager.default.fileExists(atPath: url.path) {
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-        } else {
-            try FileManager.default.moveItem(at: tmp, to: url)
+        // rename(2) replaces the target atomically. Not `replaceItemAt`:
+        // Linux's Foundation fails it with "file doesn't exist" whenever
+        // the target does exist.
+        guard rename(tmp.path, url.path) == 0 else {
+            let code = errno
+            try? FileManager.default.removeItem(at: tmp)
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSFilePathErrorKey: url.path,
+                NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(code)),
+            ])
         }
     }
 
