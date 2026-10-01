@@ -709,79 +709,35 @@ final class ReviewQueueWorker {
     /// path. The app passes nil and resolves per repo as before.
     func enqueueNewReviewRequests(from prs: [InboxPR], providerOverride: ProviderID? = nil) {
         pruneReviews(keeping: prs)
-        for pr in prs where pr.role == .reviewRequested || pr.role == .both {
+        for pr in prs {
             let cfg = configResolver(pr.owner, pr.repo)
-            // Also a poller filter, but the poller is not the only entry
-            // point: the CLI is handed a PR directly and never polls.
-            if TitleExclusion.isExcluded(title: pr.title, patterns: cfg.excludeTitlePatterns) {
-                PRBarLog.triage.debug("auto-enqueue skip reason=title-excluded pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
-                recordSkip(pr, reason: .titleExcluded)
-                continue
-            }
-            // Repo opted out of AI triage entirely → ReadinessCoordinator
-            // marks these as "ready" immediately on the human side.
-            if !cfg.aiReviewEnabled {
-                PRBarLog.triage.debug("auto-enqueue skip reason=ai-disabled pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
-                recordSkip(pr, reason: .aiReviewDisabled)
-                continue
-            }
-            // Skip drafts unless the repo config opts in — drafts churn a
-            // lot and reviewing them burns cost on intermediate state.
-            if pr.isDraft && !cfg.reviewDrafts {
-                PRBarLog.triage.debug("auto-enqueue skip reason=draft pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
-                recordSkip(pr, reason: .draftNotReviewed)
-                continue
-            }
-            // Skip the AI run when another human already reviewed — it's
-            // covered, so don't burn cost re-triaging. Inbox visibility is
-            // governed separately by the opt-in hide filter (same predicate);
-            // manual Re-run still works regardless.
-            if cfg.skipAIIfReviewedByOthers && pr.isReviewedByOthers {
-                PRBarLog.triage.debug("auto-enqueue skip reason=already-reviewed-by-others pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) decision=\(pr.reviewDecision ?? "nil", privacy: .public)")
-                recordSkip(pr, reason: .reviewedByOthers)
-                continue
-            }
-            // A review that already failed at this exact commit is not
-            // auto-retried — re-running on the next poll either burns cost
-            // re-failing deterministically (budgetExceeded on a too-large
-            // diff) or churns the UI for transient failures, and it masks
-            // the failed state as the row flips back to "Reviewing…". Any
-            // failure is terminal for this SHA; a new commit re-arms it and
-            // manual Re-run (force) bypasses this.
-            if let existing = reviews[pr.nodeId],
-               case .failed = existing.status,
-               existing.headSha == pr.headSha {
+            switch ReviewAdmission.evaluate(pr: pr, config: cfg, existing: reviews[pr.nodeId]) {
+            case .review:
+                enqueue(pr, providerOverride: providerOverride)
+            case .skip(let reason):
+                let tag = Self.logTag(reason)
+                if reason == .reviewedByPRBarElsewhere {
+                    PRBarLog.triage.notice("auto-enqueue skip reason=\(tag, privacy: .public) pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public)")
+                } else {
+                    PRBarLog.triage.debug("auto-enqueue skip reason=\(tag, privacy: .public) pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+                }
+                recordSkip(pr, reason: reason)
+            case .ignore(.failedAtCurrentSha):
                 PRBarLog.triage.debug("auto-enqueue skip reason=failed-at-current-sha pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public)")
+            case .ignore(.notRequested):
                 continue
             }
-            // Some PRBar has already posted an AI verdict for this exact
-            // commit — most often another requested reviewer's instance,
-            // which would otherwise pay for a second review of a diff whose
-            // findings are already on the PR. Deliberately last: every gate
-            // above is cheaper to evaluate and more specific, and `enqueue`
-            // must stay reachable for a PR we already hold a completed
-            // review for so its cache-hit path can fire the settled pulse
-            // `ReadinessCoordinator` depends on.
-            if pr.hasPRBarVerdictAtHead, !holdsCompletedReview(pr) {
-                PRBarLog.triage.notice("auto-enqueue skip reason=verdict-exists-at-sha pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public)")
-                recordSkip(pr, reason: .reviewedByPRBarElsewhere)
-                continue
-            }
-            enqueue(pr, providerOverride: providerOverride)
         }
     }
 
-    /// True when this instance holds its own completed review for the PR's
-    /// current head. The marker skip defers to it: our own verdict is the
-    /// one the UI shows, and `enqueue`'s cache-hit path has to stay
-    /// reachable so it can fire the settled pulse `ReadinessCoordinator`
-    /// needs to notify after a relaunch.
-    private func holdsCompletedReview(_ pr: InboxPR) -> Bool {
-        guard let existing = reviews[pr.nodeId],
-              existing.headSha == pr.headSha,
-              case .completed = existing.status
-        else { return false }
-        return true
+    private static func logTag(_ reason: ReviewState.SkipReason) -> String {
+        switch reason {
+        case .titleExcluded: return "title-excluded"
+        case .aiReviewDisabled: return "ai-disabled"
+        case .draftNotReviewed: return "draft"
+        case .reviewedByOthers: return "already-reviewed-by-others"
+        case .reviewedByPRBarElsewhere: return "verdict-exists-at-sha"
+        }
     }
 
     /// Record a deliberate auto-triage skip so the row/detail UI can show
@@ -1233,107 +1189,20 @@ final class ReviewQueueWorker {
             cancelAutoReviewBatch()
         }
 
-        let decision = AutoReviewPolicy.evaluate(
-            pr: pr, review: review, providerId: providerId, config: config
-        )
-        switch decision {
-        case .skip(let reason):
+        switch AutoReviewPlan.plan(
+            pr: pr, review: review, config: config, providerId: providerId, diffText: diffText
+        ) {
+        case .none(let reason):
             PRBarLog.triage.debug("auto-review skip pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) reason=\(reason, privacy: .public)")
-        case .approve:
-            let cfg = config.autoApprove
-            let staged = StagedAutoReview(
-                pr: pr,
-                review: review,
-                action: .approve,
-                // Empty body = a bare GitHub approval, which is what the
-                // green check already says. The attribution line is opt-in
-                // because it lands as a comment on every PR the bot touches.
-                body: cfg.postAttributionComment ? attributionBody(review) : "",
-                comments: cfg.postInlineAnnotations
-                    ? inlineComments(review: review, diffText: diffText)
-                    : [],
-                stagedAt: Date()
-            )
+        case .flag(let staged):
+            flaggedDenials[pr.nodeId] = staged
+            PRBarLog.triage.notice("auto-review flagged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+        case .post(let staged):
             pendingAutoActions[pr.nodeId] = staged
-            PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=approve comments=\(staged.comments.count, privacy: .public)")
+            let action = staged.source == .sharedFindings ? "share" : staged.action.map { "\($0)" } ?? "none"
+            PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=\(action, privacy: .public) comments=\(staged.comments.count, privacy: .public)")
             scheduleBatchIfSettled()
-        case .share:
-            // Only the annotations the policy actually asked for — sharing
-            // "warnings and blockers" while posting every nitpick inline
-            // would contradict the setting the user chose.
-            let floor = config.shareFindings.minSeverity ?? .info
-            // Severity first, then the cap — so a truncated share keeps the
-            // findings that matter most rather than whichever the model
-            // happened to emit first.
-            var shared = review.annotations
-                .filter { $0.severity >= floor }
-                .sorted { $0.severity > $1.severity }
-            let cap = config.shareMaxComments
-            if cap > 0 && shared.count > cap {
-                PRBarLog.triage.notice("share capped pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) found=\(shared.count, privacy: .public) cap=\(cap, privacy: .public)")
-                shared = Array(shared.prefix(cap))
-            }
-            let comments = inlineComments(annotations: shared, diffText: diffText)
-            let staged = StagedAutoReview(
-                pr: pr,
-                review: review,
-                action: .comment,
-                // Findings that landed inline are the whole review — a body
-                // on top of them can only restate the diff back to the
-                // author. GitHub accepts an empty body on a COMMENT review
-                // that carries inline comments; it rejects one that carries
-                // none, so the summary stays as the body in that case, where
-                // dropping it would post nothing at all.
-                body: comments.isEmpty ? shareBody(review) : "",
-                comments: comments,
-                stagedAt: Date(),
-                source: .sharedFindings
-            )
-            pendingAutoActions[pr.nodeId] = staged
-            PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=share comments=\(staged.comments.count, privacy: .public)")
-            scheduleBatchIfSettled()
-        case .deny(let denyAction):
-            let cfg = config.autoDeny
-            let comments = cfg.postInlineAnnotations
-                ? inlineComments(review: review, diffText: diffText)
-                : []
-            let staged = StagedAutoReview(
-                pr: pr,
-                review: review,
-                action: denyAction.reviewActionKind,
-                // GitHub rejects an empty body on REQUEST_CHANGES and
-                // COMMENT, so the AI summary is the body — falling back to
-                // the attribution line only if the summary came back blank.
-                body: review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? denyFallbackBody(review)
-                    : review.summaryMarkdown,
-                comments: comments,
-                stagedAt: Date()
-            )
-            if denyAction == .flagOnly {
-                flaggedDenials[pr.nodeId] = staged
-                PRBarLog.triage.notice("auto-review flagged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
-            } else {
-                pendingAutoActions[pr.nodeId] = staged
-                PRBarLog.triage.notice("auto-review staged pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) action=\(denyAction.rawValue, privacy: .public) comments=\(comments.count, privacy: .public)")
-                scheduleBatchIfSettled()
-            }
         }
-    }
-
-    private func inlineComments(review: AggregatedReview, diffText: String) -> [GHClient.InlineComment] {
-        inlineComments(annotations: review.annotations, diffText: diffText)
-    }
-
-    private func inlineComments(
-        annotations: [DiffAnnotation],
-        diffText: String
-    ) -> [GHClient.InlineComment] {
-        guard !annotations.isEmpty else { return [] }
-        return InlineCommentMapper.map(
-            annotations: annotations,
-            hunks: DiffParser.parse(diffText)
-        )
     }
 
     /// Start the undo-window timer iff (a) we have staged posts and
@@ -1425,19 +1294,6 @@ final class ReviewQueueWorker {
         }
     }
 
-    /// Body for a `.share` post: the AI summary verbatim, exactly like the
-    /// auto-deny comment path. No banner or disclaimer — a shared review
-    /// should be indistinguishable from any other review PRBar posts.
-    /// GitHub rejects an empty body on COMMENT, hence the fallback.
-    private func shareBody(_ review: AggregatedReview) -> String {
-        let summary = review.summaryMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
-        return summary.isEmpty ? shareFallbackBody(review) : summary
-    }
-
-    private func shareFallbackBody(_ review: AggregatedReview) -> String {
-        "PRBar's AI review flagged the findings below (\(formatConfidence(review.confidence)) confidence) but returned no summary."
-    }
-
     /// Log kind for the fallback (no `ActionQueue` wired) post path.
     /// `ActionQueue.logKindAndDetail` is the production equivalent; both
     /// have to agree or a share reads as a plain auto-comment in History.
@@ -1446,17 +1302,5 @@ final class ReviewQueueWorker {
         _ source: ActionSource
     ) -> ActionLogKind {
         source == .sharedFindings ? .autoShare : action.autoActionLogKind
-    }
-
-    private func attributionBody(_ review: AggregatedReview) -> String {
-        "Auto-approved by PRBar (\(formatConfidence(review.confidence)) confidence)."
-    }
-
-    private func denyFallbackBody(_ review: AggregatedReview) -> String {
-        "PRBar's AI review requested changes (\(formatConfidence(review.confidence)) confidence) but returned no summary. See the annotations."
-    }
-
-    private func formatConfidence(_ c: Double) -> String {
-        String(format: "%.0f%%", c * 100)
     }
 }

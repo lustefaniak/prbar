@@ -67,6 +67,7 @@ let package = Package(
             sources: [
                 "CLI",
                 "Config",
+                "Engine",
                 "Models",
                 "Util",
                 "Services/AutoReviewPolicy.swift",
