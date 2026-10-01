@@ -36,6 +36,11 @@ final class RepoConfigStore {
     /// Set when this launch created the file from the pre-file settings.
     private(set) var migratedFromLegacy = false
 
+    /// Bumped on every change to `config`, from Settings or from the file,
+    /// so front ends editing a copy can tell which state is newer and
+    /// whether the file moved under an edit.
+    private(set) var revision = 0
+
     @ObservationIgnored let fileURL: URL
     @ObservationIgnored private let lastGoodURL: URL?
     @ObservationIgnored private var lastSeenData: Data?
@@ -163,6 +168,7 @@ final class RepoConfigStore {
         // must not rewrite the file or churn the resolvers.
         guard next != config else { return }
         config = next
+        revision += 1
         save()
         onChange?()
     }
@@ -258,7 +264,10 @@ final class RepoConfigStore {
             PRBarLog.config.error("reload failed: \(error.localizedDescription, privacy: .public)")
             return
         }
-        if config != before { onChange?() }
+        if config != before {
+            revision += 1
+            onChange?()
+        }
     }
 
     /// Polling rather than FSEvents: editors save via rename, which a

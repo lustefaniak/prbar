@@ -588,16 +588,38 @@ final class ConfigModel {
 
     func apply(_ update: StateUpdate) {
         guard let state = update.config else { return }
-        adopt(state, includingConfig: unansweredWrites == 0)
+        consider(state)
     }
 
-    private func adopt(_ state: ConfigState, includingConfig: Bool) {
-        if includingConfig { config = state.config }
+    /// The newest state seen so far, by revision. Adopted at once when
+    /// none of this model's writes are in flight; otherwise when the last
+    /// one is answered, so an echo of an older write can't undo a newer
+    /// local edit, while a change made elsewhere meanwhile still wins.
+    @ObservationIgnored
+    private var latest: ConfigState?
+    @ObservationIgnored
+    private var adoptedRevision = -1
+
+    private func consider(_ state: ConfigState) {
+        if latest.map({ state.revision >= $0.revision }) ?? true { latest = state }
+        if unansweredWrites == 0 { adoptLatest() }
+    }
+
+    private func adoptLatest() {
+        guard let state = latest else { return }
+        if state.revision != adoptedRevision || config != state.config {
+            config = state.config
+            adoptedRevision = state.revision
+        }
         path = state.path
-        loadIssue = state.loadIssue
+        loadIssue = saveIssue ?? state.loadIssue
         warnings = state.warnings
         migratedFromLegacy = state.migratedFromLegacy
     }
+
+    /// Why the last edit didn't save, shown until the next one does.
+    @ObservationIgnored
+    private var saveIssue: String?
 
     private func mutate(_ body: (inout PRBarConfig) -> Void) {
         var next = config
@@ -608,14 +630,19 @@ final class ConfigModel {
         config = next
         guard let session else { return }
         unansweredWrites += 1
-        session.send(.setConfig, SetConfigParams(config: next), as: ConfigState.self) { [weak self] result in
+        let params = SetConfigParams(config: next, baseRevision: adoptedRevision >= 0 ? adoptedRevision : nil)
+        session.send(.setConfig, params, as: ConfigState.self) { [weak self] result in
             guard let self else { return }
             self.unansweredWrites -= 1
             switch result {
             case .success(let state):
-                self.adopt(state, includingConfig: self.unansweredWrites == 0)
+                self.saveIssue = nil
+                self.consider(state)
             case .failure(let error):
-                self.loadIssue = "Could not save: \(error.localizedDescription)"
+                self.saveIssue = (error as? RPCError)?.code == RPCError.conflict
+                    ? "prbar.yaml changed while you were editing; your last change wasn't saved, and Settings now shows the file."
+                    : "Could not save: \(error.localizedDescription)"
+                if self.unansweredWrites == 0 { self.adoptLatest() }
             }
         }
     }

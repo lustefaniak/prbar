@@ -58,6 +58,8 @@ final class APIServer {
     private var notificationSubscribers: [ObjectIdentifier: any APIConnection] = [:]
     /// What each connection said about itself in `hello`.
     private var clients: [ObjectIdentifier: HelloParams] = [:]
+    /// The config revision each connection's last accepted write produced.
+    private var lastConfigWrite: [ObjectIdentifier: Int] = [:]
     private var observer: UUID?
     private var trackers: [AnyObject] = []
 
@@ -155,6 +157,7 @@ final class APIServer {
                     self?.stateSubscribers[key] = nil
                     self?.notificationSubscribers[key] = nil
                     self?.clients[key] = nil
+                    self?.lastConfigWrite[key] = nil
                 }
             }
         )
@@ -279,6 +282,7 @@ final class APIServer {
     static func configState(_ store: RepoConfigStore) -> ConfigState {
         ConfigState(
             config: store.config,
+            revision: store.revision,
             path: store.fileURL.path,
             loadIssue: store.loadIssue,
             warnings: store.warnings,
@@ -457,7 +461,19 @@ final class APIServer {
         case .setConfig:
             return await reply(line, id, SetConfigParams.self) { params in
                 guard let params else { throw Self.missingParams }
-                self.runtime.repoConfigs.replace(with: params.config)
+                let store = self.runtime.repoConfigs
+                let key = connection.map(ObjectIdentifier.init)
+                // A burst of edits all name the revision they started from;
+                // what moved since then must have been this client's own
+                // previous write, or the edit is based on a stale copy.
+                if let base = params.baseRevision, base != store.revision,
+                   key.flatMap({ self.lastConfigWrite[$0] }) != store.revision {
+                    throw RPCError(
+                        code: RPCError.conflict,
+                        message: "prbar.yaml changed while you were editing; your last change wasn't saved")
+                }
+                store.replace(with: params.config)
+                if let key { self.lastConfigWrite[key] = store.revision }
                 // The state the write produced, so the writer can adopt it
                 // without waiting for (or racing) the state update.
                 return Self.configState(self.runtime.repoConfigs)

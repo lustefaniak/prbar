@@ -81,6 +81,8 @@ struct RPCError: Codable, Sendable, Error, Equatable, LocalizedError {
     static let notFound = -32002
     /// The `agents:` policy doesn't let a coding agent do this.
     static let notPermitted = -32003
+    /// The thing being written changed since the client read it.
+    static let conflict = -32004
 }
 
 // A line is decoded twice: once as `RPCHeader` to route it, then as the
@@ -243,6 +245,10 @@ struct SetConfigParams: Codable, Sendable {
     /// The whole config, rule ids included (they are UI identity, kept
     /// across the API though never written to the file).
     var config: PRBarConfig
+    /// The revision the edit started from. The write is refused with
+    /// `conflict` when the config changed since by any other hand, so a
+    /// whole-config write can't erase an edit made to the file meanwhile.
+    var baseRevision: Int?
 }
 
 /// A PR as the client sees it, for loads keyed by its head SHA.

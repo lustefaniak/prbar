@@ -71,6 +71,8 @@ struct HistoryImportState: Codable, Sendable, Equatable {
 /// `prbar.yaml` as the server has it in effect, and what's wrong with it.
 struct ConfigState: Codable, Sendable, Equatable {
     var config: PRBarConfig
+    /// `RepoConfigStore.revision`: higher is newer.
+    var revision: Int
     var path: String
     var loadIssue: String?
     var warnings: [String]
