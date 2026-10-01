@@ -275,6 +275,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let n = Notifier(deliverer: UNNotificationDeliverer())
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("prbar-screenshots-\(UUID().uuidString)")
+        if ScreenshotMode.stage == .settingsRules {
+            q.ruleLog = .rules(in: scratch.appendingPathComponent("history"))
+            ScreenshotFixtures.seedRules(rules: scratch.appendingPathComponent("rules"), log: q.ruleLog)
+            // Before any view: the tab reads these when it first loads.
+            ScreenshotMode.initialRulesEdit = ScreenshotFixtures.rulesEdit
+            ScreenshotMode.initialRulesTarget = ScreenshotFixtures.prInReview
+        }
         return PRBarRuntime(
             poller: p,
             notifier: n,
@@ -442,7 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return popover.contentViewController?.view.window?.windowNumber ?? 0
         case .windowDetail:
             return screenshotWindow?.windowNumber ?? 0
-        case .settingsGeneral, .settingsReviewDefaults, .settingsRepositories, .settingsDiagnostics:
+        case .settingsGeneral, .settingsReviewDefaults, .settingsRepositories, .settingsRules, .settingsDiagnostics:
             // SwiftUI's Settings window may not exist immediately after
             // `openSettings(_:)` returns — the selector dispatches
             // asynchronously. Pick the first titled, visible, non-popover
@@ -488,6 +495,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openSettings(nil)
         case .settingsRepositories:
             SettingsDestination.repositories.select()
+            openSettings(nil)
+        case .settingsRules:
+            SettingsDestination.rules.select()
             openSettings(nil)
         case .settingsDiagnostics:
             SettingsDestination.diagnostics.select()

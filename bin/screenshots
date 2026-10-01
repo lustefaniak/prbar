@@ -81,6 +81,7 @@ STAGES=(
   settings-general
   settings-review-defaults
   settings-repositories
+  settings-rules
   settings-diagnostics
 )
 

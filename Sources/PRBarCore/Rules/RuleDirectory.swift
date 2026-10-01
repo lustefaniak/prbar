@@ -13,7 +13,8 @@ import Yams
 ///
 /// Every `*.yaml` / `*.yml` in a stage directory is a policy; they run in
 /// file name order and the first one whose rules match decides, so a
-/// numeric prefix sets the order. Settings never writes here.
+/// numeric prefix sets the order. Settings → Rules writes here, one file
+/// at a time, and only rules that compile (`APIServer.saveRuleFile`).
 enum RuleDirectory {
     enum Error: Swift.Error, LocalizedError, Equatable {
         case unreadable(path: String, reason: String)
@@ -58,34 +59,61 @@ enum RuleDirectory {
 
     /// Reads and compiles the directory. Nil when it holds no policies.
     static func load(_ directory: URL) throws -> Rules? {
-        func read(_ url: URL) throws -> Rules.Source {
-            guard let data = FileManager.default.contents(atPath: url.path),
-                  let text = String(data: data, encoding: .utf8)
-            else {
+        try compile(read(directory), root: directory.path)
+    }
+
+    /// The directory's rule files by path relative to it (`select/10-x.yaml`,
+    /// `lists.yaml`), with their text.
+    static func read(_ directory: URL) throws -> [String: String] {
+        var files: [String: String] = [:]
+        for url in stages.flatMap({ self.files($0, in: directory) }) + [listsFile(in: directory)] {
+            guard let data = FileManager.default.contents(atPath: url.path) else {
+                if url == listsFile(in: directory) { continue }
                 throw Error.unreadable(path: url.path, reason: "not a readable UTF-8 file")
             }
-            return Rules.Source(path: url.path, text: text)
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw Error.unreadable(path: url.path, reason: "not a readable UTF-8 file")
+            }
+            files[String(url.path.dropFirst(directory.path.count + 1))] = text
         }
-        let select = try files("select", in: directory).map(read)
-        let decide = try files("decide", in: directory).map(read)
+        return files
+    }
+
+    /// Whether `path` names a file the rules read: `lists.yaml`, or a
+    /// policy directly in a stage directory.
+    static func isRuleFile(_ path: String) -> Bool {
+        if path == "lists.yaml" { return true }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        return parts.count == 2 && stages.contains(String(parts[0])) && !parts[1].hasPrefix(".")
+            && (parts[1].hasSuffix(".yaml") || parts[1].hasSuffix(".yml"))
+    }
+
+    /// Compiles rule files given by relative path, as `read` returns them.
+    /// `root` prefixes each path in errors and in the rules' sources.
+    /// Nil when there are no policies.
+    static func compile(_ files: [String: String], root: String) throws -> Rules? {
+        func sources(_ stage: String) -> [Rules.Source] {
+            files.keys
+                .filter { isRuleFile($0) && $0.hasPrefix("\(stage)/") }
+                .sorted()
+                .map { Rules.Source(path: "\(root)/\($0)", text: files[$0] ?? "") }
+        }
+        let select = sources("select")
+        let decide = sources("decide")
         guard !select.isEmpty || !decide.isEmpty else { return nil }
-        let lists = try readLists(listsFile(in: directory))
+        var lists: [String: [String]] = [:]
+        if let text = files["lists.yaml"] {
+            do {
+                lists = try YAMLDecoder().decode([String: [String]]?.self, from: text) ?? [:]
+            } catch {
+                throw Error.unreadable(
+                    path: "\(root)/lists.yaml", reason: "expected lists of names, like `trusted: [alice, bob]`: \(error)")
+            }
+        }
         do {
             return try Rules.compile(select: select, decide: decide, lists: lists)
         } catch {
             throw Error.invalid(String(describing: error))
-        }
-    }
-
-    private static func readLists(_ url: URL) throws -> [String: [String]] {
-        guard let data = FileManager.default.contents(atPath: url.path) else { return [:] }
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw Error.unreadable(path: url.path, reason: "not valid UTF-8")
-        }
-        do {
-            return try YAMLDecoder().decode([String: [String]]?.self, from: text) ?? [:]
-        } catch {
-            throw Error.unreadable(path: url.path, reason: "expected lists of names, like `trusted: [alice, bob]`: \(error)")
         }
     }
 

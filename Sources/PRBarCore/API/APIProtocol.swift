@@ -24,6 +24,11 @@ enum APIMethod: String, CaseIterable, Sendable {
     case reviewOutcome = "review.outcome"
     case reviewLocal = "review.local"
     case explainRules = "rules.explain"
+    case ruleFiles = "rules.files"
+    case ruleRecords = "rules.records"
+    case replayRule = "rules.replay"
+    case ruleImpact = "rules.impact"
+    case saveRuleFile = "rules.save"
     case enqueueAction = "action.enqueue"
     case retryAction = "action.retry"
     case dismissAction = "action.dismiss"
@@ -206,6 +211,8 @@ struct ServerStatus: Codable, Sendable, Equatable {
 /// when the server holds a completed review of its current head.
 struct ExplainRulesParams: Codable, Sendable {
     var pr: PRReference
+    /// Evaluate these unsaved edits in place of the user's rules.
+    var draft: RuleDraft?
 }
 
 struct RulesExplanation: Codable, Sendable {
@@ -213,6 +220,105 @@ struct RulesExplanation: Codable, Sendable {
     /// Every condition evaluated, with the facts it read, then the outcome.
     var select: String
     var decide: String?
+    /// The same, per layer, as values. Nil from an older server.
+    var layers: [RuleLayerTrace]?
+    /// What happens, in words: "reviewed.", "nothing posted (...)".
+    var selectOutcome: String?
+    var decideOutcome: String?
+    /// Why the draft couldn't be evaluated: it doesn't compile.
+    var draftProblem: String?
+}
+
+/// Unsaved edits to the user's rules directory, by path relative to it
+/// (`decide/10-x.yaml`, `lists.yaml`): what the Rules tab evaluates while
+/// the user types.
+struct RuleDraft: Codable, Sendable, Equatable {
+    var files: [String: String] = [:]
+    /// Files deleted in the draft.
+    var removed: [String] = []
+
+    /// The directory's files with the draft applied.
+    func applied(to files: [String: String]) -> [String: String] {
+        var out = files.merging(self.files) { $1 }
+        for path in removed { out.removeValue(forKey: path) }
+        return out
+    }
+}
+
+struct RuleFilesResult: Codable, Sendable, Equatable {
+    /// The user's rules directory.
+    var directory: String
+    /// By path relative to it.
+    var files: [String: String]
+    /// Why the rules in effect aren't what's in the directory.
+    var issue: String?
+}
+
+struct RuleRecordsParams: Codable, Sendable {
+    /// Newest first; nil means every recorded one.
+    var limit: Int?
+}
+
+/// A recorded rule decision, without the facts it was made on.
+struct RuleRecordSummary: Codable, Sendable, Equatable, Identifiable {
+    var id: UUID
+    var at: Date
+    var stage: RuleEvaluation.Stage
+    var layer: RuleLayer
+    /// `owner/repo#number`.
+    var pr: String
+    var title: String
+    var outcome: String
+}
+
+struct ReplayRuleParams: Codable, Sendable {
+    var id: UUID
+    var draft: RuleDraft?
+}
+
+/// A recorded decision evaluated again on its own facts: against the rules
+/// now, and against the draft when there is one.
+struct RuleReplayResult: Codable, Sendable {
+    var record: RuleRecordSummary
+    var now: String
+    var trace: RuleTrace?
+    var draft: String?
+    var draftTrace: RuleTrace?
+    var draftProblem: String?
+}
+
+struct RuleImpactParams: Codable, Sendable {
+    var draft: RuleDraft
+    /// How far back; every record kept when nil.
+    var days: Int?
+}
+
+/// What a draft would change: each recorded decision whose answer under
+/// the draft differs from its answer under the rules now.
+struct RuleImpact: Codable, Sendable {
+    struct Change: Codable, Sendable, Equatable, Identifiable {
+        var record: RuleRecordSummary
+        var now: String
+        var draft: String
+
+        var id: UUID { record.id }
+    }
+
+    /// Decisions replayed: the latest per PR, commit and stage.
+    var examined: Int
+    var changes: [Change]
+    var draftProblem: String?
+}
+
+struct SaveRuleFileParams: Codable, Sendable {
+    /// Relative to the rules directory.
+    var path: String
+    /// Nil deletes the file.
+    var text: String?
+    /// What the client read, nil for a file it creates. The save is refused
+    /// with `conflict` when the file changed since, so it can't erase an
+    /// edit made in an editor meanwhile.
+    var base: String?
 }
 
 struct RuleCounts: Codable, Sendable, Equatable {

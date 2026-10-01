@@ -34,6 +34,9 @@ enum ScreenshotMode {
         case settingsReviewDefaults = "settings-review-defaults"
         /// Settings pane open on the Repositories tab.
         case settingsRepositories = "settings-repositories"
+        /// Settings pane open on the Rules tab, a rule edited and tried on
+        /// a PR, with what the edit changes.
+        case settingsRules = "settings-rules"
         /// Settings pane open on the Diagnostics tab.
         case settingsDiagnostics = "settings-diagnostics"
     }
@@ -50,6 +53,11 @@ enum ScreenshotMode {
     /// MainActor-isolated because every reader is a SwiftUI view body
     /// or AppKit handler, both of which run on the main actor.
     @MainActor static var initialSelectedPR: InboxPR?
+
+    /// The Rules tab's opening state: an unsaved edit, and the PR it is
+    /// tried on.
+    @MainActor static var initialRulesEdit: (path: String, text: String)?
+    @MainActor static var initialRulesTarget: InboxPR?
 
     /// Pre-selected segmented tab for the popover.
     @MainActor static var initialPopoverTab: PopoverTab?

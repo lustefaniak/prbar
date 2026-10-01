@@ -24,28 +24,7 @@ struct RepoRuleFiles: Sendable, Hashable {
             throw RuleDirectory.Error.unreadable(
                 path: "\(repo):.prbar/rules", reason: "too large to read: \(truncated.sorted().joined(separator: ", "))")
         }
-        func sources(_ stage: String) -> [Rules.Source] {
-            files.keys
-                .filter { $0.hasPrefix("\(stage)/") && ($0.hasSuffix(".yaml") || $0.hasSuffix(".yml")) }
-                .sorted()
-                .map { Rules.Source(path: "\(repo):.prbar/rules/\($0)", text: files[$0] ?? "") }
-        }
-        let select = sources("select")
-        let decide = sources("decide")
-        guard !select.isEmpty || !decide.isEmpty else { return nil }
-        var lists: [String: [String]] = [:]
-        if let text = files["lists.yaml"] {
-            do {
-                lists = try YAMLDecoder().decode([String: [String]]?.self, from: text) ?? [:]
-            } catch {
-                throw RuleDirectory.Error.unreadable(path: "\(repo):.prbar/rules/lists.yaml", reason: "expected lists of names: \(error)")
-            }
-        }
-        do {
-            return try Rules.compile(select: select, decide: decide, lists: lists)
-        } catch {
-            throw RuleDirectory.Error.invalid(String(describing: error))
-        }
+        return try RuleDirectory.compile(files, root: "\(repo):.prbar/rules")
     }
 }
 

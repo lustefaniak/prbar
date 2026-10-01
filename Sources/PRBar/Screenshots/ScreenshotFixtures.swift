@@ -246,4 +246,69 @@ enum ScreenshotFixtures {
             return prInReview
         }
     }
+
+    // MARK: - Rules tab
+
+    static let rulesFiles: [String: String] = [
+        "lists.yaml": "core: [rachel.kim, priya.nair]\n",
+        "select/10-skip-drafts.yaml": """
+            name: skip-drafts
+            rule:
+              match:
+                - condition: pr.draft
+                  output:
+                    rule: skip-drafts
+                    action: skip
+                    reason: drafts wait until they are ready
+
+            """,
+        "decide/10-approve-core.yaml": """
+            name: approve-core
+            rule:
+              match:
+                - condition: below.action == "approve" && !(pr.author in lists.core)
+                  output:
+                    rule: share-outside-core
+                    action: share
+
+            """,
+    ]
+
+    /// The edit the stage opens with: large changes skipped too.
+    static let rulesEdit = (
+        path: "select/10-skip-drafts.yaml",
+        text: """
+            name: skip-drafts
+            rule:
+              match:
+                - condition: pr.draft || pr.additions > 500
+                  output:
+                    rule: skip-drafts-and-large
+                    action: skip
+                    reason: drafts and large changes get a human first
+
+            """)
+
+    /// The rules, and a recorded select decision for each PR waiting on a
+    /// review, so the edit has something to change.
+    static func seedRules(rules directory: URL, log: RuleEvaluationLog?) {
+        for (path, text) in rulesFiles {
+            let url = directory.appendingPathComponent(path)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        guard let log, let rules = try? RuleDirectory.load(directory) else { return }
+        let now = Date()
+        for pr in allPRs where pr.role == .reviewRequested {
+            var facts = ReviewAdmission.selectFacts(
+                pr: pr, rules: rules, trigger: .reviewRequested, lazy: LazyFactValues(), now: now)
+            facts.below = .settings("review")
+            let selection = try? rules.select(facts)
+            try? log.append(RuleEvaluation(
+                id: UUID(), at: now.addingTimeInterval(-3_600), stage: .select, repo: pr.nameWithOwner,
+                number: pr.number, title: pr.title, headSha: pr.headSha, select: facts, decide: nil,
+                rule: selection?.rule, outcome: Rules.describe(selection), rulesDigest: rules.digest,
+                ruleFiles: rules.sources.map(\.path), fetched: [], layer: .personal))
+        }
+    }
 }

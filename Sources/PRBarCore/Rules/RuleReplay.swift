@@ -70,6 +70,20 @@ enum RuleReplay {
         }
     }
 
+    /// The same as values, for the Rules tab.
+    static func trace(_ evaluation: RuleEvaluation, rules: Rules) -> RuleTrace? {
+        switch evaluation.stage {
+        case .select:
+            guard var facts = evaluation.select else { return nil }
+            facts.lists = rules.lists
+            return rules.traceSelect(facts)
+        case .decide:
+            guard var facts = evaluation.decide else { return nil }
+            facts.lists = rules.lists
+            return rules.traceDecide(facts)
+        }
+    }
+
     private static func undecided(_ facts: Set<LazyFact>) -> String {
         "undecided: needs \(facts.map { "pr.\($0.rawValue)" }.sorted().joined(separator: ", ")), which this snapshot doesn't have"
     }

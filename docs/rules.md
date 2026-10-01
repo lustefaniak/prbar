@@ -285,6 +285,30 @@ version you run, for offline use. The schema covers the file's shape and the
 outputs; the conditions are CEL, which it can't check, so `rules check` stays
 the final word.
 
+## Trying rules in PRBar: Settings → Rules
+
+The Rules tab in PRBar's Settings is the quickest way to write a rule and see
+what it does before it decides anything:
+
+- **The files** of your rules directory, by stage, with an editor. A new file
+  (`+`) starts from a rule that compiles. An edit is held unsaved, and the dot
+  beside the file name says so.
+- **Try on** a PR from your inbox, or a recent recorded decision. Every
+  condition is shown with whether it held, each part of it, and the facts it
+  read, for each layer of rules, with what `below` was for that layer. This
+  is `rules explain` as a tree, and it is evaluated against your unsaved edits
+  as you type.
+- **What the edits change**: the decisions of the last 60 days, replayed with
+  your edits and with the rules as saved, and every one whose answer would
+  differ. Pick one to see its conditions.
+- **Save** writes the file and the rules load at once. A save is refused when
+  the rules wouldn't compile with it, so the editor never leaves you with
+  broken rules, and when the file changed on disk since you opened it.
+
+Decisions are recorded even before you have any rules, so a first rule can be
+tried against everything PRBar decided lately. The tab edits your own rules;
+a repository's rules show in the trace but are edited in that repository.
+
 ## Working on rules: check, explain, history, replay
 
 | Command | Needs PRBar running | What it answers |
@@ -299,8 +323,9 @@ the final word.
 **Every decision is recorded with the exact facts it was made on**, in
 `~/.local/state/prbar/history/rules/YYYY-MM.jsonl`: the stage, the PR and its
 head commit, every fact the rules could read, which rule matched (or that none
-did), and a digest that identifies the rules that made it. A record is written
-when the answer changes, not on every poll. Records are kept for 60 days. They
+did), and a digest that identifies the rules that made it. Decisions are
+recorded with no rules too, so there is something to replay a first rule
+against. A record is written when the answer changes, not on every poll. Records are kept for 60 days. They
 hold PR titles and bodies, and stay on your machine like the rest of PRBar's
 history; `jq` reads them.
 
@@ -349,6 +374,8 @@ How to read them:
   needs one the record lacks says `undecided: needs pr.files, which this
   snapshot doesn't have`. `rules explain <pr>` uses the PR's current state and
   fetches what it needs.
+- A replay reads the lists of the rules it replays, so an edit to
+  `lists.yaml` shows in it.
 - Replays answer for the rules only. When no rule matches, the settings decide,
   and the record holds what the rules saw, not the settings, so a replay says
   `no rule matched; the settings decide` rather than guessing their answer.

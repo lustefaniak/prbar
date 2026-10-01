@@ -120,7 +120,7 @@ enum ReviewAdmission {
     ) -> SelectOutcome? {
         var below = settings
         var decided: RuleSelection?
-        for (layer, rules) in config.ruleLayers where !rules.select.isEmpty {
+        for (layer, rules) in config.ruleLayers where layer == .personal || !rules.select.isEmpty {
             let facts = selectFacts(pr: pr, rules: rules, trigger: trigger, lazy: lazy, now: now, below: below)
             do {
                 switch try rules.select(facts, pending: lazy.pending) {

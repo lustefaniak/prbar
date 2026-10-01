@@ -796,7 +796,7 @@ final class ReviewQueueWorker {
         }
         let lazy = lazyFacts(for: pr)
         let onRule: (RuleLayer, SelectFacts, RuleSelection?) -> Void = { [weak self] layer, facts, selection in
-            guard let self, let rules = layer == .repo ? cfg.repoRules : cfg.rules else { return }
+            guard let self, let rules = cfg.rules(layer) else { return }
             self.recordRuleEvaluation(
                 .select, layer: layer, pr: pr, rules: rules, fetched: lazy.fetched, rule: selection?.rule,
                 outcome: Rules.describe(selection), select: facts)
@@ -1525,7 +1525,7 @@ final class ReviewQueueWorker {
                 pr: pr, review: review, config: config, providerId: providerId, diffText: diffText,
                 prior: prior, lazy: lazy
             ) { [weak self] layer, facts, decision in
-                guard let self, let rules = layer == .repo ? config.repoRules : config.rules else { return }
+                guard let self, let rules = config.rules(layer) else { return }
                 self.recordRuleEvaluation(
                     .decide, layer: layer, pr: pr, rules: rules, fetched: fetched, rule: decision?.rule,
                     outcome: Rules.describe(decision), decide: facts)

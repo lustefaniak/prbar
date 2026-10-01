@@ -252,6 +252,10 @@ struct ResolvedRepoConfig: Sendable, Hashable {
         ResolvedRepoConfig(rule: rule, defaults: defaults, rules: rules, repoRules: repoRules)
     }
 
+    func with(rules: Rules?) -> ResolvedRepoConfig {
+        ResolvedRepoConfig(rule: rule, defaults: defaults, rules: rules, repoRules: repoRules)
+    }
+
     // MARK: Per-repo only
 
     var id: UUID { rule.id }

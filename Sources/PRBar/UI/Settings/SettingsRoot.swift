@@ -9,6 +9,8 @@ struct SettingsRoot: View {
                 .tabItem { Label("Review defaults", systemImage: "slider.horizontal.3") }
             RepositoriesSettings()
                 .tabItem { Label("Repositories", systemImage: "folder.badge.gearshape") }
+            RulesSettings()
+                .tabItem { Label("Rules", systemImage: "list.bullet.rectangle") }
             ReviewHistoryView()
                 .tabItem { Label("Review History", systemImage: "clock.arrow.circlepath") }
             DiagnosticsView()

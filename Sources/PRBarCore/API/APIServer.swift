@@ -462,7 +462,27 @@ final class APIServer {
                 } else {
                     pr = try await self.resolvePR(ref, fetch: true)
                 }
-                return await self.explanation(of: pr)
+                return await self.explanation(of: pr, draft: params.draft)
+            }
+        case .ruleFiles:
+            return await reply(line, id, APIEmpty.self) { _ in try self.ruleFiles() }
+        case .ruleRecords:
+            return await reply(line, id, RuleRecordsParams.self) { params in self.ruleRecords(limit: params?.limit) }
+        case .replayRule:
+            return await reply(line, id, ReplayRuleParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                return try self.replayRule(id: params.id, draft: params.draft)
+            }
+        case .ruleImpact:
+            return await reply(line, id, RuleImpactParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                return self.ruleImpact(params)
+            }
+        case .saveRuleFile:
+            return await reply(line, id, SaveRuleFileParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                try self.saveRuleFile(params)
+                return APIEmpty()
             }
         case .reviewLocal:
             return await reply(line, id, LocalReviewParams.self) { params in
@@ -681,7 +701,8 @@ final class APIServer {
         switch method {
         case .hello, .event, .state, .notify:
             return nil
-        case .status, .inbox, .refreshPR, .review, .reviewOutcome, .explainRules, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
+        case .status, .inbox, .refreshPR, .review, .reviewOutcome, .explainRules, .ruleFiles, .ruleRecords, .replayRule,
+             .ruleImpact, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
              .loadDiff, .invalidateDiff, .loadCILog, .invalidateCILog:
             capability = .read
         case .runReview, .reviewLocal:
@@ -693,7 +714,7 @@ final class APIServer {
         case .shutdown, .adopt:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop or adopt the PRBar server")
         case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setPreferences, .checkoutUsage, .checkoutPrune,
-             .setConfig, .clearReviewHistory, .setPopoverVisible, .reportHistoryImport, .reloadHistory:
+             .setConfig, .saveRuleFile, .clearReviewHistory, .setPopoverVisible, .reportHistoryImport, .reloadHistory:
             return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
         }
         switch policy[capability] {
@@ -831,12 +852,29 @@ final class APIServer {
         await runtime.queue.prefetchSelectFacts(pr, config: config, requireRequested: requireRequested, trigger: trigger)
     }
 
-    func explanation(of pr: InboxPR) async -> RulesExplanation {
+    /// `draft` stands in for the user's rules; one that doesn't compile is
+    /// reported in `draftProblem` and the rules in effect are explained.
+    func explanation(of pr: InboxPR, draft: RuleDraft? = nil) async -> RulesExplanation {
         let queue = runtime.queue
-        let config = await queue.layeredConfig(runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo), for: pr)
+        var config = await queue.layeredConfig(runtime.repoConfigs.resolve(owner: pr.owner, repo: pr.repo), for: pr)
+        var draftProblem: String?
+        if let draft {
+            do {
+                config = config.with(rules: try draftRules(draft))
+            } catch {
+                draftProblem = error.localizedDescription
+            }
+        }
         let existing = queue.reviews[pr.nodeId]
         let now = Date()
         var lazy = await selectFacts(pr, config: config)
+        var layers = config.ruleLayers.map { layer, _ in
+            RuleLayerTrace(layer: layer, source: layerSource(layer, pr: pr))
+        }
+        func update(_ layer: RuleLayer, _ body: (inout RuleLayerTrace) -> Void) {
+            guard let index = layers.firstIndex(where: { $0.layer == layer }) else { return }
+            body(&layers[index])
+        }
 
         // Each layer explained on the facts it was evaluated with, `below`
         // included, as the stage handed them over.
@@ -844,13 +882,17 @@ final class APIServer {
         let admission = ReviewAdmission.evaluate(
             pr: pr, config: config, existing: existing, lazy: lazy, now: now
         ) { layer, facts, _ in selectFacts.append((layer, facts)) }
-        var select = selectFacts.map { layer, facts in
-            heading(layer, pr: pr, config: config) + (rules(layer, config)?.explainSelect(facts) ?? "")
+        var select = selectFacts.compactMap { layer, facts -> String? in
+            guard let rules = config.rules(layer), !rules.select.isEmpty else { return nil }
+            update(layer) { $0.select = rules.traceSelect(facts) }
+            return heading(layer, pr: pr, config: config) + rules.explainSelect(facts)
         }.joined(separator: "\n\n")
         if select.isEmpty { select = "No select rules; the settings in prbar.yaml decide." }
-        select += "\n\nOutcome: " + Self.describe(admission)
+        let selectOutcome = Self.describe(admission)
+        select += "\n\nOutcome: " + selectOutcome
 
         var decide: String?
+        var decideOutcome: String?
         if let existing, existing.headSha == pr.headSha, case .completed(let review) = existing.status {
             // The run's diff is gone; the files come from the diff again.
             if !lazy.fetched.isSuperset(of: [.files, .committers]) {
@@ -862,19 +904,31 @@ final class APIServer {
                 pr: pr, review: review, config: config, providerId: existing.providerId, diffText: "",
                 prior: existing.priorReviews, lazy: lazy, now: now
             ) { layer, facts, _ in decideFacts.append((layer, facts)) }
-            var text = decideFacts.map { layer, facts in
+            var text = decideFacts.compactMap { layer, facts -> String? in
+                guard let rules = config.rules(layer), !rules.decide.isEmpty || rules.failure != nil else { return nil }
                 var facts = facts
                 facts.pr.files = lazy.files
-                return heading(layer, pr: pr, config: config) + (rules(layer, config)?.explainDecide(facts) ?? "")
+                update(layer) { $0.decide = rules.traceDecide(facts) }
+                return heading(layer, pr: pr, config: config) + rules.explainDecide(facts)
             }.joined(separator: "\n\n")
             if text.isEmpty { text = "No decide rules; the settings in prbar.yaml decide." }
-            decide = text + "\n\nOutcome: " + Self.describe(outcome)
+            decideOutcome = Self.describe(outcome)
+            decide = text + "\n\nOutcome: " + (decideOutcome ?? "")
         }
-        return RulesExplanation(pr: pr, select: select, decide: decide)
+        return RulesExplanation(
+            pr: pr, select: select, decide: decide, layers: layers, selectOutcome: selectOutcome,
+            decideOutcome: decideOutcome, draftProblem: draftProblem)
+    }
+
+    private func layerSource(_ layer: RuleLayer, pr: InboxPR) -> String {
+        switch layer {
+        case .repo: return "\(pr.nameWithOwner): .prbar/rules on its default branch"
+        case .personal: return runtime.repoConfigs.rulesURL.path
+        }
     }
 
     private func rules(_ layer: RuleLayer, _ config: ResolvedRepoConfig) -> Rules? {
-        layer == .repo ? config.repoRules : config.rules
+        config.rules(layer)
     }
 
     private func heading(_ layer: RuleLayer, pr: InboxPR, config: ResolvedRepoConfig) -> String {

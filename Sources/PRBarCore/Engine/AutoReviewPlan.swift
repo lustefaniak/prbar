@@ -37,7 +37,7 @@ enum AutoReviewPlan {
         // the highest that matches decides.
         var below = BelowFacts.settings(settings)
         var decided: RuleDecision?
-        for (layer, rules) in config.ruleLayers where !rules.decide.isEmpty || rules.failure != nil {
+        for (layer, rules) in config.ruleLayers where layer == .personal || !rules.decide.isEmpty || rules.failure != nil {
             let facts = decideFacts(pr: pr, review: review, providerId: providerId, diffText: diffText,
                                     prior: prior, lazy: lazy, rules: rules, now: now, below: below)
             // The diff is in hand, so the files are never pending here.

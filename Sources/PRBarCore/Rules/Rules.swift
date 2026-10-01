@@ -48,12 +48,22 @@ enum RuleLayer: String, Codable, Sendable, Hashable, CaseIterable {
 }
 
 extension ResolvedRepoConfig {
-    /// The rule layers that apply, bottom up.
+    /// The rule layers that apply, bottom up. The user's is always there,
+    /// empty without rules, so every decision is recorded with its facts
+    /// and a first rule can be tried against them before it is saved.
     var ruleLayers: [(layer: RuleLayer, rules: Rules)] {
         var layers: [(RuleLayer, Rules)] = []
         if trustRepoRules, let repoRules { layers.append((.repo, repoRules)) }
-        if let rules { layers.append((.personal, rules)) }
+        layers.append((.personal, rules ?? .empty))
         return layers
+    }
+
+    /// A layer's rules as the stages evaluate them.
+    func rules(_ layer: RuleLayer) -> Rules? {
+        switch layer {
+        case .repo: return repoRules
+        case .personal: return rules ?? .empty
+        }
     }
 }
 
@@ -217,6 +227,9 @@ struct Rules: Sendable {
             decide: try decide.map { try load($0, RuleOutputs.decide) }, lists: lists,
             sources: select + decide, digest: digest(select + decide, lists: lists), failure: nil)
     }
+
+    /// No rules: what the user's layer holds without a rules directory.
+    static let empty = Rules(select: [], decide: [], lists: [:], sources: [], digest: "none", failure: nil)
 
     static func unloaded(_ reason: String) -> Rules {
         Rules(select: [], decide: [], lists: [:], sources: [], digest: "unloaded", failure: reason)
