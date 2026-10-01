@@ -119,4 +119,50 @@ final class HistoryLogTests: XCTestCase {
         XCTAssertTrue(ReviewLogStore(history: ReviewHistory(in: dir)).entries.isEmpty)
         XCTAssertTrue(ActionLogStore(history: .actions(in: dir)).entries.isEmpty)
     }
+
+    /// A retry after an interrupted run must not duplicate rows, and the
+    /// progress reported has to end at the total.
+    @MainActor
+    func testLegacyMigrationIsIdempotentAndReportsProgress() throws {
+        let dir = try tempDir()
+        let container = PRBarModelContainer.inMemory()
+        let context = ModelContext(container)
+        for n in 0..<250 {
+            context.insert(ReviewLogEntry(prNodeId: "PR_\(n)", owner: "o", repo: "r", prNumber: n, prTitle: "t",
+                                          headSha: "s", providerId: .claude, triggeredAt: Date(), completedAt: Date(),
+                                          status: .failed, errorMessage: "x"))
+        }
+        context.insert(ActionLogEntry(kind: .merge, outcome: .success, prNodeId: "PR_1",
+                                      owner: "o", repo: "r", prNumber: 1, prTitle: "t"))
+        try context.save()
+
+        final class Box: @unchecked Sendable { var seen: [HistoryImportProgress] = [] }
+        let box = Box()
+        XCTAssertNil(LegacyHistoryMigration.migrateIfNeeded(historyDirectory: dir, container: container,
+                                                           progress: { box.seen.append($0) }))
+        XCTAssertEqual(box.seen.first, HistoryImportProgress(done: 0, total: 251))
+        XCTAssertEqual(box.seen.last, HistoryImportProgress(done: 251, total: 251))
+        XCTAssertGreaterThan(box.seen.count, 3, "reviews are copied in batches")
+
+        // Simulate a run that copied everything but died before the marker.
+        try FileManager.default.removeItem(at: dir.appendingPathComponent(LegacyHistoryMigration.markerName))
+        LegacyHistoryMigration.migrateIfNeeded(historyDirectory: dir, container: container)
+        XCTAssertEqual(ReviewHistory(in: dir).readAll().count, 250)
+        XCTAssertEqual(ActionHistory.actions(in: dir).readAll().count, 1)
+    }
+
+    /// No old store, no import: the marker is written without opening
+    /// (and so creating) one.
+    @MainActor
+    func testFreshInstallSkipsTheImport() throws {
+        let dir = try tempDir()
+        let missingStore = dir.appendingPathComponent("no-such-store.sqlite")
+        LegacyHistoryMigration.migrateInBackground(
+            historyDirectory: dir, storeURL: missingStore,
+            progress: { _ in XCTFail("nothing to import") },
+            finished: { _ in XCTFail("nothing to import") }
+        )
+        XCTAssertFalse(LegacyHistoryMigration.needsMigration(dir))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingStore.path))
+    }
 }

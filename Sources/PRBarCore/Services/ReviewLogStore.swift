@@ -11,6 +11,10 @@ import Observation
 final class ReviewLogStore {
     private(set) var entries: [ReviewRecord]
 
+    /// Set while older history is being imported into the files, so the
+    /// views can say the list is still filling in.
+    var importStatus: HistoryImportStatus?
+
     @ObservationIgnored
     let history: ReviewHistory
 

@@ -10,6 +10,10 @@ import Observation
 final class ActionLogStore {
     private(set) var entries: [ActionRecord]
 
+    /// Set while older history is being imported into the files, so the
+    /// views can say the list is still filling in.
+    var importStatus: HistoryImportStatus?
+
     @ObservationIgnored
     let history: ActionHistory
 

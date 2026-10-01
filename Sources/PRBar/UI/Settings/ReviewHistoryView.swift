@@ -69,6 +69,12 @@ struct ReviewHistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            HistoryImportBanner(
+                status: store.importStatus,
+                note: "Until then, spend totals and the daily cost cap only count imported reviews."
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, store.importStatus == nil ? 0 : 10)
             filterBar
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)

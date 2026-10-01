@@ -198,3 +198,18 @@ struct ReviewRecord: Sendable, Hashable, Identifiable, Codable {
         hasReview = try c.decodeIfPresent(Bool.self, forKey: .hasReview) ?? false
     }
 }
+
+/// How far a one-time import of older history has got, in records.
+struct HistoryImportProgress: Sendable, Hashable {
+    var done: Int
+    var total: Int
+
+    var fraction: Double { total > 0 ? min(1, Double(done) / Double(total)) : 0 }
+}
+
+/// What the history views say about an import of older history. Nil on
+/// the stores when there is nothing to say.
+enum HistoryImportStatus: Sendable, Hashable {
+    case running(HistoryImportProgress)
+    case failed(String)
+}

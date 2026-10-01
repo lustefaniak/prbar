@@ -13,22 +13,27 @@ struct HistoryView: View {
         let entries = store.fetchAll(limit: 200)
         let groups = Self.groupByDay(entries)
 
-        if entries.isEmpty {
-            emptyState
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(groups, id: \.day) { group in
-                        DayHeader(date: group.day)
-                        ForEach(group.entries, id: \.id) { entry in
-                            HistoryRow(entry: entry, onOpen: { open(entry) })
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                            Divider().opacity(0.4)
+        VStack(spacing: 0) {
+            HistoryImportBanner(status: store.importStatus)
+                .padding(.horizontal, 12)
+                .padding(.top, store.importStatus == nil ? 0 : 8)
+            if entries.isEmpty && store.importStatus == nil {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(groups, id: \.day) { group in
+                            DayHeader(date: group.day)
+                            ForEach(group.entries, id: \.id) { entry in
+                                HistoryRow(entry: entry, onOpen: { open(entry) })
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                Divider().opacity(0.4)
+                            }
                         }
                     }
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
             }
         }
     }

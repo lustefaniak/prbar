@@ -144,11 +144,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.runtimeLock = lock
             runtime = PRBarRuntime.live(env, deliverer: UNNotificationDeliverer(), ownsAutomation: owns)
             if !Self.isHostingTests {
-                LegacyHistoryMigration.migrateInBackground(historyDirectory: env.historyDirectory) {
-                    [weak log = runtime.actionLog, weak rlog = runtime.reviewLog] in
-                    log?.reload()
-                    rlog?.reload()
-                }
+                let log = runtime.actionLog, rlog = runtime.reviewLog
+                LegacyHistoryMigration.migrateInBackground(
+                    historyDirectory: env.historyDirectory,
+                    progress: { [weak log, weak rlog] p in
+                        log?.importStatus = .running(p)
+                        rlog?.importStatus = .running(p)
+                    },
+                    finished: { [weak log, weak rlog] error in
+                        log?.reload()
+                        rlog?.reload()
+                        log?.importStatus = error.map { .failed($0) }
+                        rlog?.importStatus = error.map { .failed($0) }
+                    }
+                )
             }
         }
         let p = runtime.poller, n = runtime.notifier, q = runtime.queue, a = runtime.actionQueue
