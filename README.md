@@ -132,8 +132,9 @@ the working directory, then the app's file. Running with none of those is valid
 (everything falls back to the defaults the app ships), and JSON is valid YAML, so
 an older `prbar.json` still loads. The file holds the same two-level chain the
 Settings window edits: `defaults` applying everywhere, and `repos` rules overriding
-it per repository. Copy [docs/prbar.example.yaml](docs/prbar.example.yaml) as a
-starting point:
+it per repository. [docs/configuration.md](docs/configuration.md) explains how a
+value is decided (which keys override, which inherit). Copy
+[docs/prbar.example.yaml](docs/prbar.example.yaml) as a starting point:
 
 ```yaml
 version: 1

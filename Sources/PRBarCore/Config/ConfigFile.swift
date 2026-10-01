@@ -32,7 +32,11 @@ enum ConfigFile {
     static let header = """
     # PRBar configuration, read by the menu-bar app and the prbar-review CLI.
     # Saving from the app's Settings rewrites this file: hand edits are kept,
-    # comments are not. Reference: docs/prbar.example.yaml in the PRBar repo.
+    # comments are not.
+    #
+    # A key in a repo rule overrides `defaults` for that repo; a missing key
+    # inherits. A key missing from `defaults` means PRBar's shipped default.
+    # Details: https://github.com/lustefaniak/prbar/blob/main/docs/configuration.md
 
     """
 
