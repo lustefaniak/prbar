@@ -82,6 +82,21 @@ final class RuleReplayTests: XCTestCase {
         XCTAssertEqual(needsFiles.missing, [.files], "the snapshot never had the files")
     }
 
+    /// Lists are part of the rules: an edit to `lists.yaml` replays with
+    /// the edited lists, not the ones the record was made with.
+    func testReplayReadsTheListsOfTheRulesItReplays() async throws {
+        let worker = try record()
+        worker.enqueueNewReviewRequests(from: [RuntimeFixtures.requestedPR()])
+        let record = try XCTUnwrap(log.readAll().first)
+
+        try "bots: [a]\n".write(to: rulesDir.appendingPathComponent("lists.yaml"), atomically: true, encoding: .utf8)
+        try writeSelect(#"pr.author in lists.bots"#)
+        let replayed = RuleReplay.replay(record, rules: try RuleDirectory.load(rulesDir))
+        XCTAssertNil(replayed.error)
+        XCTAssertEqual(replayed.outcome, "small: skip (small)")
+        XCTAssertFalse(replayed.changed)
+    }
+
     func testTheCommands() async throws {
         let worker = try record()
         worker.enqueueNewReviewRequests(from: [RuntimeFixtures.requestedPR()])
