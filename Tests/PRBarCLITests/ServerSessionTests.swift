@@ -185,6 +185,45 @@ final class ServerSessionTests: XCTestCase {
         try await until { model.loadIssue != nil }
         XCTAssertEqual(model.userConfigs.map(\.repoGlobs), [["x/y"]], "a broken file keeps the config in effect")
     }
+
+    func testHistoryArrivesAsAppendsAndFullReviewsOnRequest() async throws {
+        let (runtime, server) = makeServer(prs: [])
+        let pr = RuntimeFixtures.requestedPR()
+        let review = AggregatedReview(
+            verdict: .approve, confidence: 0.9, summaryMarkdown: "fine", annotations: [],
+            costUsd: 0.1, toolCallCount: 0, toolNamesUsed: [], perSubreview: [], isSubscriptionAuth: false)
+        runtime.reviewLog.recordCompleted(pr: pr, headSha: pr.headSha, providerId: .claude, triggeredAt: Date(), review: review)
+
+        let session = ServerSession(client: server.connectInProcess())
+        defer { session.stop() }
+        try await session.start()
+        XCTAssertEqual(session.reviewLog.entries.count, 1, "the snapshot carries the log")
+        let id = session.reviewLog.entries[0].id
+
+        XCTAssertNil(session.reviewLog.review(for: id))
+        XCTAssertTrue(session.reviewLog.isLoadingReview(id))
+        try await until { session.reviewLog.review(for: id)?.summaryMarkdown == "fine" }
+        XCTAssertFalse(session.reviewLog.isLoadingReview(id))
+
+        let unknown = UUID()
+        _ = session.reviewLog.review(for: unknown)
+        try await until { !session.reviewLog.isLoadingReview(unknown) }
+        XCTAssertNil(session.reviewLog.review(for: unknown))
+
+        runtime.actionLog.record(kind: ActionLogKind.allCases[0], outcome: .success, pr: pr)
+        try await until { session.actionLog.entries.count == 1 }
+
+        session.reviewLog.clearAll()
+        try await until { session.reviewLog.entries.isEmpty }
+    }
+
+    func testLogUpdates() {
+        let a = "a", b = "b", c = "c"
+        XCTAssertEqual(LogUpdate.between([b, c], [a, b, c]), LogUpdate(added: [a]))
+        XCTAssertEqual(LogUpdate.between([a, b, c], [a, c]), LogUpdate(reset: [a, c]))
+        XCTAssertEqual(LogUpdate.between([b, c], [a, c]), LogUpdate(reset: [a, c]), "same count, different rows")
+        XCTAssertEqual(LogUpdate(added: [a]).applied(to: [b, c]), [a, b, c])
+    }
 }
 
 private final class RecordingTransport: APIClientTransport, @unchecked Sendable {

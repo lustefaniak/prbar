@@ -20,7 +20,7 @@ struct HistoricalReviewWindowView: View {
     let logEntryId: UUID
 
     @Environment(\.dismissWindow) private var dismissWindow
-    @Environment(ReviewLogStore.self) private var reviewLog
+    @Environment(ReviewLogModel.self) private var reviewLog
 
     /// Looked up in the store rather than captured, so the window
     /// re-renders if the user clears history out from under it.
@@ -72,6 +72,9 @@ struct HistoricalReviewWindowView: View {
                 } else if let agg = reviewLog.review(for: entry.id) {
                     Divider()
                     cachedReviewSection(agg, entry: entry)
+                } else if reviewLog.isLoadingReview(entry.id) {
+                    Divider()
+                    ProgressView().controlSize(.small)
                 } else {
                     Divider()
                     Text("Cached review payload couldn't be decoded — schema may have changed since this entry was written.")

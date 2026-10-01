@@ -151,7 +151,20 @@ final class APIServer {
     private func trackState() {
         let poller = runtime.poller, queue = runtime.queue, actionQueue = runtime.actionQueue
         let diffs = runtime.diffStore, ciLogs = runtime.failureLogs, configs = runtime.repoConfigs
+        let actionLog = runtime.actionLog, reviewLog = runtime.reviewLog
+        var sentActions = actionLog.entries, sentReviewLog = reviewLog.entries
         trackers = [
+            StateTracker(read: { actionLog.entries }) { [weak self] entries in
+                defer { sentActions = entries }
+                self?.publish(StateUpdate(actionLog: .between(sentActions, entries)))
+            },
+            StateTracker(read: { reviewLog.entries }) { [weak self] entries in
+                defer { sentReviewLog = entries }
+                self?.publish(StateUpdate(reviewLog: .between(sentReviewLog, entries)))
+            },
+            StateTracker(read: { HistoryImportState(actions: actionLog.importStatus, reviews: reviewLog.importStatus) }) { [weak self] state in
+                self?.publish(StateUpdate(historyImport: state))
+            },
             StateTracker(read: { Self.configState(configs) }) { [weak self] state in
                 self?.publish(StateUpdate(config: state))
             },
@@ -209,7 +222,10 @@ final class APIServer {
             actions: Self.actions(runtime.actionQueue),
             diffs: runtime.diffStore.statuses,
             ciLogs: runtime.failureLogs.statuses,
-            config: Self.configState(runtime.repoConfigs))
+            config: Self.configState(runtime.repoConfigs),
+            actionLog: LogUpdate(reset: runtime.actionLog.entries),
+            reviewLog: LogUpdate(reset: runtime.reviewLog.entries),
+            historyImport: HistoryImportState(actions: runtime.actionLog.importStatus, reviews: runtime.reviewLog.importStatus))
     }
 
     static func configState(_ store: RepoConfigStore) -> ConfigState {
@@ -348,6 +364,22 @@ final class APIServer {
                 self.runtime.actionQueue.dismissFailure(params.prNodeId)
                 return APIEmpty()
             }
+        case .fullReview:
+            return await reply(line, id, FullReviewParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                return FullReviewResult(review: self.runtime.reviewLog.review(for: params.id))
+            }
+        case .clearReviewHistory:
+            return await reply(line, id, APIEmpty.self) { _ in
+                self.runtime.reviewLog.clearAll()
+                return APIEmpty()
+            }
+        case .setPopoverVisible:
+            return await reply(line, id, PopoverVisibility.self) { params in
+                guard let params else { throw Self.missingParams }
+                self.runtime.notifier.setPopoverVisible(params.visible)
+                return APIEmpty()
+            }
         case .setConfig:
             return await reply(line, id, SetConfigParams.self) { params in
                 guard let params else { throw Self.missingParams }
@@ -450,7 +482,7 @@ final class APIServer {
         switch method {
         case .hello, .event, .state:
             return nil
-        case .status, .inbox, .refreshPR, .review, .historyActions, .historyReviews, .poll, .subscribe,
+        case .status, .inbox, .refreshPR, .review, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
              .loadDiff, .invalidateDiff, .loadCILog, .invalidateCILog:
             capability = .read
         case .runReview:
@@ -464,7 +496,7 @@ final class APIServer {
         case .shutdown:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
         case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setCostCap, .checkoutUsage, .checkoutPrune,
-             .setConfig:
+             .setConfig, .clearReviewHistory, .setPopoverVisible:
             return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
         }
         switch policy[capability] {

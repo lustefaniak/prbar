@@ -7,6 +7,7 @@ import Observation
 /// the runtime, so they work the same whether the server runs in the app's
 /// own process or elsewhere.
 @MainActor
+@Observable
 final class ServerSession {
     let inbox: InboxModel
     let reviews: ReviewQueueModel
@@ -14,8 +15,12 @@ final class ServerSession {
     let diffs: DiffModel
     let ciLogs: CILogModel
     let config: ConfigModel
+    let actionLog: ActionLogModel
+    let reviewLog: ReviewLogModel
 
+    @ObservationIgnored
     private let client: APIClient
+    @ObservationIgnored
     private var listener: Task<Void, Never>?
 
     init(client: APIClient) {
@@ -26,12 +31,15 @@ final class ServerSession {
         diffs = DiffModel()
         ciLogs = CILogModel()
         config = ConfigModel()
+        actionLog = ActionLogModel()
+        reviewLog = ReviewLogModel()
         inbox.session = self
         reviews.session = self
         actions.session = self
         diffs.session = self
         ciLogs.session = self
         config.session = self
+        reviewLog.session = self
     }
 
     /// Subscribes, applies the snapshot, then follows updates until the
@@ -60,6 +68,8 @@ final class ServerSession {
         diffs.apply(update)
         ciLogs.apply(update)
         config.apply(update)
+        actionLog.apply(update)
+        reviewLog.apply(update)
     }
 
     /// `send` with the reply, delivered on the main actor in the order the
@@ -71,6 +81,11 @@ final class ServerSession {
         client.post(method, params, as: type) { result in
             Task { @MainActor in completion(result) }
         }
+    }
+
+    /// While the user is looking at PRBar, the server holds notifications.
+    func setPopoverVisible(_ visible: Bool) {
+        send(.setPopoverVisible, PopoverVisibility(visible: visible))
     }
 
     /// A request whose answer the caller needs.
@@ -415,5 +430,86 @@ final class ConfigModel {
                 self.loadIssue = "Could not save: \(error.localizedDescription)"
             }
         }
+    }
+}
+
+/// The action history as the server has it. Same names as `ActionLogStore`.
+@MainActor
+@Observable
+final class ActionLogModel {
+    private(set) var entries: [ActionRecord] = []
+    private(set) var importStatus: HistoryImportStatus?
+
+    func apply(_ update: StateUpdate) {
+        if let log = update.actionLog { entries = log.applied(to: entries) }
+        if let status = update.historyImport { importStatus = status.actions }
+    }
+
+    func fetchAll(limit: Int? = nil) -> [ActionRecord] {
+        guard let limit else { return entries }
+        return Array(entries.prefix(limit))
+    }
+}
+
+/// The review history as the server has it. Same names as `ReviewLogStore`;
+/// full reviews are fetched on first use and kept.
+@MainActor
+@Observable
+final class ReviewLogModel {
+    private(set) var entries: [ReviewRecord] = []
+    private(set) var importStatus: HistoryImportStatus?
+    private var fullReviews: [UUID: AggregatedReview] = [:]
+    private var missing: Set<UUID> = []
+    /// Requests in flight. Not observed: it changes from inside view
+    /// bodies' `review(for:)` calls.
+    @ObservationIgnored
+    private var requested: Set<UUID> = []
+
+    @ObservationIgnored
+    weak var session: ServerSession?
+
+    func apply(_ update: StateUpdate) {
+        if let log = update.reviewLog {
+            entries = log.applied(to: entries)
+            if log.reset != nil {
+                fullReviews = [:]
+                missing = []
+                requested = []
+            }
+        }
+        if let status = update.historyImport { importStatus = status.reviews }
+    }
+
+    func fetchAll(limit: Int? = nil) -> [ReviewRecord] {
+        guard let limit else { return entries }
+        return Array(entries.prefix(limit))
+    }
+
+    /// The stored review, or nil while it loads (`isLoadingReview`) or when
+    /// there is none. Called from view bodies, so it only schedules the
+    /// request; the answer lands as an observed change.
+    func review(for id: UUID) -> AggregatedReview? {
+        if let review = fullReviews[id] { return review }
+        guard !missing.contains(id), !requested.contains(id), let session else { return nil }
+        requested.insert(id)
+        session.send(.fullReview, FullReviewParams(id: id), as: FullReviewResult.self) { [weak self] result in
+            guard let self else { return }
+            self.requested.remove(id)
+            if case .success(let full) = result, let review = full.review {
+                self.fullReviews[id] = review
+            } else {
+                self.missing.insert(id)
+            }
+        }
+        return nil
+    }
+
+    /// True until the review has arrived or turned out not to exist.
+    func isLoadingReview(_ id: UUID) -> Bool {
+        fullReviews[id] == nil && !missing.contains(id)
+    }
+
+    func clearAll() {
+        session?.send(.clearReviewHistory, APIEmpty())
     }
 }

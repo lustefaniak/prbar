@@ -72,6 +72,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var diffModel: DiffModel { session.diffs }
     var ciLogModel: CILogModel { session.ciLogs }
     var configModel: ConfigModel { session.config }
+    var actionLogModel: ActionLogModel { session.actionLog }
+    var reviewLogModel: ReviewLogModel { session.reviewLog }
     var poller: PRPoller { runtime.poller }
     var notifier: Notifier { runtime.notifier }
     var queue: ReviewQueueWorker { runtime.queue }
@@ -709,28 +711,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension View {
-    /// Every service the views read, in one place: the popover, Settings,
-    /// the detail windows and screenshot mode all inject the same set, and
-    /// a service missing from one of them only fails at runtime, when a
-    /// view's `@Environment` finds nothing.
+    /// What the views read, in one place: the popover, Settings, the detail
+    /// windows and screenshot mode all inject the same set. Only the
+    /// session's models, never the runtime's services, so a view that
+    /// reaches for one fails at once rather than working only while the
+    /// server runs in this process.
     @MainActor
     func prbarServices(_ app: AppDelegate) -> some View {
         self
+            .environment(app.session)
             .environment(app.inbox)
             .environment(app.reviewModel)
             .environment(app.actionModel)
             .environment(app.diffModel)
             .environment(app.ciLogModel)
             .environment(app.configModel)
-            .environment(app.poller)
-            .environment(app.notifier)
-            .environment(app.queue)
-            .environment(app.actionQueue)
-            .environment(app.diffStore)
-            .environment(app.failureLogs)
-            .environment(app.repoConfigs)
-            .environment(app.readiness)
-            .environment(app.actionLog)
-            .environment(app.reviewLog)
+            .environment(app.actionLogModel)
+            .environment(app.reviewLogModel)
     }
 }

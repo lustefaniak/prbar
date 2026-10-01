@@ -35,6 +35,9 @@ enum APIMethod: String, CaseIterable, Sendable {
     case setCostCap = "costCap.set"
     case checkoutUsage = "checkouts.usage"
     case checkoutPrune = "checkouts.prune"
+    case fullReview = "history.review"
+    case clearReviewHistory = "history.clearReviews"
+    case setPopoverVisible = "ui.popoverVisible"
     case historyActions = "history.actions"
     case historyReviews = "history.reviews"
     case poll
@@ -252,6 +255,20 @@ struct CostCapParams: Codable, Sendable {
 struct CheckoutUsage: Codable, Sendable {
     /// Bytes used by the bare clones and worktrees reviews run in.
     var bytes: Int64
+}
+
+struct FullReviewParams: Codable, Sendable {
+    var id: UUID
+}
+
+struct FullReviewResult: Codable, Sendable {
+    /// Nil for a failed run or a row whose file is missing.
+    var review: AggregatedReview?
+}
+
+struct PopoverVisibility: Codable, Sendable {
+    /// While the user is looking at PRBar, notifications are held back.
+    var visible: Bool
 }
 
 struct HistoryParams: Codable, Sendable {

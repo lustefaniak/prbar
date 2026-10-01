@@ -2,7 +2,7 @@ import SwiftUI
 
 struct PopoverView: View {
     @Environment(InboxModel.self) private var poller
-    @Environment(Notifier.self) private var notifier
+    @Environment(ServerSession.self) private var session
     @Environment(ReviewQueueModel.self) private var queue
 
     @State private var selectedTab: Tab = .myPRs
@@ -148,10 +148,10 @@ struct PopoverView: View {
             if !ScreenshotMode.isActive { poller.pollNow() }
         }
         .onAppear {
-            notifier.setPopoverVisible(true)
+            session.setPopoverVisible(true)
             seedScreenshotStateOnce()
         }
-        .onDisappear { notifier.setPopoverVisible(false) }
+        .onDisappear { session.setPopoverVisible(false) }
         .onChange(of: poller.prs) { _, newPRs in
             // Keep the open detail view in sync with fresh poll / single-PR
             // refresh data (review decision, merge state, and especially the
@@ -357,7 +357,7 @@ struct PopoverView: View {
 #Preview {
     PopoverView()
         .environment(InboxModel())
-        .environment(Notifier(deliverer: NoopDeliverer()))
+        .environment(ServerSession(client: APIClient(transport: InProcessClientTransport(serverEnd: InProcessServerEnd()) { _ in })))
         .environment(ReviewQueueModel())
         .environment(ActionQueueModel())
 }

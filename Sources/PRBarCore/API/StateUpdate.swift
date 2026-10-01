@@ -28,13 +28,44 @@ struct StateUpdate: Codable, Sendable, Equatable {
     var ciLogs: [String: FailureLogStore.LoadStatus]?
     var removedCILogs: [String]?
     var config: ConfigState?
+    var actionLog: LogUpdate<ActionRecord>?
+    var reviewLog: LogUpdate<ReviewRecord>?
+    var historyImport: HistoryImportState?
 
     var isEmpty: Bool {
         prs == nil && polling == nil && reviews == nil && removedReviews == nil
             && progress == nil && autoReview == nil && actions == nil
             && diffs == nil && removedDiffs == nil && ciLogs == nil && removedCILogs == nil
-            && config == nil
+            && config == nil && actionLog == nil && reviewLog == nil && historyImport == nil
     }
+}
+
+/// A history log, newest first. Records are only ever added at the front,
+/// so a change is usually `added`; anything else (a reload after the
+/// import, a clear, retention) resends the whole log as `reset`.
+struct LogUpdate<Record: Codable & Sendable & Equatable>: Codable, Sendable, Equatable {
+    var reset: [Record]?
+    var added: [Record]?
+
+    /// What turns `old` into `new`.
+    static func between(_ old: [Record], _ new: [Record]) -> LogUpdate {
+        let extra = new.count - old.count
+        if extra > 0, new.dropFirst(extra).elementsEqual(old) {
+            return LogUpdate(added: Array(new.prefix(extra)))
+        }
+        return LogUpdate(reset: new)
+    }
+
+    func applied(to records: [Record]) -> [Record] {
+        if let reset { return reset }
+        return (added ?? []) + records
+    }
+}
+
+/// The one-time import of history from before v0.15.0.
+struct HistoryImportState: Codable, Sendable, Equatable {
+    var actions: HistoryImportStatus?
+    var reviews: HistoryImportStatus?
 }
 
 /// `prbar.yaml` as the server has it in effect, and what's wrong with it.

@@ -200,7 +200,7 @@ struct ReviewRecord: Sendable, Hashable, Identifiable, Codable {
 }
 
 /// How far a one-time import of older history has got, in records.
-struct HistoryImportProgress: Sendable, Hashable {
+struct HistoryImportProgress: Sendable, Hashable, Codable {
     var done: Int
     var total: Int
 
@@ -209,7 +209,7 @@ struct HistoryImportProgress: Sendable, Hashable {
 
 /// What the history views say about an import of older history. Nil on
 /// the stores when there is nothing to say.
-enum HistoryImportStatus: Sendable, Hashable {
+enum HistoryImportStatus: Sendable, Hashable, Codable {
     case running(HistoryImportProgress)
     case failed(String)
 }

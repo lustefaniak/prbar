@@ -7,7 +7,7 @@ import AppKit
 /// Backed by SwiftData via `ActionLogStore`; entries persist across
 /// relaunches and survive the underlying PR leaving the inbox.
 struct HistoryView: View {
-    @Environment(ActionLogStore.self) private var store
+    @Environment(ActionLogModel.self) private var store
 
     var body: some View {
         let entries = store.fetchAll(limit: 200)

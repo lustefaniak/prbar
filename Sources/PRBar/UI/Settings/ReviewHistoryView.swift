@@ -9,7 +9,7 @@ import SwiftUI
 /// recorded triage shows up live. The full review behind a row is loaded
 /// from its own file when the row is expanded.
 struct ReviewHistoryView: View {
-    @Environment(ReviewLogStore.self) private var store
+    @Environment(ReviewLogModel.self) private var store
 
     private var allEntries: [ReviewRecord] { store.entries }
 
@@ -219,7 +219,7 @@ struct ReviewHistoryView: View {
 }
 
 private struct EntryRow: View {
-    @Environment(ReviewLogStore.self) private var store
+    @Environment(ReviewLogModel.self) private var store
     let entry: ReviewRecord
     let isExpanded: Bool
     let onToggle: () -> Void
@@ -333,6 +333,8 @@ private struct EntryRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        } else if store.isLoadingReview(entry.id) {
+            ProgressView().controlSize(.small)
         } else {
             Text("Cached review payload couldn't be decoded — schema may have changed since this entry was written.")
                 .font(.callout)
