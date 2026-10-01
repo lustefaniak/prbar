@@ -442,7 +442,7 @@ final class ReviewQueueWorker {
     /// One decided-but-not-yet-posted auto review. Body and inline
     /// comments are resolved at staging time, while the run's diff is
     /// still in hand — `fireBatch` runs minutes later and has no diff.
-    struct StagedAutoReview: Sendable, Hashable, Identifiable {
+    struct StagedAutoReview: Sendable, Hashable, Identifiable, Codable {
         var id: String { pr.nodeId }
         let pr: InboxPR
         let review: AggregatedReview

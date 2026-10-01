@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var session: ServerSession!
 
     var inbox: InboxModel { session.inbox }
+    var reviewModel: ReviewQueueModel { session.reviews }
     var poller: PRPoller { runtime.poller }
     var notifier: Notifier { runtime.notifier }
     var queue: ReviewQueueWorker { runtime.queue }
@@ -712,6 +713,7 @@ extension View {
     func prbarServices(_ app: AppDelegate) -> some View {
         self
             .environment(app.inbox)
+            .environment(app.reviewModel)
             .environment(app.poller)
             .environment(app.notifier)
             .environment(app.queue)

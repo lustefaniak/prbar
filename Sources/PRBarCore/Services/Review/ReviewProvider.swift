@@ -117,7 +117,7 @@ struct ProviderResult: Sendable, Codable {
 /// Snapshot of an in-flight review. Surfaced to callers via the
 /// `onProgress` closure on `ReviewProvider.review` so the UI can render
 /// "AI is reading X.swift" / "$0.04 spent so far" while the run executes.
-struct ReviewProgress: Sendable, Hashable {
+struct ReviewProgress: Sendable, Hashable, Codable {
     /// Cumulative tool invocations the AI has made so far.
     var toolCallCount: Int = 0
     /// Names in invocation order (deduped). Last entry is the most recent

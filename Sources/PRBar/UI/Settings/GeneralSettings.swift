@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct GeneralSettings: View {
-    @Environment(ReviewQueueWorker.self) private var queue
+    @Environment(ReviewQueueModel.self) private var queue
     @Environment(RepoConfigStore.self) private var repoConfigs
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("sequentialFocusMode") private var sequentialFocusMode = true

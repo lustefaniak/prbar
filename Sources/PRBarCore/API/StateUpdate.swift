@@ -12,8 +12,27 @@ import Observation
 struct StateUpdate: Codable, Sendable, Equatable {
     var prs: [InboxPR]?
     var polling: PollingState?
+    /// Per PR, only the ones that changed: a completed review carries its
+    /// whole result, so resending all of them on every change would not do.
+    var reviews: [String: ReviewState]?
+    var removedReviews: [String]?
+    /// Reviews in flight; small, and replaced whole.
+    var progress: [String: ReviewProgress]?
+    var autoReview: AutoReviewState?
 
-    var isEmpty: Bool { prs == nil && polling == nil }
+    var isEmpty: Bool {
+        prs == nil && polling == nil && reviews == nil && removedReviews == nil
+            && progress == nil && autoReview == nil
+    }
+}
+
+/// Auto reviews staged behind the undo window, and denials flagged for the
+/// user instead of posted.
+struct AutoReviewState: Codable, Sendable, Equatable {
+    var pending: [String: ReviewQueueWorker.StagedAutoReview]
+    var flagged: [String: ReviewQueueWorker.StagedAutoReview]
+    var batchUndoActive: Bool
+    var batchUndoDeadline: Date?
 }
 
 struct PollingState: Codable, Sendable, Equatable {

@@ -3,7 +3,7 @@ import SwiftUI
 struct PopoverView: View {
     @Environment(InboxModel.self) private var poller
     @Environment(Notifier.self) private var notifier
-    @Environment(ReviewQueueWorker.self) private var queue
+    @Environment(ReviewQueueModel.self) private var queue
 
     @State private var selectedTab: Tab = .myPRs
     @State private var selectedPR: InboxPR?
@@ -153,7 +153,6 @@ struct PopoverView: View {
         }
         .onDisappear { notifier.setPopoverVisible(false) }
         .onChange(of: poller.prs) { _, newPRs in
-            queue.enqueueNewReviewRequests(from: newPRs)
             // Keep the open detail view in sync with fresh poll / single-PR
             // refresh data (review decision, merge state, and especially the
             // open→merged transition). If the PR has dropped out of the inbox
@@ -359,7 +358,7 @@ struct PopoverView: View {
     PopoverView()
         .environment(InboxModel())
         .environment(Notifier(deliverer: NoopDeliverer()))
-        .environment(ReviewQueueWorker(diffFetcher: { _, _, _ in "" }))
+        .environment(ReviewQueueModel())
         .environment(ActionQueue())
 }
 

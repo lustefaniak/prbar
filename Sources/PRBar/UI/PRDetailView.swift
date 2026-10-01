@@ -24,7 +24,7 @@ struct PRDetailView: View {
     var inWindow: Bool = false
 
     @Environment(InboxModel.self) private var poller
-    @Environment(ReviewQueueWorker.self) private var queue
+    @Environment(ReviewQueueModel.self) private var queue
     @Environment(ActionQueue.self) private var actionQueue
     @Environment(DiffStore.self) private var diffStore
     @Environment(RepoConfigStore.self) private var repoConfigs
@@ -1727,7 +1727,7 @@ struct PRDetailView: View {
 /// per second on a large diff). Owning the `liveProgress` read here scopes
 /// the invalidation to this small subtree.
 private struct LiveReviewProgressView: View {
-    @Environment(ReviewQueueWorker.self) private var queue
+    @Environment(ReviewQueueModel.self) private var queue
     let nodeId: String
 
     var body: some View {

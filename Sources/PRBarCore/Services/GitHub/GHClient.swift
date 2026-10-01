@@ -314,7 +314,7 @@ actor GHClient {
     /// against the PR's head commit. `line` is the last line of the span
     /// (the GitHub API places the comment there); `startLine` is set for
     /// multi-line ranges, omitted for single-line.
-    struct InlineComment: Sendable, Hashable {
+    struct InlineComment: Sendable, Hashable, Codable {
         let path: String
         let line: Int
         let startLine: Int?

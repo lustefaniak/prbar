@@ -44,4 +44,29 @@ final class ServerSessionTests: XCTestCase {
         session.inbox.pollNow()
         try await until { session.inbox.prs.map(\.nodeId) == ["PR_1"] }
     }
+
+    /// Review state arrives per PR: a changed review is sent, an untouched
+    /// one isn't, and one the server dropped is removed.
+    func testReviewStateFollowsTheServer() async throws {
+        let (runtime, server) = makeServer(prs: [RuntimeFixtures.requestedPR(), RuntimeFixtures.requestedPR(nodeId: "PR_2", number: 2)])
+        let session = ServerSession(client: server.connectInProcess())
+        defer { session.stop() }
+        try await session.start()
+        XCTAssertTrue(session.reviews.reviews.isEmpty)
+
+        session.reviews.enqueue(session.inbox.prs[0], force: true, providerOverride: .codex)
+        try await until { session.reviews.reviews["PR_1"]?.status.isInFlight == true }
+        XCTAssertEqual(runtime.queue.reviews["PR_1"]?.providerId, .codex)
+        XCTAssertEqual(session.reviews.reviews["PR_1"]?.providerId, .codex)
+
+        runtime.queue._setReviewsForScreenshot([:])
+        try await until { session.reviews.reviews.isEmpty }
+    }
+
+    func testUserOnlyControlsAreRefusedToAgents() {
+        let agent = HelloParams(client: "mcp:x", protocolVersion: 1, agent: true)
+        for method in [APIMethod.autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setCostCap, .checkoutPrune] {
+            XCTAssertEqual(APIServer.denial(of: method, by: agent, under: AgentPolicy())?.code, RPCError.notPermitted, method.rawValue)
+        }
+    }
 }

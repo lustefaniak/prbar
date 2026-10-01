@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct DiagnosticsView: View {
-    @Environment(ReviewQueueWorker.self) private var queue
+    @Environment(ReviewQueueModel.self) private var queue
 
     @State private var cacheBytes: Int64 = 0
     @State private var pruning = false
@@ -79,16 +79,13 @@ struct DiagnosticsView: View {
     }
 
     private func refreshCacheSize() async {
-        guard let mgr = queue.checkoutManager else { cacheBytes = 0; return }
-        cacheBytes = await mgr.totalCacheBytes()
+        cacheBytes = await queue.checkoutCacheBytes()
     }
 
     private func pruneClones() async {
-        guard let mgr = queue.checkoutManager else { return }
         pruning = true
         defer { pruning = false }
-        await mgr.pruneAllBareClones()
-        await refreshCacheSize()
+        cacheBytes = await queue.pruneCheckouts()
     }
 
     private func formatBytes(_ b: Int64) -> String {

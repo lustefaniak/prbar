@@ -16,7 +16,7 @@ struct PRListView: View {
     @Environment(DiffStore.self) private var diffStore
     @Environment(ActionQueue.self) private var actionQueue
     @Environment(RepoConfigStore.self) private var repoConfigs
-    @Environment(ReviewQueueWorker.self) private var reviewQueue
+    @Environment(ReviewQueueModel.self) private var reviewQueue
     @AppStorage("skipMergeConfirmation") private var skipMergeConfirmationGlobal = false
 
     /// Resolve the AI review status badge for a row from the live review

@@ -10,7 +10,7 @@ import SwiftUI
 /// - **Flagged denials** (`AutoDenyAction.flagOnly`) — informational, never
 ///   posted, dismissed by hand.
 struct AutoReviewBanner: View {
-    @Environment(ReviewQueueWorker.self) private var queue
+    @Environment(ReviewQueueModel.self) private var queue
 
     @State private var now: Date = Date()
     @State private var ticker: Timer?

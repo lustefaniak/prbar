@@ -9,6 +9,7 @@ import Observation
 @MainActor
 final class ServerSession {
     let inbox: InboxModel
+    let reviews: ReviewQueueModel
 
     private let client: APIClient
     private var listener: Task<Void, Never>?
@@ -16,7 +17,9 @@ final class ServerSession {
     init(client: APIClient) {
         self.client = client
         inbox = InboxModel()
+        reviews = ReviewQueueModel()
         inbox.session = self
+        reviews.session = self
     }
 
     /// Subscribes, applies the snapshot, then follows updates until the
@@ -40,6 +43,12 @@ final class ServerSession {
 
     func apply(_ update: StateUpdate) {
         inbox.apply(update)
+        reviews.apply(update)
+    }
+
+    /// A request whose answer the caller needs.
+    func call<P: Codable & Sendable, R: Codable & Sendable>(_ method: APIMethod, _ params: P, as type: R.Type) async throws -> R {
+        try await client.call(method, params, as: type)
     }
 
     /// Fire-and-forget command; a failure is logged, since the state the
@@ -86,5 +95,72 @@ final class InboxModel {
 
     func refreshPR(_ pr: InboxPR, force: Bool = false) {
         session?.send(.refreshPR, RefreshParams(pr: PRReference(nodeId: pr.nodeId), force: force))
+    }
+}
+
+/// AI reviews as the server reports them. Same names as the parts of
+/// `ReviewQueueWorker` the views use.
+@MainActor
+@Observable
+final class ReviewQueueModel {
+    private(set) var reviews: [String: ReviewState] = [:]
+    private(set) var liveProgress: [String: ReviewProgress] = [:]
+    private(set) var pendingAutoActions: [String: ReviewQueueWorker.StagedAutoReview] = [:]
+    private(set) var flaggedDenials: [String: ReviewQueueWorker.StagedAutoReview] = [:]
+    private(set) var batchUndoActive = false
+    private(set) var batchUndoDeadline: Date?
+
+    /// Written by Settings, which keeps the values in its own preferences;
+    /// setting one hands it to the server.
+    @ObservationIgnored
+    var dailyCostCapEnabled = true {
+        didSet { session?.send(.setCostCap, CostCapParams(enabled: dailyCostCapEnabled)) }
+    }
+    @ObservationIgnored
+    var dailyCostCap: Double = 0 {
+        didSet { session?.send(.setCostCap, CostCapParams(usd: dailyCostCap)) }
+    }
+
+    @ObservationIgnored
+    weak var session: ServerSession?
+
+    func apply(_ update: StateUpdate) {
+        if let changed = update.reviews {
+            reviews.merge(changed) { _, new in new }
+        }
+        for nodeId in update.removedReviews ?? [] { reviews[nodeId] = nil }
+        if let progress = update.progress { liveProgress = progress }
+        if let auto = update.autoReview {
+            pendingAutoActions = auto.pending
+            flaggedDenials = auto.flagged
+            batchUndoActive = auto.batchUndoActive
+            batchUndoDeadline = auto.batchUndoDeadline
+        }
+    }
+
+    func enqueue(_ pr: InboxPR, force: Bool = false, providerOverride: ProviderID? = nil) {
+        session?.send(.runReview, RunReviewParams(pr: PRReference(nodeId: pr.nodeId), provider: providerOverride, force: force))
+    }
+
+    func cancelAutoReviewBatch() {
+        session?.send(.autoReviewUndo, APIEmpty())
+    }
+
+    func fireAutoReviewBatchNow() {
+        session?.send(.autoReviewPostNow, APIEmpty())
+    }
+
+    func dismissAllFlaggedDenials() {
+        session?.send(.autoReviewDismissFlagged, APIEmpty())
+    }
+
+    /// Bytes used by the clones and worktrees reviews run in.
+    func checkoutCacheBytes() async -> Int64 {
+        (try? await session?.call(.checkoutUsage, APIEmpty(), as: CheckoutUsage.self).bytes) ?? 0
+    }
+
+    /// Deletes the bare clones; returns what is left.
+    func pruneCheckouts() async -> Int64 {
+        (try? await session?.call(.checkoutPrune, APIEmpty(), as: CheckoutUsage.self).bytes) ?? 0
     }
 }

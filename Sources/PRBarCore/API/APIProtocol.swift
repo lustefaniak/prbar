@@ -21,6 +21,12 @@ enum APIMethod: String, CaseIterable, Sendable {
     case refreshPR = "inbox.refresh"
     case review
     case runReview = "review.run"
+    case autoReviewUndo = "autoReview.undo"
+    case autoReviewPostNow = "autoReview.postNow"
+    case autoReviewDismissFlagged = "autoReview.dismissFlagged"
+    case setCostCap = "costCap.set"
+    case checkoutUsage = "checkouts.usage"
+    case checkoutPrune = "checkouts.prune"
     case historyActions = "history.actions"
     case historyReviews = "history.reviews"
     case poll
@@ -192,9 +198,23 @@ struct SubscribeResult: Codable, Sendable {
 
 struct RunReviewParams: Codable, Sendable {
     var pr: PRReference
+    /// Run with this provider instead of the configured one.
+    var provider: ProviderID?
     /// Review even when a repo gate (draft, already reviewed, a verdict
     /// already at this SHA) would skip it, or a review is cached.
     var force: Bool?
+}
+
+/// The daily cost cap is a machine-local preference the front end owns and
+/// hands to the server; nil leaves a field as it is.
+struct CostCapParams: Codable, Sendable {
+    var enabled: Bool?
+    var usd: Double?
+}
+
+struct CheckoutUsage: Codable, Sendable {
+    /// Bytes used by the bare clones and worktrees reviews run in.
+    var bytes: Int64
 }
 
 struct HistoryParams: Codable, Sendable {

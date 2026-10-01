@@ -149,7 +149,8 @@ final class APIServer {
     // MARK: - State
 
     private func trackState() {
-        let poller = runtime.poller
+        let poller = runtime.poller, queue = runtime.queue
+        var sentReviews = queue.reviews
         trackers = [
             StateTracker(read: { poller.prs }) { [weak self] prs in
                 self?.publish(StateUpdate(prs: prs))
@@ -157,12 +158,40 @@ final class APIServer {
             StateTracker(read: { Self.polling(poller) }) { [weak self] polling in
                 self?.publish(StateUpdate(polling: polling))
             },
+            StateTracker(read: { queue.reviews }) { [weak self] reviews in
+                let changed = reviews.filter { sentReviews[$0.key] != $0.value }
+                let removed = sentReviews.keys.filter { reviews[$0] == nil }
+                sentReviews = reviews
+                self?.publish(StateUpdate(
+                    reviews: changed.isEmpty ? nil : changed,
+                    removedReviews: removed.isEmpty ? nil : removed.sorted()))
+            },
+            StateTracker(read: { queue.liveProgress }) { [weak self] progress in
+                self?.publish(StateUpdate(progress: progress))
+            },
+            StateTracker(read: { Self.autoReview(queue) }) { [weak self] autoReview in
+                self?.publish(StateUpdate(autoReview: autoReview))
+            },
         ]
     }
 
     /// Everything a front end renders, for a new state subscriber.
     func snapshot() -> StateUpdate {
-        StateUpdate(prs: runtime.poller.prs, polling: Self.polling(runtime.poller))
+        let queue = runtime.queue
+        return StateUpdate(
+            prs: runtime.poller.prs,
+            polling: Self.polling(runtime.poller),
+            reviews: queue.reviews,
+            progress: queue.liveProgress,
+            autoReview: Self.autoReview(queue))
+    }
+
+    private static func autoReview(_ queue: ReviewQueueWorker) -> AutoReviewState {
+        AutoReviewState(
+            pending: queue.pendingAutoActions,
+            flagged: queue.flaggedDenials,
+            batchUndoActive: queue.batchUndoActive,
+            batchUndoDeadline: queue.batchUndoDeadline)
     }
 
     private static func polling(_ poller: PRPoller) -> PollingState {
@@ -218,7 +247,7 @@ final class APIServer {
 
         switch method {
         case .hello:
-            return reply(line, id, HelloParams.self) { params in
+            return await reply(line, id, HelloParams.self) { params in
                 guard let params else { throw Self.missingParams }
                 if let connection { self.clients[ObjectIdentifier(connection)] = params }
                 guard APIVersion.supported.contains(params.protocolVersion) else {
@@ -232,11 +261,11 @@ final class APIServer {
                     holder: self.holder, build: self.build, pid: getpid())
             }
         case .status:
-            return reply(line, id, APIEmpty.self) { _ in self.status() }
+            return await reply(line, id, APIEmpty.self) { _ in self.status() }
         case .inbox:
-            return reply(line, id, APIEmpty.self) { _ in self.runtime.poller.prs }
+            return await reply(line, id, APIEmpty.self) { _ in self.runtime.poller.prs }
         case .refreshPR:
-            return reply(line, id, RefreshParams.self) { params in
+            return await reply(line, id, RefreshParams.self) { params in
                 guard let params, let pr = self.findPR(params.pr) else {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
@@ -244,35 +273,65 @@ final class APIServer {
                 return APIEmpty()
             }
         case .review:
-            return reply(line, id, PRReference.self) { ref in
+            return await reply(line, id, PRReference.self) { ref in
                 guard let ref, let pr = self.findPR(ref) else {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
                 return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId])
             }
         case .runReview:
-            return reply(line, id, RunReviewParams.self) { params in
+            return await reply(line, id, RunReviewParams.self) { params in
                 guard let params, let pr = self.findPR(params.pr) else {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
-                self.runtime.queue.enqueue(pr, force: params.force ?? false)
+                self.runtime.queue.enqueue(pr, force: params.force ?? false, providerOverride: params.provider)
                 return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId])
             }
+        case .autoReviewUndo:
+            return await reply(line, id, APIEmpty.self) { _ in
+                self.runtime.queue.cancelAutoReviewBatch()
+                return APIEmpty()
+            }
+        case .autoReviewPostNow:
+            return await reply(line, id, APIEmpty.self) { _ in
+                self.runtime.queue.fireAutoReviewBatchNow()
+                return APIEmpty()
+            }
+        case .autoReviewDismissFlagged:
+            return await reply(line, id, APIEmpty.self) { _ in
+                self.runtime.queue.dismissAllFlaggedDenials()
+                return APIEmpty()
+            }
+        case .setCostCap:
+            return await reply(line, id, CostCapParams.self) { params in
+                if let enabled = params?.enabled { self.runtime.queue.dailyCostCapEnabled = enabled }
+                if let usd = params?.usd { self.runtime.queue.dailyCostCap = max(0, usd) }
+                return APIEmpty()
+            }
+        case .checkoutUsage:
+            return await reply(line, id, APIEmpty.self) { _ in
+                CheckoutUsage(bytes: await self.runtime.queue.checkoutManager?.totalCacheBytes() ?? 0)
+            }
+        case .checkoutPrune:
+            return await reply(line, id, APIEmpty.self) { _ in
+                await self.runtime.queue.checkoutManager?.pruneAllBareClones()
+                return CheckoutUsage(bytes: await self.runtime.queue.checkoutManager?.totalCacheBytes() ?? 0)
+            }
         case .historyActions:
-            return reply(line, id, HistoryParams.self) { params in
+            return await reply(line, id, HistoryParams.self) { params in
                 Self.limited(self.runtime.actionLog.entries, params?.limit)
             }
         case .historyReviews:
-            return reply(line, id, HistoryParams.self) { params in
+            return await reply(line, id, HistoryParams.self) { params in
                 Self.limited(self.runtime.reviewLog.entries, params?.limit)
             }
         case .poll:
-            return reply(line, id, APIEmpty.self) { _ in
+            return await reply(line, id, APIEmpty.self) { _ in
                 self.runtime.poller.pollNow()
                 return APIEmpty()
             }
         case .subscribe:
-            return reply(line, id, SubscribeParams.self) { params in
+            return await reply(line, id, SubscribeParams.self) { params in
                 let wantsState = params?.state ?? false
                 if let connection {
                     self.subscribers[ObjectIdentifier(connection)] = connection
@@ -286,7 +345,7 @@ final class APIServer {
             }
             // After the reply is on its way, so the client hears back.
             Task { @MainActor in onShutdown() }
-            return reply(line, id, APIEmpty.self) { _ in APIEmpty() }
+            return await reply(line, id, APIEmpty.self) { _ in APIEmpty() }
         case .event, .state:
             return nil
         }
@@ -304,6 +363,8 @@ final class APIServer {
             capability = .review
         case .shutdown:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
+        case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setCostCap, .checkoutUsage, .checkoutPrune:
+            return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
         }
         switch policy[capability] {
         case .allow:
@@ -354,8 +415,8 @@ final class APIServer {
     // MARK: - Encoding
 
     private func reply<P: Codable & Sendable, R: Codable & Sendable>(
-        _ line: Data, _ id: Int?, _: P.Type, _ body: (P?) throws -> R
-    ) -> Data? {
+        _ line: Data, _ id: Int?, _: P.Type, _ body: (P?) async throws -> R
+    ) async -> Data? {
         let params: P?
         do {
             params = try RPCLine.decode(RPCRequest<P>.self, from: line).params
@@ -363,7 +424,7 @@ final class APIServer {
             return Self.failure(id: id, RPCError(code: RPCError.invalidParams, message: "invalid params: \(error)"))
         }
         do {
-            let result = try body(params)
+            let result = try await body(params)
             return try? RPCLine.encode(RPCResponse(id: id, result: result))
         } catch let error as RPCError {
             return Self.failure(id: id, error)
