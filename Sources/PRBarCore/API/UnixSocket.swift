@@ -48,8 +48,14 @@ enum UnixSocket {
             throw UnixSocketError.system("bind \(path)", code)
         }
         // Filesystem permissions are the authentication: only this user
-        // may connect.
-        chmod(path, 0o600)
+        // may connect. Nobody can connect before `listen`, so there is no
+        // window, but a socket that stays open to others must not serve.
+        guard chmod(path, 0o600) == 0 else {
+            let code = errno
+            close(fd)
+            unlink(path)
+            throw UnixSocketError.system("chmod \(path)", code)
+        }
         guard sys_listen(fd, 16) == 0 else {
             let code = errno
             close(fd)

@@ -18,13 +18,21 @@ final class SessionReconnectTests: XCTestCase {
             return (runtime, server)
         }
 
-        let (_, first) = try serve([RuntimeFixtures.requestedPR()])
+        let (firstRuntime, first) = try serve([RuntimeFixtures.requestedPR()])
+        firstRuntime.queue._setReviewsForScreenshot([
+            "PR_1": ReviewState(prNodeId: "PR_1", headSha: "abc123", triggeredAt: Date(), status: .failed("old"), costUsd: 0),
+        ])
         let session = ServerSession(connect: { try await ServerConnection.connect(socketURL: socketURL, client: "tests") })
         session.setPreferences(PreferencesParams(undoWindowSeconds: 12))
+        // Before the first connection, as when the history import finishes
+        // early: kept and delivered once connected.
+        session.reportHistoryImport(.failed("import broke"), finished: true)
         session.run()
         defer { session.stop() }
         try await until { session.inbox.prs.count == 1 }
         XCTAssertEqual(session.connection.isConnected, true)
+        XCTAssertNotNil(session.reviews.reviews["PR_1"])
+        try await until { firstRuntime.actionLog.importStatus == .failed("import broke") }
 
         first.stop()
         try await until { !session.connection.isConnected }
@@ -33,6 +41,7 @@ final class SessionReconnectTests: XCTestCase {
         defer { replacement.stop() }
         try await until { session.inbox.prs.count == 2 }
         XCTAssertEqual(session.connection.isConnected, true)
+        XCTAssertNil(session.reviews.reviews["PR_1"], "state only the old server had is gone after the snapshot")
         try await until { second.queue.undoWindow == 12 }
     }
 

@@ -181,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             session = ServerSession(client: server.connectInProcess())
             // Applied at once so the first frame already shows the cached
             // inbox; `start` then subscribes and follows updates.
-            session.apply(server.snapshot())
+            session.applySnapshot(server.snapshot())
         } else {
             preconditionFailure("no runtime and no external server")
         }

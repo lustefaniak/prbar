@@ -49,6 +49,10 @@ final class ServerSession {
     private var preferences = PreferencesParams()
     @ObservationIgnored
     private var popoverVisible: Bool?
+    @ObservationIgnored
+    private var historyImport: HistoryImportState?
+    @ObservationIgnored
+    private var historyReloadPending = false
 
     /// A session over one fixed connection (tests, and the in-process
     /// server, which can't go away).
@@ -89,7 +93,7 @@ final class ServerSession {
         guard let client else { throw APIClientError.disconnected }
         let params = SubscribeParams(state: true, notifications: deliverer != nil)
         let result = try await client.call(.subscribe, params, as: SubscribeResult.self)
-        if let snapshot = result.state { apply(snapshot) }
+        if let snapshot = result.state { applySnapshot(snapshot) }
         let updates = client.stateUpdates
         listener = Task { [weak self] in
             for await update in updates {
@@ -147,6 +151,21 @@ final class ServerSession {
     private func replayClientSettings() {
         send(.setPreferences, preferences)
         if let popoverVisible { send(.setPopoverVisible, PopoverVisibility(visible: popoverVisible)) }
+        if let historyImport { send(.reportHistoryImport, historyImport) }
+        if historyReloadPending {
+            historyReloadPending = false
+            send(.reloadHistory, APIEmpty())
+        }
+    }
+
+    /// A full snapshot replaces what the models hold, where an update only
+    /// merges: after a reconnect, anything the new server doesn't have must
+    /// go, not linger from the old one.
+    func applySnapshot(_ snapshot: StateUpdate) {
+        reviews.reset()
+        diffs.reset()
+        ciLogs.reset()
+        apply(snapshot)
     }
 
     func apply(_ update: StateUpdate) {
@@ -179,8 +198,17 @@ final class ServerSession {
     /// the old SwiftData store); the server shows its progress and reloads
     /// the logs when it's done.
     func reportHistoryImport(_ status: HistoryImportStatus?, finished: Bool) {
-        send(.reportHistoryImport, HistoryImportState(actions: status, reviews: status))
-        if finished { send(.reloadHistory, APIEmpty()) }
+        let state = HistoryImportState(actions: status, reviews: status)
+        // Kept, and replayed on (re)connect: the import can finish before
+        // the session first connects, or while a server is restarting.
+        historyImport = state
+        if finished { historyReloadPending = true }
+        guard client != nil else { return }
+        send(.reportHistoryImport, state)
+        if finished {
+            historyReloadPending = false
+            send(.reloadHistory, APIEmpty())
+        }
     }
 
     func setPreferences(_ preferences: PreferencesParams) {
@@ -272,6 +300,11 @@ final class ReviewQueueModel {
 
     @ObservationIgnored
     weak var session: ServerSession?
+
+    func reset() {
+        reviews = [:]
+        liveProgress = [:]
+    }
 
     func apply(_ update: StateUpdate) {
         if let changed = update.reviews {
@@ -401,6 +434,10 @@ final class DiffModel {
     @ObservationIgnored
     weak var session: ServerSession?
 
+    func reset() {
+        statuses = [:]
+    }
+
     func apply(_ update: StateUpdate) {
         if let changed = update.diffs { statuses.merge(changed) { _, new in new } }
         for key in update.removedDiffs ?? [] { statuses[key] = nil }
@@ -434,6 +471,10 @@ final class CILogModel {
 
     @ObservationIgnored
     weak var session: ServerSession?
+
+    func reset() {
+        statuses = [:]
+    }
 
     func apply(_ update: StateUpdate) {
         if let changed = update.ciLogs { statuses.merge(changed) { _, new in new } }
