@@ -40,7 +40,8 @@ struct CodexProvider: ReviewProvider {
             case .notInstalled:
                 return "codex CLI not found. Install OpenAI Codex (`npm i -g @openai/codex`), then `codex login`."
             case .execFailed(let stderr, let code):
-                return "codex exited \(code): \(CodexProvider.diagnosticSlice(fromStderr: stderr))"
+                let detail = CodexProvider.diagnosticSlice(fromStderr: stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+                return detail.isEmpty ? "codex exited \(code) without saying why." : "codex exited \(code): \(detail)"
             case .noJSONInOutput(let raw):
                 return "codex returned no JSON object on stdout. First 400 chars: \(raw.prefix(400))"
             case .decodeFailed(let msg, _):

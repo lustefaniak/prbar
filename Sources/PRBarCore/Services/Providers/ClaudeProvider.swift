@@ -22,7 +22,10 @@ struct ClaudeProvider: ReviewProvider {
             case .notInstalled:
                 return "claude CLI not found. Install Claude Code, then `claude login`."
             case .execFailed(let stderr, let code):
-                return "claude exited \(code): \(stderr.prefix(400))"
+                let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                return detail.isEmpty
+                    ? "claude exited \(code) without saying why."
+                    : "claude exited \(code): \(detail.prefix(400))"
             case .noResultEvent:
                 return "claude finished without a result event (output truncated?)."
             case .isError(let reason):
@@ -94,8 +97,12 @@ struct ClaudeProvider: ReviewProvider {
         }
 
         guard result.succeeded else {
+            // claude reports API and login errors as a result event on
+            // stdout and exits 1 with stderr empty.
+            let stderr = result.stderrString ?? ""
+            let reported = state.isError == true ? (state.apiErrorStatus ?? state.resultText) : nil
             throw ClaudeError.execFailed(
-                stderr: result.stderrString ?? "",
+                stderr: stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? reported ?? "" : stderr,
                 exitCode: result.exitCode
             )
         }
