@@ -49,6 +49,8 @@ struct PRBarConfig: Sendable, Hashable, Codable {
 
     var defaults = ReviewDefaults()
     var repos: [RepoConfig] = []
+    /// What coding agents may do through `prbar-review mcp`.
+    var agents = AgentPolicy()
 
     init() {}
 
@@ -56,7 +58,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         case version, defaultProvider
         case defaultClaudeModel, defaultClaudeEffort
         case defaultCodexModel, defaultCodexEffort
-        case defaults, repos
+        case defaults, repos, agents
     }
 
     init(from decoder: Decoder) throws {
@@ -69,6 +71,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         defaultCodexEffort = try c.decodeIfPresent(String.self, forKey: .defaultCodexEffort)
         defaults = try c.decodeIfPresent(ReviewDefaults.self, forKey: .defaults) ?? ReviewDefaults()
         repos = try c.decodeIfPresent([RepoConfig].self, forKey: .repos) ?? []
+        agents = try c.decodeIfPresent(AgentPolicy.self, forKey: .agents) ?? AgentPolicy()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -81,6 +84,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         try c.encodeIfPresent(defaultCodexEffort, forKey: .defaultCodexEffort)
         if defaults != ReviewDefaults() { try c.encode(defaults, forKey: .defaults) }
         if !repos.isEmpty { try c.encode(repos, forKey: .repos) }
+        if agents != AgentPolicy() { try c.encode(agents, forKey: .agents) }
     }
 
     /// First matching repo rule wins, then `RepoConfig.match` supplies the

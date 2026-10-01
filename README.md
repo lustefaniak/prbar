@@ -186,6 +186,22 @@ prbar-review events                     # follow changes, one JSON line each
 `status` exits 1 when the server reports a problem (a failed poll, a broken
 config) and 3 when no PRBar is running.
 
+### Coding agents (MCP)
+
+`prbar-review mcp` serves PRBar to a coding agent over the Model Context Protocol,
+through the running PRBar. For Claude Code:
+
+```sh
+claude mcp add prbar -- prbar-review mcp
+```
+
+The agent gets `status`, `list_inbox`, `get_review` (verdict, summary and every
+finding with file and lines), `run_review` and `get_history`. The loop it is for:
+on the PR you're working on, the agent reads PRBar's findings, fixes them, pushes,
+and asks for another review. What agents may do is set by `agents:` in
+`prbar.yaml` ([docs/configuration.md](docs/configuration.md)); by default they can
+read and start reviews, and can't post or merge.
+
 ### Getting the findings without posting them
 
 The event stream only carries a verdict and a finding count, so on its own a

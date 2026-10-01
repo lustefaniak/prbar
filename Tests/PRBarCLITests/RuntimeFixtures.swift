@@ -2,15 +2,20 @@ import Foundation
 @testable import PRBarCore
 
 /// A runtime with every outside dependency stubbed: no gh, a provider that
-/// never finishes, files in `dir`.
+/// never finishes, files in `dir`. Every poll returns `prs`, which are also
+/// in the inbox from the start.
 enum RuntimeFixtures {
+    static let diff = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1 @@\n+x\n"
+
     @MainActor
-    static func make(_ dir: URL, ownsAutomation: Bool) -> PRBarRuntime {
+    static func make(_ dir: URL, ownsAutomation: Bool, prs: [InboxPR] = []) -> PRBarRuntime {
         let notifier = Notifier(deliverer: StderrDeliverer())
-        let queue = ReviewQueueWorker(diffFetcher: { _, _, _ in "" })
+        let queue = ReviewQueueWorker(diffFetcher: { _, _, _ in diff })
         queue.providerLookup = { _ in NeverProvider() }
+        let poller = PRPoller(fetcher: { prs })
+        poller._setPRsForScreenshot(prs)
         return PRBarRuntime(
-            poller: PRPoller(fetcher: { [] }),
+            poller: poller,
             notifier: notifier,
             queue: queue,
             actionQueue: ActionQueue(),

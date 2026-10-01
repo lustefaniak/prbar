@@ -118,13 +118,16 @@ enum ServerConnection {
 
     static func connect(
         socketURL: URL = ServerLocation.socketURL(),
-        client name: String
+        client name: String,
+        agent: Bool = false
     ) async throws -> Connected {
         let client = try APIClient.connect(socketURL: socketURL)
         let hello: HelloResult
         do {
             hello = try await client.call(
-                .hello, HelloParams(client: name, protocolVersion: APIVersion.current), as: HelloResult.self)
+                .hello,
+                HelloParams(client: name, protocolVersion: APIVersion.current, agent: agent ? true : nil),
+                as: HelloResult.self)
         } catch let error as RPCError where error.code == RPCError.incompatibleVersion {
             client.close()
             throw APIClientError.incompatible("\(error.message); update PRBar so both sides match")

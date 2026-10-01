@@ -19,6 +19,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case status
     case inbox
     case review
+    case runReview = "review.run"
     case historyActions = "history.actions"
     case historyReviews = "history.reviews"
     case poll
@@ -51,6 +52,8 @@ struct RPCError: Codable, Sendable, Error, Equatable, LocalizedError {
     /// `shutdown` sent to a server the app hosts).
     static let refused = -32001
     static let notFound = -32002
+    /// The `agents:` policy doesn't let a coding agent do this.
+    static let notPermitted = -32003
 }
 
 // A line is decoded twice: once as `RPCHeader` to route it, then as the
@@ -100,6 +103,9 @@ struct HelloParams: Codable, Sendable {
     /// `ActionSource` of anything it posts.
     var client: String
     var protocolVersion: Int
+    /// A coding agent rather than the user's own front end: the server
+    /// holds its requests to the `agents:` policy in `prbar.yaml`.
+    var agent: Bool?
 }
 
 struct HelloResult: Codable, Sendable, Equatable {
@@ -158,6 +164,13 @@ struct ReviewResult: Codable, Sendable {
     var pr: InboxPR
     /// Nil when PRBar has no review state for the PR.
     var review: ReviewState?
+}
+
+struct RunReviewParams: Codable, Sendable {
+    var pr: PRReference
+    /// Review even when a repo gate (draft, already reviewed, a verdict
+    /// already at this SHA) would skip it, or a review is cached.
+    var force: Bool?
 }
 
 struct HistoryParams: Codable, Sendable {

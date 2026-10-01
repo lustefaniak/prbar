@@ -151,6 +151,7 @@ enum ConfigFile {
         }
         top["defaults"] = .object(defaults)
         top["repos"] = .list(repo)
+        top["agents"] = .object(keys(AgentPolicy.CodingKeys.self))
         return top
     }()
 

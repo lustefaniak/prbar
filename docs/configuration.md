@@ -141,6 +141,7 @@ means "inherit":
 | `defaultClaudeEffort`, `defaultCodexEffort` | Same, for effort. Missing or `""` passes no flag. |
 | `defaults` | Review settings for every repository (see above). |
 | `repos` | Repo rules, first match wins (see above). |
+| `agents` | What coding agents may do through `prbar-review mcp` (see below). |
 
 The review settings themselves (`defaults:` keys, and the same keys in a repo rule)
 are the fields of
@@ -150,6 +151,32 @@ explaining it. A few keys exist only on repo rules: `repoGlobs` (required),
 `excluded`, `rootPatterns`, `providerOverride`, the model and effort overrides, and
 `skipMergeConfirmation`. The name `toolMode` in `defaults:` is
 `toolModeOverride` in a repo rule.
+
+## Coding agents: `agents:`
+
+`prbar-review mcp` lets a coding agent such as Claude Code or codex use PRBar.
+`agents:` sets what such an agent may do, one capability per key, each `off`,
+`allow` or `ask`:
+
+```yaml
+agents:
+  read: allow      # inbox, reviews, history, status
+  review: allow    # start an AI review
+  post: ask        # comment, approve, request changes
+  merge: off
+```
+
+Those are the shipped values, so a missing `agents:` means exactly this.
+
+- PRBar itself enforces it, for every client that connects as an agent, whether the
+  app or `prbar-review serve` is running.
+- `ask` means PRBar asks you before acting. Asking isn't built yet, so for now `ask`
+  refuses, and the agent is told to have `allow` set if you want it.
+- A value other than `off`, `allow` or `ask` turns that capability **off**, rather
+  than falling back to its default: a typo in a permission must not grant more than
+  you wrote.
+- Your own use of PRBar (the app, `prbar-review status` and the other CLI commands)
+  is never limited by it.
 
 ## Not in this file
 

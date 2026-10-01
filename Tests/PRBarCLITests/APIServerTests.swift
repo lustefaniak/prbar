@@ -25,8 +25,7 @@ final class APIServerTests: XCTestCase {
     }
 
     private func startServer(prs: [InboxPR] = []) throws -> (PRBarRuntime, APIServer) {
-        let runtime = RuntimeFixtures.make(dir, ownsAutomation: false)
-        runtime.poller._setPRsForScreenshot(prs)
+        let runtime = RuntimeFixtures.make(dir, ownsAutomation: false, prs: prs)
         let server = APIServer(runtime: runtime, holder: "test server", build: "1.2.3")
         try server.start(socketURL: socketURL)
         addTeardownBlock { @MainActor in server.stop() }

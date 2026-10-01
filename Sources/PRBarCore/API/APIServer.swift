@@ -44,6 +44,8 @@ final class APIServer {
     private let stopFlag = StopFlag()
     private var connections: [ObjectIdentifier: LineConnection] = [:]
     private var subscribers: [ObjectIdentifier: LineConnection] = [:]
+    /// What each connection said about itself in `hello`.
+    private var clients: [ObjectIdentifier: HelloParams] = [:]
     private var observer: UUID?
 
     init(runtime: PRBarRuntime, holder: String, build: String = PRBarBuild.version) {
@@ -114,6 +116,7 @@ final class APIServer {
                 Task { @MainActor [weak self] in
                     self?.connections[key] = nil
                     self?.subscribers[key] = nil
+                    self?.clients[key] = nil
                 }
             }
         )
@@ -156,11 +159,17 @@ final class APIServer {
             return Self.failure(id: header.id, RPCError(code: RPCError.methodNotFound, message: "unknown method \(name)"))
         }
         let id = header.id
+        if method != .hello, let connection, let client = clients[ObjectIdentifier(connection)],
+           client.agent == true, let denial = Self.denial(of: method, by: client, under: runtime.repoConfigs.config.agents) {
+            PRBarLog.lifecycle.notice("API: refused \(method.rawValue, privacy: .public) from \(client.client, privacy: .public)")
+            return Self.failure(id: id, denial)
+        }
 
         switch method {
         case .hello:
             return reply(line, id, HelloParams.self) { params in
                 guard let params else { throw Self.missingParams }
+                if let connection { self.clients[ObjectIdentifier(connection)] = params }
                 guard APIVersion.supported.contains(params.protocolVersion) else {
                     throw RPCError(
                         code: RPCError.incompatibleVersion,
@@ -180,6 +189,14 @@ final class APIServer {
                 guard let ref, let pr = self.findPR(ref) else {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
+                return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId])
+            }
+        case .runReview:
+            return reply(line, id, RunReviewParams.self) { params in
+                guard let params, let pr = self.findPR(params.pr) else {
+                    throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
+                }
+                self.runtime.queue.enqueue(pr, force: params.force ?? false)
                 return ReviewResult(pr: pr, review: self.runtime.queue.reviews[pr.nodeId])
             }
         case .historyActions:
@@ -207,6 +224,33 @@ final class APIServer {
             return reply(line, id, APIEmpty.self) { _ in APIEmpty() }
         case .event:
             return nil
+        }
+    }
+
+    /// Why an agent may not call `method`, or nil when it may.
+    nonisolated static func denial(of method: APIMethod, by client: HelloParams, under policy: AgentPolicy) -> RPCError? {
+        let capability: AgentPolicy.Capability
+        switch method {
+        case .hello, .event:
+            return nil
+        case .status, .inbox, .review, .historyActions, .historyReviews, .poll, .subscribe:
+            capability = .read
+        case .runReview:
+            capability = .review
+        case .shutdown:
+            return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop the PRBar server")
+        }
+        switch policy[capability] {
+        case .allow:
+            return nil
+        case .off:
+            return RPCError(
+                code: RPCError.notPermitted,
+                message: "PRBar's agents.\(capability.rawValue) is off in prbar.yaml, so coding agents can't do this")
+        case .ask:
+            return RPCError(
+                code: RPCError.notPermitted,
+                message: "PRBar's agents.\(capability.rawValue) is `ask`, and approving agent requests in PRBar isn't available yet; set it to `allow` to let agents do this")
         }
     }
 

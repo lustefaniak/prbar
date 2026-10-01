@@ -227,6 +227,11 @@ final class ExampleConfigTests: XCTestCase {
         XCTAssertFalse(base.autoApprove.enabled)
         XCTAssertEqual(base.autoDeny.action, .off)
         XCTAssertFalse(base.resolveThreads.enabled)
+
+        XCTAssertEqual(cfg.agents.read, .allow)
+        XCTAssertEqual(cfg.agents.review, .allow)
+        XCTAssertEqual(cfg.agents.post, .off)
+        XCTAssertEqual(cfg.agents.merge, .off)
     }
 
     func testExampleRepoRulesOverrideAndExclude() throws {

@@ -23,6 +23,13 @@ public enum PRBarReviewCLI {
             }
             return await ServeCommand.run(options)
         }
+        if args.first == "mcp" {
+            guard args.count == 1 else {
+                FileHandle.standardError.write(Data(MCPCommand.usage.utf8))
+                return 2
+            }
+            return await MCPCommand.run()
+        }
         if let name = args.first, ClientCommand.names.contains(name) {
             guard let command = ClientCommand(args: args) else {
                 FileHandle.standardError.write(Data(ClientCommand.usage.utf8))
@@ -168,5 +175,6 @@ public enum PRBarReviewCLI {
     prbar-review status | inbox | history | events
                                    ask the running server; see
                                    `prbar-review status --help`
+    prbar-review mcp               serve PRBar to a coding agent over MCP
     """
 }

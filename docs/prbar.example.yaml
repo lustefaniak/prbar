@@ -46,6 +46,12 @@ defaults:
 # repo; leave it out to inherit. autoApprove / autoDeny / resolveThreads
 # override as a whole block: fields missing inside a block take the shipped
 # values, not the ones in `defaults`.
+# What coding agents may do through `prbar-review mcp`: off, allow or ask.
+# Anything else turns the capability off.
+agents:
+  review: allow
+  post: "off"
+
 repos:
   - repoGlobs: ["getsynq/cloud"]
     rootPatterns: ["kernel-*", "lib/*", "dev-tools"]
