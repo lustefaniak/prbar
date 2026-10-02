@@ -14,7 +14,9 @@ struct RulesSettings: View {
     var body: some View {
         Group {
             if let workbench {
-                RulesWorkbenchView(workbench: workbench, prs: inbox.prs, needsConversion: config.needsConversion)
+                RulesWorkbenchView(
+                    workbench: workbench, prs: inbox.prs,
+                    conversionIssue: config.needsConversion ? (config.loadIssue ?? "") : nil)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -37,19 +39,21 @@ struct RulesSettings: View {
 private struct RulesWorkbenchView: View {
     @Bindable var workbench: RulesWorkbench
     let prs: [InboxPR]
-    let needsConversion: Bool
+    /// Set while prbar.yaml's `repos:` couldn't be converted: why.
+    let conversionIssue: String?
     @State private var newFileStage: String?
     @State private var converting = false
     @State private var newFileName = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            if needsConversion {
+            if let conversionIssue {
                 HStack(alignment: .top) {
-                    Text("prbar.yaml still has per-repository settings under `repos:`. They are rules now, so PRBar reviews nothing and posts nothing on its own until they are converted. Converting writes them as rules/configure/50-repos.yaml, checks that every repository PRBar has seen keeps the same settings, and keeps the old file beside the new one.")
+                    Text(conversionIssue + "\nFix what it names, then convert again.")
+                        .textSelection(.enabled)
                         .font(.callout)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(converting ? "Converting…" : "Convert") {
+                    Button(converting ? "Converting…" : "Convert again") {
                         converting = true
                         Task {
                             await workbench.convert()

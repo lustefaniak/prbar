@@ -59,22 +59,25 @@ rule:
 600.
 
 Older versions kept per-repository settings in a `repos:` list in this file.
-**A `prbar.yaml` that still has `repos:` is refused** until it is converted, and
-PRBar reviews nothing and posts nothing on its own meanwhile.
-Convert with the button in Settings → Rules, or:
+**PRBar converts them when it loads the file** (the app and `prbar-review
+serve`, at launch or when the file changes): it writes
+`rules/configure/50-repos.yaml`, keeping the entries in their order (the first
+that matches a repository sets its settings, as before), moves `excluded` and
+`trustRepoRules` into the `repositories:` lists below, and keeps the old file as
+`prbar.yaml.before-rules`. Before writing anything it checks that every
+repository PRBar has seen (the inbox, the review and rule histories, and a name
+for each pattern) resolves to the same settings both ways.
+
+When that check fails (a configure rule you already have changes a converted
+setting, say), nothing is written, PRBar reviews nothing and posts nothing on
+its own, and Settings → Rules shows which repositories would change. The
+one-shot CLI (`prbar-review <pr>` with `--standalone` or `--config`) never
+rewrites a file; it refuses one with `repos:` and points at:
 
 ```sh
 prbar-review rules convert --dry-run   # print the rule it would write
 prbar-review rules convert
 ```
-
-It writes `rules/configure/50-repos.yaml`, keeping the entries in their order
-(the first that matches a repository sets its settings, as before), moves
-`excluded` and `trustRepoRules` into the `repositories:` lists below, and keeps
-the old file as `prbar.yaml.before-rules`. Before writing anything it checks
-that every repository PRBar has seen (the inbox, the review and rule histories,
-and a name for each pattern) resolves to the same settings both ways, and
-writes nothing if one doesn't.
 
 ### In `defaults:`, a missing key means the shipped default
 

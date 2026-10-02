@@ -62,16 +62,20 @@ final class RepoConfigStoreTests: XCTestCase {
         XCTAssertEqual(store(p).config.repositories.triage, ["acme/*"])
     }
 
-    /// `repos:` is refused until converted, and nothing Settings does may
-    /// write over it meanwhile: the config in effect is the shipped
-    /// defaults, so a save would erase the entries.
-    func testAReposKeyIsRefusedAndNeverOverwritten() throws {
+    /// A `repos:` that can't be converted without changing a setting
+    /// waits, and nothing Settings does may write over it meanwhile: the
+    /// config in effect is the shipped defaults, so a save would erase the
+    /// entries.
+    func testUnconvertedReposAreNeverOverwritten() throws {
         let p = try paths()
         let old = "repos:\n  - repoGlobs: [acme/x]\n    reviewDrafts: true\n"
         try ConfigFile.write(old, to: p.file)
+        let rules = p.file.deletingLastPathComponent().appendingPathComponent("rules/configure")
+        try FileManager.default.createDirectory(at: rules, withIntermediateDirectories: true)
+        try "name: x\nrule:\n  match:\n    - output: {rule: x, review_drafts: false}\n"
+            .write(to: rules.appendingPathComponent("90-x.yaml"), atomically: true, encoding: .utf8)
         let s = store(p)
         XCTAssertTrue(s.needsConversion)
-        XCTAssertTrue(s.loadIssue?.contains("rules convert") == true, s.loadIssue ?? "")
 
         s.defaults.maxCostUsdPerSubreview = 4
         XCTAssertEqual(try String(contentsOf: p.file, encoding: .utf8), old)

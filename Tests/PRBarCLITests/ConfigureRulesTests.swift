@@ -117,20 +117,60 @@ final class ConfigureRulesTests: XCTestCase {
         }
     }
 
-    /// Until `repos:` is converted, nothing runs: the settings in effect
-    /// are the shipped defaults, not the ones the file asks for, and a
-    /// review on the wrong budget and split costs money even when nothing
-    /// is posted.
+    /// PRBar converts `repos:` itself when it loads the file, at launch
+    /// and when the file changes, so nothing waits on the user.
     @MainActor
-    func testARefusedConfigReviewsNothing() async throws {
+    func testReposAreConvertedWhenTheFileLoads() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prbar-auto-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("prbar.yaml")
+        try ConfigFile.write(Self.oldConfig, to: file)
+
+        let store = RepoConfigStore(fileURL: file, lastGoodURL: nil)
+        XCTAssertFalse(store.needsConversion)
+        XCTAssertNil(store.loadIssue)
+        XCTAssertEqual(store.resolve(owner: "acme", repo: "monorepo").splitMode, .perSubfolder)
+        XCTAssertTrue(store.resolve(owner: "acme", repo: "secret-x").excluded)
+        XCTAssertTrue(store.warnings.first?.contains("Converted the 4 repos: entries") == true, "\(store.warnings)")
+        XCTAssertFalse(try String(contentsOf: file, encoding: .utf8).contains("repos:"))
+        XCTAssertEqual(try String(contentsOf: dir.appendingPathComponent("prbar.yaml.before-rules"), encoding: .utf8),
+                       Self.oldConfig)
+
+        // A `repos:` written back later, by an older PRBar say, converts too.
+        try FileManager.default.moveItem(
+            at: dir.appendingPathComponent("rules/configure/50-repos.yaml"),
+            to: dir.appendingPathComponent("50-repos.yaml.aside"))
+        try ConfigFile.write(Self.oldConfig, to: file)
+        store.reloadIfChanged()
+        XCTAssertFalse(store.needsConversion, store.loadIssue ?? "")
+        XCTAssertEqual(store.resolve(owner: "acme", repo: "docs").autoApprove.maxAdditions, 50)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("prbar.yaml.before-rules-2").path))
+    }
+
+    /// When the conversion can't keep every setting, nothing runs: the
+    /// settings in effect are the shipped defaults, and a review on the
+    /// wrong budget and split costs money even when nothing is posted.
+    @MainActor
+    func testAConversionThatWouldChangeSettingsWaitsAndReviewsNothing() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prbar-refused-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("prbar.yaml")
         try ConfigFile.write(Self.oldConfig, to: file)
+        let rules = dir.appendingPathComponent("rules/configure")
+        try FileManager.default.createDirectory(at: rules, withIntermediateDirectories: true)
+        try """
+            name: budgets
+            rule:
+              match:
+                - output: {rule: cheap, max_cost_usd_per_subreview: 0.5}
+            """.write(to: rules.appendingPathComponent("90-budgets.yaml"), atomically: true, encoding: .utf8)
+
         let store = RepoConfigStore(fileURL: file, lastGoodURL: nil)
         XCTAssertTrue(store.needsConversion)
+        XCTAssertTrue(store.loadIssue?.contains("acme/monorepo") == true, store.loadIssue ?? "")
         XCTAssertFalse(store.resolve(owner: "acme", repo: "monorepo").aiReviewEnabled)
         XCTAssertFalse(store.resolve(owner: "acme", repo: "other").autoApprove.enabled)
+        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), Self.oldConfig, "untouched")
     }
 
     // MARK: - The stage

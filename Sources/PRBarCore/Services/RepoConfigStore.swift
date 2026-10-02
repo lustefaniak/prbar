@@ -219,12 +219,18 @@ final class RepoConfigStore {
                 let data = try Data(contentsOf: fileURL)
                 lastSeenData = data
                 try apply(data: data, path: fileURL.path)
+            } catch where Self.isReposMoved(error) {
+                if convertRepos(), let data = try? Data(contentsOf: fileURL), (try? apply(data: data, path: fileURL.path)) != nil {
+                    lastSeenData = data
+                    noteConversion()
+                } else {
+                    loadLastGood()
+                    holdUntilConverted()
+                }
             } catch {
-                needsConversion = (error as? ConfigFile.Error).map { if case .reposMoved = $0 { return true }; return false } ?? false
                 loadIssue = "\(error.localizedDescription). Using the last config that loaded."
                 PRBarLog.config.error("load failed: \(error.localizedDescription, privacy: .public)")
                 loadLastGood()
-                if needsConversion { holdUntilConverted() }
             }
             return
         }
@@ -254,6 +260,41 @@ final class RepoConfigStore {
         } catch {
             PRBarLog.config.error("legacy repo rules not written: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    private static func isReposMoved(_ error: Swift.Error) -> Bool {
+        if case .reposMoved? = error as? ConfigFile.Error { return true }
+        return false
+    }
+
+    /// What the last automatic conversion did, shown with the warnings.
+    @ObservationIgnored private var conversion: String?
+
+    /// Converts `repos:` into a configure rule, as `rules convert` does.
+    /// False when it can't: then the store waits (`needsConversion`), with
+    /// the reason, typically the repositories that would come out
+    /// different, as the load issue.
+    private func convertRepos() -> Bool {
+        let state = lastGoodURL?.deletingLastPathComponent()
+        do {
+            let written = try RulesConvert.run(
+                configURL: fileURL, rulesURL: rulesURL,
+                repositories: state.map(RulesConvert.knownRepositories(stateDirectory:)) ?? [])
+            conversion = "Converted the \(written.entries) repos: entries of prbar.yaml into \(written.rulePath), checked on \(written.checked.count) repositories; the old file is \(written.backupPath)."
+            PRBarLog.config.notice("\(self.conversion ?? "", privacy: .public)")
+            needsConversion = false
+            return true
+        } catch {
+            needsConversion = true
+            loadIssue = "prbar.yaml still has `repos:`, and converting them to rules didn't go through: \(error.localizedDescription)\nUntil it does, PRBar reviews nothing and posts nothing on its own."
+            PRBarLog.config.error("repos: not converted: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    private func noteConversion() {
+        reloadRulesIfChanged()
+        if let conversion { warnings.insert(conversion, at: 0) }
     }
 
     /// Until `repos:` is converted the settings in effect aren't the ones
@@ -339,8 +380,15 @@ final class RepoConfigStore {
         let before = config
         do {
             try apply(data: data, path: fileURL.path)
+        } catch where Self.isReposMoved(error) {
+            // Converted: the next pass reads the new file and the new rule.
+            // Not converted: the previous config stays, with the reason.
+            guard convertRepos() else { return }
+            lastSeenData = nil
+            reloadIfChanged()
+            noteConversion()
+            return
         } catch {
-            needsConversion = (error as? ConfigFile.Error).map { if case .reposMoved = $0 { return true }; return false } ?? false
             loadIssue = "\(error.localizedDescription). Keeping the previous config."
             PRBarLog.config.error("reload failed: \(error.localizedDescription, privacy: .public)")
             return

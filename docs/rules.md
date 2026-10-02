@@ -213,11 +213,11 @@ are lists in `prbar.yaml` instead (`repositories:`, see
 [configuration.md](configuration.md#which-repositories-repositories)): they are
 permissions, not review settings.
 
-**Converting from `repos:`.** A `prbar.yaml` that still has `repos:` is refused
-until converted. The Convert button in Settings → Rules, or
-`prbar-review rules convert`, writes them as `rules/configure/50-repos.yaml` in
+**Converting from `repos:`.** PRBar converts the `repos:` of an older
+`prbar.yaml` itself when it loads it, into `rules/configure/50-repos.yaml` in
 their order, after checking that every repository PRBar has seen resolves to the
-same settings as before; `--dry-run` prints the rule without writing.
+same settings as before ([details](configuration.md#how-a-value-is-decided)).
+`prbar-review rules convert [--dry-run]` does the same by hand.
 
 ## Writing conditions
 

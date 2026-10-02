@@ -196,9 +196,8 @@ rule:
 ```
 
 For `select` and `decide`, the first rule that matches decides; when none does,
-the defaults do. A `prbar.yaml` from an older version with per-repository
-`repos:` entries is converted with `prbar-review rules convert` (or the button in
-Settings → Rules). Rules are checked when they load, with the file and line of any
+the defaults do. The per-repository `repos:` entries of an older
+`prbar.yaml` are converted into a configure rule when PRBar loads it. Rules are checked when they load, with the file and line of any
 mistake. `prbar-review rules check` validates them, `prbar-review rules explain
 <pr>` shows every condition evaluated for a PR with the facts it read, and every
 decision is recorded with its facts so `prbar-review rules replay <id> --watch`

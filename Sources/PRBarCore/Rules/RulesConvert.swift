@@ -279,16 +279,19 @@ extension RulesConvert {
         let result = try convert(
             configText: text, path: configURL.path, rules: try RuleDirectory.read(rulesURL), rulesRoot: rulesURL.path,
             repositories: repositories, date: date)
-        let backup = configURL.deletingLastPathComponent()
+        var backup = configURL.deletingLastPathComponent()
             .appendingPathComponent(configURL.lastPathComponent + ".before-rules")
+        var n = 2
+        while FileManager.default.fileExists(atPath: backup.path) {
+            backup = configURL.deletingLastPathComponent()
+                .appendingPathComponent(configURL.lastPathComponent + ".before-rules-\(n)")
+            n += 1
+        }
         let written = Written(
             entries: result.entries, checked: result.checked,
             rulePath: rulesURL.appendingPathComponent(result.rulePath).path, backupPath: backup.path,
             ruleText: result.ruleText)
         guard !dryRun else { return written }
-        if FileManager.default.fileExists(atPath: backup.path) {
-            throw Error.exists(backup.path)
-        }
         try Data(text.utf8).write(to: backup)
         let ruleURL = rulesURL.appendingPathComponent(result.rulePath)
         try FileManager.default.createDirectory(at: ruleURL.deletingLastPathComponent(), withIntermediateDirectories: true)
