@@ -65,6 +65,7 @@ struct PRBarApp: App {
             SettingsRoot()
                 .prbarServices(delegate)
         }
+        .windowResizability(.contentMinSize)
 
         // Standalone full-size detail window. Opened from the popover's
         // PRDetailView via `openWindow(id: PRDetailWindowID.id, value:

@@ -49,14 +49,16 @@ private struct RulesWorkbenchView: View {
             }
             HSplitView {
                 fileList
-                    .frame(minWidth: 150, idealWidth: 170, maxWidth: 240)
+                    .frame(minWidth: 170, idealWidth: 210, maxWidth: 320)
                 editor
                     .frame(minWidth: 320, maxWidth: .infinity)
                     .layoutPriority(1)
                 RulesResultsView(workbench: workbench, prs: prs)
-                    .frame(minWidth: 300, idealWidth: 330, maxWidth: 520)
+                    .frame(minWidth: 300, idealWidth: 360, maxWidth: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func banner(_ text: String, color: Color) -> some View {
@@ -78,6 +80,14 @@ private struct RulesWorkbenchView: View {
                 section("Decide: what is posted", paths: workbench.paths.filter { $0.hasPrefix("decide/") })
             }
             .listStyle(.sidebar)
+            .overlay {
+                if workbench.paths.isEmpty {
+                    Text("No rule files")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxHeight: .infinity)
             Divider()
             HStack {
                 Menu {
@@ -202,6 +212,7 @@ private struct RulesWorkbenchView: View {
                 .padding(8)
                 Divider()
                 RuleTextEditor(path: path, workbench: workbench)
+                    .frame(maxHeight: .infinity)
                 if let problem = workbench.draftProblem {
                     Divider()
                     ScrollView {
@@ -219,6 +230,7 @@ private struct RulesWorkbenchView: View {
             ContentUnavailableView(
                 "No rules yet", systemImage: "list.bullet.rectangle",
                 description: Text("Add a select or decide rule with +. Nothing changes until you save, and until then you can try it on PRs and on recent decisions."))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
@@ -271,6 +283,7 @@ private struct RulesResultsView: View {
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxHeight: .infinity)
         }
     }
 

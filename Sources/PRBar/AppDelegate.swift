@@ -275,7 +275,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let n = Notifier(deliverer: UNNotificationDeliverer())
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("prbar-screenshots-\(UUID().uuidString)")
-        if ScreenshotMode.stage == .settingsRules {
+        // `PRBAR_SCREENSHOT_RULES=empty` shows the tab before any rule exists.
+        if ScreenshotMode.stage == .settingsRules, ProcessInfo.processInfo.environment["PRBAR_SCREENSHOT_RULES"] != "empty" {
             q.ruleLog = .rules(in: scratch.appendingPathComponent("history"))
             ScreenshotFixtures.seedRules(rules: scratch.appendingPathComponent("rules"), log: q.ruleLog)
             // Before any view: the tab reads these when it first loads.
