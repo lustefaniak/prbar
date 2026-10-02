@@ -1,0 +1,11 @@
+#!/bin/sh
+# Starts `prbar-review mcp` from wherever PRBar's CLI is: $PRBAR_REVIEW, PATH,
+# the link Settings -> General -> Command-line tool makes, or the app bundle.
+for candidate in "$PRBAR_REVIEW" "$(command -v prbar-review 2>/dev/null)" \
+    "$HOME/.local/bin/prbar-review" "/Applications/PRBar.app/Contents/MacOS/prbar-review"; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        exec "$candidate" mcp
+    fi
+done
+echo "prbar-mcp: prbar-review not found. Install it from PRBar's Settings -> General -> Command-line tool, or set PRBAR_REVIEW." >&2
+exit 127

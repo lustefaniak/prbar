@@ -261,7 +261,18 @@ config) and 3 when no PRBar is running.
 ### Coding agents (MCP)
 
 `prbar-review mcp` serves PRBar to a coding agent over the Model Context Protocol,
-through the running PRBar. For Claude Code:
+through the running PRBar. For Claude Code, install the plugin: it registers the
+MCP server and adds a `prbar` skill that walks the agent through reviews and rule
+changes, taking every name and option from the running PRBar.
+
+```sh
+claude plugin marketplace add lustefaniak/prbar
+claude plugin install prbar@prbar
+```
+
+It finds `prbar-review` on `PATH`, at `~/.local/bin` (Settings → General →
+Command-line tool links it there) or in `/Applications/PRBar.app`; set
+`PRBAR_REVIEW` to use another. Without the plugin, register the server alone:
 
 ```sh
 claude mcp add prbar -- prbar-review mcp

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "prbar",
+  "owner": { "name": "Łukasz Stefaniak" },
+  "description": "PRBar for coding agents: its MCP server and how to work with its review rules.",
+  "plugins": [
+    {
+      "name": "prbar",
+      "displayName": "PRBar",
+      "source": "./plugins/prbar",
+      "description": "PRBar's MCP server (reviews, inbox, rules) and a skill for writing, testing and proposing PRBar review rules, your own or a repository's .prbar/rules.",
+      "category": "development"
+    }
+  ]
+}

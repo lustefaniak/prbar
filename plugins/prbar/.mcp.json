@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "prbar": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/prbar-mcp"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "prbar",
+  "description": "PRBar's MCP server and a skill for writing, testing and proposing PRBar review rules.",
+  "version": "0.1.0",
+  "author": { "name": "Łukasz Stefaniak" },
+  "homepage": "https://github.com/lustefaniak/prbar"
+}
