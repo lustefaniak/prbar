@@ -347,6 +347,8 @@ struct SaveRuleFileParams: Codable, Sendable {
 struct RuleCounts: Codable, Sendable, Equatable {
     var select: Int
     var decide: Int
+    /// Nil from an older server.
+    var configure: Int? = nil
 }
 
 /// A PR named either by its GraphQL node id or by `owner/repo#number`.

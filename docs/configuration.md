@@ -60,7 +60,7 @@ rule:
 
 Older versions kept per-repository settings in a `repos:` list in this file.
 **A `prbar.yaml` that still has `repos:` is refused** until it is converted, and
-PRBar runs on its shipped defaults meanwhile, which post nothing on their own.
+PRBar reviews nothing and posts nothing on its own meanwhile.
 Convert with the button in Settings → Rules, or:
 
 ```sh

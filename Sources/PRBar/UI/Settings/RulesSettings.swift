@@ -46,7 +46,7 @@ private struct RulesWorkbenchView: View {
         VStack(spacing: 0) {
             if needsConversion {
                 HStack(alignment: .top) {
-                    Text("prbar.yaml still has per-repository settings under `repos:`. They are rules now, so PRBar runs on its shipped defaults, which post nothing, until they are converted. Converting writes them as rules/configure/50-repos.yaml, checks that every repository PRBar has seen keeps the same settings, and keeps the old file beside the new one.")
+                    Text("prbar.yaml still has per-repository settings under `repos:`. They are rules now, so PRBar reviews nothing and posts nothing on its own until they are converted. Converting writes them as rules/configure/50-repos.yaml, checks that every repository PRBar has seen keeps the same settings, and keeps the old file beside the new one.")
                         .font(.callout)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Button(converting ? "Converting…" : "Convert") {

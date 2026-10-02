@@ -29,7 +29,7 @@ enum ConfigFile {
             case let .unsupportedVersion(path, version):
                 return "config \(path) is version \(version); this PRBar understands up to \(PRBarConfig.currentVersion)"
             case let .reposMoved(path):
-                return "config \(path) still has `repos:`. Per-repository settings are rules now: convert them with `prbar-review rules convert` or the Convert button in Settings → Rules. Until then PRBar runs with its shipped defaults, which post nothing on their own"
+                return "config \(path) still has `repos:`. Per-repository settings are rules now: convert them with `prbar-review rules convert` or the Convert button in Settings → Rules. Until then PRBar reviews nothing and posts nothing on its own"
             }
         }
     }

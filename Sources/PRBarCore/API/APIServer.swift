@@ -823,7 +823,7 @@ final class APIServer {
             agents: runtime.repoConfigs.config.agents,
             idleExitSeconds: idleExitSeconds,
             rulesPath: runtime.repoConfigs.rulesURL.path,
-            rules: runtime.repoConfigs.config.compiledRules.map { RuleCounts(select: $0.select.count, decide: $0.decide.count) },
+            rules: runtime.repoConfigs.config.compiledRules.map { RuleCounts(select: $0.select.count, decide: $0.decide.count, configure: $0.configure.count) },
             rulesIssue: rulesIssues()
         )
     }

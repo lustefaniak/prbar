@@ -224,6 +224,7 @@ final class RepoConfigStore {
                 loadIssue = "\(error.localizedDescription). Using the last config that loaded."
                 PRBarLog.config.error("load failed: \(error.localizedDescription, privacy: .public)")
                 loadLastGood()
+                if needsConversion { holdUntilConverted() }
             }
             return
         }
@@ -253,6 +254,17 @@ final class RepoConfigStore {
         } catch {
             PRBarLog.config.error("legacy repo rules not written: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Until `repos:` is converted the settings in effect aren't the ones
+    /// the file asks for, so nothing runs on them: no review (which costs)
+    /// and no post. In memory only; the file isn't saved meanwhile.
+    private func holdUntilConverted() {
+        config.defaults.aiReviewEnabled = false
+        config.defaults.autoApprove.enabled = false
+        config.defaults.autoDeny.action = .off
+        config.defaults.shareFindings = .off
+        config.defaults.resolveThreads.enabled = false
     }
 
     private func loadLastGood() {
