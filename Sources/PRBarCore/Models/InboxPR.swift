@@ -227,22 +227,33 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
         humanReviews.last { $0.isFromViewer }
     }
 
-    /// True when another reviewer has handled this PR. Because GitHub generally
-    /// drops you from requested-reviewers after you submit a review, a
+    /// True when another reviewer has handled this PR. GitHub generally drops
+    /// you from requested-reviewers after you submit a review, so a
     /// review-request still surfaced in the Inbox with a non-null aggregate
-    /// `reviewDecision` is one *someone else* weighed in on — not one you
-    /// reviewed. Shared by the Inbox "hide reviewed by others" filter, the AI
-    /// auto-enqueue skip, and sequential-focus so they can't drift apart.
+    /// `reviewDecision` is usually one *someone else* weighed in on. Shared by
+    /// the Inbox "hide reviewed by others" filter, the AI auto-enqueue skip,
+    /// sequential focus and the `pr.reviewed_by_others` rule fact so they
+    /// can't drift apart.
     ///
-    /// APPROVED counts unconditionally (a sign-off; GitHub dismisses approvals
-    /// itself when branch protection requires it). CHANGES_REQUESTED counts only
-    /// while the flagged code is the current head — once the author commits past
-    /// the change-request it is likely addressed, so the PR resurfaces for a
-    /// fresh look rather than staying hidden.
+    /// APPROVED counts as a sign-off (GitHub dismisses approvals itself when
+    /// branch protection requires it) — but only when someone other than the
+    /// viewer gave it. A re-request puts the viewer back in `reviewRequests`
+    /// while the aggregate decision still carries their *own* earlier approval,
+    /// which is the one case where "still requested" does not imply "someone
+    /// else decided". CHANGES_REQUESTED counts only while the flagged code is
+    /// the current head — once the author commits past the change-request it is
+    /// likely addressed, so the PR resurfaces for a fresh look rather than
+    /// staying hidden.
     var isReviewedByOthers: Bool {
         switch (reviewDecision ?? "").uppercased() {
         case "APPROVED":
-            return true
+            if humanReviews.contains(where: { !$0.isFromViewer && $0.state.uppercased() == "APPROVED" }) {
+                return true
+            }
+            // No approval attributable to the viewer either (empty or truncated
+            // `reviews(last: 20)`) → the aggregate is the only evidence, so keep
+            // the conservative default.
+            return !humanReviews.contains { $0.isFromViewer && $0.state.uppercased() == "APPROVED" }
         case "CHANGES_REQUESTED":
             // Without both timestamps — the head commit date is absent, or the
             // governing change-request falls outside reviews(last: 20) — fall

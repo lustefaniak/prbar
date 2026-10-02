@@ -62,6 +62,37 @@ final class RepoConfigFilterTests: XCTestCase {
         XCTAssertFalse(makePR(reviewDecision: nil).isReviewedByOthers)
     }
 
+    func testApprovedByViewerAloneIsNotReviewedByOthers() {
+        // Re-request: GitHub put the viewer back in reviewRequests while the
+        // aggregate decision still carries the viewer's own earlier approval.
+        let pr = makePR(
+            reviewDecision: "APPROVED",
+            humanReviews: [approval(from: "me", isFromViewer: true)]
+        )
+        XCTAssertFalse(pr.isReviewedByOthers)
+    }
+
+    func testApprovedByViewerAndOtherIsReviewedByOthers() {
+        let pr = makePR(
+            reviewDecision: "APPROVED",
+            humanReviews: [approval(from: "me", isFromViewer: true),
+                           approval(from: "bob")]
+        )
+        XCTAssertTrue(pr.isReviewedByOthers)
+    }
+
+    func testApprovedWithOnlyViewerCommentReviewIsReviewedByOthers() {
+        // The viewer commented but never approved, so the aggregate APPROVED
+        // must come from a reviewer outside `reviews(last: 20)`.
+        let pr = makePR(
+            reviewDecision: "APPROVED",
+            humanReviews: [PRReviewSummary(author: "me", state: "COMMENTED",
+                                           submittedAt: nil, body: "",
+                                           isFromViewer: true)]
+        )
+        XCTAssertTrue(pr.isReviewedByOthers)
+    }
+
     func testChangesRequestedStaysHandledWhileFlaggedCodeIsCurrent() {
         let reviewedAt = Date(timeIntervalSince1970: 2_000)
         let committedBefore = Date(timeIntervalSince1970: 1_000)
@@ -277,6 +308,14 @@ final class RepoConfigFilterTests: XCTestCase {
         pr.headCommittedAt = headCommittedAt
         pr.humanReviews = humanReviews
         return pr
+    }
+
+    private func approval(from author: String = "bob", isFromViewer: Bool = false) -> PRReviewSummary {
+        PRReviewSummary(
+            author: author, state: "APPROVED",
+            submittedAt: Date(timeIntervalSince1970: 1_000), body: "lgtm",
+            isFromViewer: isFromViewer
+        )
     }
 
     private func changeRequest(at submittedAt: Date, from author: String = "bob") -> PRReviewSummary {
