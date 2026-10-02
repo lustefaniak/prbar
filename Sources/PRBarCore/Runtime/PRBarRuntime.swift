@@ -274,9 +274,16 @@ extension PRBarRuntime {
         queue.repoRulesFetcher = { owner, repo in
             try await (client ?? GHClient()).fetchRepoRules(owner: owner, repo: repo)
         }
-        queue.lazyFactFetcher = LazyFactFetcher(committers: { owner, repo, number in
-            try await (client ?? GHClient()).fetchCommitters(owner: owner, repo: repo, number: number)
-        })
+        queue.lazyFactFetcher = LazyFactFetcher(
+            committers: { owner, repo, number in
+                try await (client ?? GHClient()).fetchCommitters(owner: owner, repo: repo, number: number)
+            },
+            codeowners: { owner, repo, ref in
+                try await (client ?? GHClient()).fetchCodeOwners(owner: owner, repo: repo, ref: ref)
+            },
+            teamMembers: { org, team in
+                try await (client ?? GHClient()).fetchTeamMembers(org: org, team: team)
+            })
         let poller = PRPoller(
             fetcher: {
                 let c = try client ?? GHClient()

@@ -120,6 +120,37 @@ actor GHClient {
         }
     }
 
+    /// The CODEOWNERS file GitHub uses at `ref`: the first of
+    /// `CodeOwners.locations` that exists there, nil when none does.
+    func fetchCodeOwners(owner: String, repo: String, ref: String) async throws -> String? {
+        var args = ["api", "graphql", "-F", "owner=\(owner)", "-F", "name=\(repo)", "-f", "query=\(GraphQLQueries.codeOwners)"]
+        for (key, path) in zip(["a", "b", "c"], CodeOwners.locations) {
+            args += ["-f", "\(key)=\(ref):\(path)"]
+        }
+        let result = try await ProcessRunner.run(executable: executablePath, args: args)
+        guard result.succeeded else {
+            throw GHError.execFailed(stderr: result.stderrString ?? "", exitCode: result.exitCode)
+        }
+        struct Response: Decodable {
+            struct Blob: Decodable { let text: String? }
+            struct Repository: Decodable { let a: Blob?, b: Blob?, c: Blob? }
+            struct DataBlock: Decodable { let repository: Repository? }
+            let data: DataBlock
+        }
+        do {
+            let repository = try JSONDecoder().decode(Response.self, from: result.stdout).data.repository
+            return [repository?.a, repository?.b, repository?.c].lazy.compactMap { $0?.text }.first
+        } catch {
+            throw GHError.decodingFailed(String(describing: error))
+        }
+    }
+
+    /// A team's members by login; GitHub includes child teams' members.
+    /// Reading them needs the `read:org` scope `gh auth login` asks for.
+    func fetchTeamMembers(org: String, team: String) async throws -> [String] {
+        try await tsv("orgs/\(org)/teams/\(team)/members?per_page=100", jq: ".[] | [.login] | @tsv").compactMap(\.first)
+    }
+
     /// The GitHub logins that authored or committed a PR's commits, each
     /// once. `web-flow` (GitHub committing for a web edit or merge) and
     /// commits with no linked account are left out.

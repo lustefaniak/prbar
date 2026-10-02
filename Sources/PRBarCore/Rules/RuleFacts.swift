@@ -57,10 +57,19 @@ struct ChangeFacts: Codable, Sendable, Hashable, CELNamedType {
     /// The logins of everyone who authored a commit on it. Fetched only
     /// when a rule reads it, like `files`.
     var committers: [String]?
+    /// Every changed file with its code owners from CODEOWNERS on the base
+    /// branch, teams expanded to their members. Fetched only when a rule
+    /// reads it; a file no line owns has no owners, so
+    /// `pr.codeowners.all(f, pr.author in f.owners)` is false without a
+    /// CODEOWNERS file.
+    var codeowners: [FileOwnersFacts]?
     /// Work in a local checkout (`prbar-review <dir>`), not a pull request.
     var local: Bool
 
-    init(_ pr: InboxPR, now: Date, files: [FileFacts]? = nil, committers: [String]? = nil) {
+    init(
+        _ pr: InboxPR, now: Date, files: [FileFacts]? = nil, committers: [String]? = nil,
+        codeowners: [FileOwnersFacts]? = nil
+    ) {
         repo = pr.nameWithOwner
         owner = pr.owner
         name = pr.repo
@@ -93,6 +102,7 @@ struct ChangeFacts: Codable, Sendable, Hashable, CELNamedType {
         checksState = Self.state(of: checks)
         self.files = files
         self.committers = committers
+        self.codeowners = codeowners
         local = pr.local != nil
     }
 

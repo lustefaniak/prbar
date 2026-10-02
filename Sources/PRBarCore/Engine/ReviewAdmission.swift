@@ -103,7 +103,7 @@ enum ReviewAdmission {
         pr: InboxPR, rules: Rules, trigger: RuleTrigger, lazy: LazyFactValues, now: Date, below: BelowFacts? = nil
     ) -> SelectFacts {
         SelectFacts(
-            pr: ChangeFacts(pr, now: now, files: lazy.files, committers: lazy.committers),
+            pr: ChangeFacts(pr, now: now, files: lazy.files, committers: lazy.committers, codeowners: lazy.codeowners),
             trigger: trigger, viewer: pr.viewerLogin, lists: rules.lists, now: now, below: below)
     }
 

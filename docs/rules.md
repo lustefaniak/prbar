@@ -449,7 +449,7 @@ How to read them:
 - `error:` means a condition failed to evaluate, which for `select` skips the
   review and for `decide` posts nothing.
 - A replay runs on the recorded facts, not on the PR as it is now: that is what
-  makes it repeatable. `pr.files` and `pr.committers` are in a record only if
+  makes it repeatable. `pr.files`, `pr.committers` and `pr.codeowners` are in a record only if
   some rule needed them at the time ([lazy facts](#lazy-facts)); a replay that
   needs one the record lacks says `undecided: needs pr.files, which this
   snapshot doesn't have`. `rules explain <pr>` uses the PR's current state and
@@ -661,6 +661,23 @@ rule:
         action: approve
 ```
 
+Approve when the author owns every changed file in CODEOWNERS and the review
+found nothing above a suggestion:
+
+```yaml
+# rules/decide/25-codeowner.yaml
+name: codeowner
+rule:
+  match:
+    - condition: >-
+        review.verdict == "approve" && review.confidence >= 0.85
+        && review.max_severity <= severity.suggestion
+        && pr.codeowners.all(f, pr.author in f.owners)
+      output:
+        rule: codeowner-approves
+        action: approve
+```
+
 Never act on infrastructure on its own:
 
 ```yaml
@@ -717,7 +734,7 @@ rule:
 - **Errors fall on the quiet side.** A `select` rule that fails skips the
   review; a `decide` rule that fails posts nothing. The reason is in the review
   row, in `rules explain`, and in the history.
-- **`pr.files` and `pr.committers` can cost a GitHub call**, made only when a
+- **`pr.files`, `pr.committers` and `pr.codeowners` can cost a GitHub call**, made only when a
   rule's answer depends on them. Put the cheap condition first,
   `pr.draft || only(pr.files, ...)`, and a draft is decided without the call.
 - **Coding agents can't override a rule's `skip`**, even with `force`. You can,
@@ -809,6 +826,7 @@ and `now`; `decide` sees the same with `review` in place of `trigger`. Using
 | `checks` | list | each with `name` and `state` (`passed`, `failed`, `pending`, `unknown`) |
 | `files` | list, may be null | the changed files, from the PR's diff ([lazy](#lazy-facts)) |
 | `committers` | list of strings, may be null | everyone who authored or committed a commit, by login ([lazy](#lazy-facts)) |
+| `codeowners` | list, may be null | every changed file with its code owners: `path`, `owners` (logins, teams expanded to their members), `teams` (`org/team`), `pattern` (the deciding CODEOWNERS line, null when none) ([lazy](#lazy-facts)) |
 | `local` | bool | a local review (`prbar-review <dir>`), not a pull request |
 
 Each of `pr.files`:
@@ -862,7 +880,7 @@ matched.
 
 ### Lazy facts
 
-`pr.files` and `pr.committers` can cost a GitHub call, so **PRBar gets them
+`pr.files`, `pr.committers` and `pr.codeowners` can cost a GitHub call, so **PRBar gets them
 only when a rule's answer depends on them**. The rules first run without them;
 if they decide, nothing is fetched. Otherwise PRBar fetches exactly what the
 undecided rule reads and runs the rules again. Meanwhile the PR is neither
@@ -872,7 +890,13 @@ reviewed nor skipped, usually for a second or two.
   rule fetched it, the review uses the same copy. In `decide` the files are
   those of the diff the review read, so they are always there.
 - `pr.committers` comes from the PR's commit list: one call per head commit.
-- Both are kept for the PR's head commit; after a push they are fetched again
+- `pr.codeowners` reads CODEOWNERS (`.github/`, the root, then `docs/`, as
+  GitHub does) from the PR's base branch, matches every changed file to its
+  last matching line, and expands the teams that line names, which needs the
+  `read:org` scope `gh auth login` asks for. Team members are kept for an
+  hour. A file no line owns has no owners, so with no CODEOWNERS file
+  `pr.codeowners.all(f, pr.author in f.owners)` is false.
+- Each is kept for the PR's head commit; after a push they are fetched again
   only if a rule needs them again.
 - A failed fetch (a GitHub rate limit, say) holds the PR back and is tried again
   by a later poll, five minutes apart, three times. Only then is the fact null:

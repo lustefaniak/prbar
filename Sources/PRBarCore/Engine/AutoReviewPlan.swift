@@ -140,7 +140,8 @@ enum AutoReviewPlan {
         prior: [PriorReview], lazy: LazyFactValues, rules: Rules, now: Date, below: BelowFacts? = nil
     ) -> DecideFacts {
         DecideFacts(
-            pr: ChangeFacts(pr, now: now, files: FileFacts.list(diff: diffText), committers: lazy.committers),
+            pr: ChangeFacts(pr, now: now, files: FileFacts.list(diff: diffText), committers: lazy.committers,
+                codeowners: lazy.codeowners),
             review: ReviewFacts(review, provider: providerId, prior: prior),
             viewer: pr.viewerLogin, lists: rules.lists, now: now, below: below)
     }

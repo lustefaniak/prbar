@@ -156,6 +156,22 @@ enum RuleExamples {
 
                     """),
             Example(
+                id: "decide-codeowner", stage: .decide, title: "Approve a code owner's clean change",
+                detail: "The author owns every changed file in CODEOWNERS and the review found nothing above a suggestion. CODEOWNERS is fetched only when this rule needs it.",
+                file: "25-codeowner.yaml", text: """
+                    name: codeowner
+                    rule:
+                      match:
+                        - condition: >-
+                            review.verdict == "approve" && review.confidence >= 0.85
+                            && review.max_severity <= severity.suggestion
+                            && pr.codeowners.all(f, pr.author in f.owners)
+                          output:
+                            rule: codeowner-approves
+                            action: approve
+
+                    """),
+            Example(
                 id: "decide-sensitive", stage: .decide, title: "Never post on its own when sensitive files change",
                 detail: "Auth, secrets, crypto: flagged in PRBar, nothing posted.",
                 file: "05-sensitive.yaml", text: """

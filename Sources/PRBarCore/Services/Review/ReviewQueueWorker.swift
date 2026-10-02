@@ -1003,6 +1003,9 @@ final class ReviewQueueWorker {
                     case .committers:
                         guard let fetcher = lazyFactFetcher else { throw LazyFactError.noFetcher }
                         values.committers = try await fetcher.committers(pr.owner, pr.repo, pr.number)
+                    case .codeowners:
+                        guard let fetcher = lazyFactFetcher, pr.local == nil else { throw LazyFactError.noFetcher }
+                        values.codeowners = try await codeOwners(of: pr, fetcher)
                     }
                     values.fetched.insert(fact)
                     lazyBackoff[key] = nil
@@ -1027,6 +1030,29 @@ final class ReviewQueueWorker {
         }
         return values
     }
+
+    /// Every changed file with its owners, from CODEOWNERS on the base
+    /// branch. Team members are kept for an hour: they change far less
+    /// often than PRs arrive.
+    private func codeOwners(of pr: InboxPR, _ fetcher: LazyFactFetcher) async throws -> [FileOwnersFacts] {
+        let paths = FileFacts.list(diff: try await diffText(for: pr)).map(\.path)
+        let owners = CodeOwners(try await fetcher.codeowners(pr.owner, pr.repo, pr.baseRef) ?? "")
+        var members: [String: [String]] = [:]
+        for team in owners.teams(for: paths) {
+            if let kept = teamMembers[team], kept.at > Date().addingTimeInterval(-3600) {
+                members[team] = kept.logins
+                continue
+            }
+            let parts = team.split(separator: "/", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            let logins = try await fetcher.teamMembers(parts[0], parts[1])
+            teamMembers[team] = (logins, Date())
+            members[team] = logins
+        }
+        return owners.owners(of: paths, members: members)
+    }
+
+    private var teamMembers: [String: (logins: [String], at: Date)] = [:]
 
     /// Tries per lazy fact and head commit, and how long a poll waits before
     /// the next one. Long, because the usual failure worth waiting out is a

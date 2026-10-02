@@ -91,6 +91,18 @@ enum GraphQLQueries {
     }
     """
 
+    /// The CODEOWNERS candidates at a ref, in the order GitHub looks for
+    /// them (`CodeOwners.locations`).
+    static let codeOwners: String = """
+    query CodeOwners($owner: String!, $name: String!, $a: String!, $b: String!, $c: String!) {
+      repository(owner: $owner, name: $name) {
+        a: object(expression: $a) { ... on Blob { text } }
+        b: object(expression: $b) { ... on Blob { text } }
+        c: object(expression: $c) { ... on Blob { text } }
+      }
+    }
+    """
+
     /// Review threads for one PR. Two consumers: the prompt's prior-discussion
     /// section (every triage) and the resolve-on-retriage path (opt-in).
     ///

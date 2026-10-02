@@ -11,6 +11,7 @@ import Foundation
 enum LazyFact: String, Sendable, Hashable, CaseIterable, Codable {
     case files
     case committers
+    case codeowners
 
     var pattern: UnknownPattern { UnknownPattern("pr").qualified(by: rawValue) }
 
@@ -28,6 +29,7 @@ enum LazyFact: String, Sendable, Hashable, CaseIterable, Codable {
 struct LazyFactValues: Sendable, Hashable {
     var files: [FileFacts]?
     var committers: [String]?
+    var codeowners: [FileOwnersFacts]?
     var fetched: Set<LazyFact> = []
 
     var pending: Set<LazyFact> { Set(LazyFact.allCases).subtracting(fetched) }
@@ -35,6 +37,7 @@ struct LazyFactValues: Sendable, Hashable {
     mutating func merge(_ other: LazyFactValues) {
         if other.fetched.contains(.files) { files = other.files }
         if other.fetched.contains(.committers) { committers = other.committers }
+        if other.fetched.contains(.codeowners) { codeowners = other.codeowners }
         fetched.formUnion(other.fetched)
     }
 }
@@ -71,11 +74,18 @@ extension ResolvedRepoConfig {
 /// `gh` in production. The files come from the diff the worker fetches.
 struct LazyFactFetcher: Sendable {
     var committers: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> [String]
+    /// The CODEOWNERS file GitHub uses at `ref`, nil when there is none.
+    var codeowners: @Sendable (_ owner: String, _ repo: String, _ ref: String) async throws -> String? = { _, _, _ in nil }
+    /// A team's members by login, child teams included.
+    var teamMembers: @Sendable (_ org: String, _ team: String) async throws -> [String] = { _, _ in [] }
 }
 
 extension LazyFactFetcher {
     init(_ client: GHClient) {
-        self.init(committers: { try await client.fetchCommitters(owner: $0, repo: $1, number: $2) })
+        self.init(
+            committers: { try await client.fetchCommitters(owner: $0, repo: $1, number: $2) },
+            codeowners: { try await client.fetchCodeOwners(owner: $0, repo: $1, ref: $2) },
+            teamMembers: { try await client.fetchTeamMembers(org: $0, team: $1) })
     }
 }
 

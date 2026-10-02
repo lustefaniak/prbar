@@ -901,19 +901,28 @@ final class APIServer {
         var decideOutcome: String?
         if let existing, existing.headSha == pr.headSha, case .completed(let review) = existing.status {
             // The run's diff is gone; the files come from the diff again.
-            if !lazy.fetched.isSuperset(of: [.files, .committers]) {
-                lazy.merge(await queue.fetchLazyFacts(pr, lazy.pending))
+            let base: Set<LazyFact> = [.files, .committers]
+            if !lazy.fetched.isSuperset(of: base) {
+                lazy.merge(await queue.fetchLazyFacts(pr, base.subtracting(lazy.fetched)))
                 queue.rememberLazyFacts(lazy, for: pr)
             }
             var decideFacts: [(RuleLayer, DecideFacts)] = []
-            let outcome = AutoReviewPlan.plan(
-                pr: pr, review: review, config: config, providerId: existing.providerId, diffText: "",
-                prior: existing.priorReviews, lazy: lazy, now: now
-            ) { layer, facts, _ in decideFacts.append((layer, facts)) }
+            var outcome: AutoReviewPlan.Outcome
+            while true {
+                decideFacts = []
+                outcome = AutoReviewPlan.plan(
+                    pr: pr, review: review, config: config, providerId: existing.providerId, diffText: "",
+                    prior: existing.priorReviews, lazy: lazy, now: now
+                ) { layer, facts, _ in decideFacts.append((layer, facts)) }
+                guard case .needs(let facts) = outcome, !facts.subtracting(lazy.fetched).isEmpty else { break }
+                lazy.merge(await queue.fetchLazyFacts(pr, facts.subtracting(lazy.fetched)))
+                queue.rememberLazyFacts(lazy, for: pr)
+            }
             var text = decideFacts.compactMap { layer, facts -> String? in
                 guard let rules = config.rules(layer), !rules.decide.isEmpty || rules.failure != nil else { return nil }
                 var facts = facts
                 facts.pr.files = lazy.files
+                facts.pr.codeowners = lazy.codeowners
                 update(layer) { $0.decide = rules.traceDecide(facts) }
                 return heading(layer, pr: pr, config: config) + rules.explainDecide(facts)
             }.joined(separator: "\n\n")
