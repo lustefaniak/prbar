@@ -359,7 +359,16 @@ the final word.
 The Rules tab in PRBar's Settings is the quickest way to write a rule and see
 what it does before it decides anything:
 
-- **The files** of your rules directory, by stage, with an editor. A new file
+- **Start from an example or the builder** (`+`). Examples cover the common
+  cases (skip drafts or bots, approve only some authors, settings for one
+  repository); the builder puts a rule together from choices: a fact, a
+  comparison and a value per condition, then the outcome.
+- **The files** of your rules directory, by stage, with an editor that colours
+  the YAML and the CEL, numbers the lines, and completes as you type: facts
+  after `pr.` (or `review.`, `below.`, `repo.`), your list names after
+  `lists.`, severities, functions, output fields and their allowed values.
+  **Facts** lists everything the file's stage can read with what it means; a
+  click inserts it. A line that doesn't compile is marked. A new file
   (`+`) starts from a rule that compiles. An edit is held unsaved, and the dot
   beside the file name says so. **Open in Editor** opens a saved file in your
   editor, where the JSON schema completes it; saves there show in the tab.

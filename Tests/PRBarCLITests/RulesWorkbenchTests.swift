@@ -175,6 +175,25 @@ final class RulesWorkbenchTests: XCTestCase {
         XCTAssertEqual(rules.lists, ["team": []])
     }
 
+    func testProblemsReadWellAndMarkTheirLines() async throws {
+        let workbench = RulesWorkbench(call: RulesWorkbench.Caller(
+            files: { RuleFilesResult(directory: "/tmp/x/rules", files: ["decide/1.yaml": "a"]) },
+            records: { _ in [] },
+            explain: { _, _ in throw RPCError(code: 0, message: "unused") },
+            replay: { _, _ in throw RPCError(code: 0, message: "unused") },
+            impact: { _, _ in RuleImpact(examined: 0, changes: [], draftProblem: "rules don't compile:\nERROR: /tmp/x/rules/decide/1.yaml:-1:0: yaml: line 8: could not find expected ':'") },
+            save: { _ in }))
+        workbench.debounce = .zero
+        await workbench.load()
+        workbench.edit("decide/1.yaml", "b")
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(workbench.problemLines("decide/1.yaml"), [8])
+        XCTAssertEqual(workbench.readable(workbench.draftProblem ?? ""), "decide/1.yaml, line 8: could not find expected ':'")
+        XCTAssertEqual(
+            workbench.readable("ERROR: /tmp/x/rules/select/2.yaml:4:22: undeclared reference to 'onyl'"),
+            "select/2.yaml, line 4: undeclared reference to 'onyl'")
+    }
+
     // MARK: - The model
 
     actor Calls {

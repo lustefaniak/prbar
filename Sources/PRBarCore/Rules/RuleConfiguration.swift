@@ -3,7 +3,8 @@ import CELSwift
 import Foundation
 
 /// The repository a `configure` rule decides settings for.
-struct RepoFacts: Codable, Sendable, Hashable {
+struct RepoFacts: Codable, Sendable, Hashable, CELNamedType {
+    static let celTypeName = "prbar.Repo"
     var owner: String
     var name: String
     /// `owner/name`.

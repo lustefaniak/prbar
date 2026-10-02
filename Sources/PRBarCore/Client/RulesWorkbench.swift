@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Yams
 
 /// The Rules tab's state: the user's rule files, the edits not saved yet,
 /// and what they are tried on (a PR, or a recorded decision). Every edit
@@ -117,6 +118,73 @@ final class RulesWorkbench {
     }
 
     var hasEdits: Bool { paths.contains(where: isEdited) }
+
+    /// The names in lists.yaml as edited, for completion and the builder.
+    var listNames: [String] {
+        let text = self.text("lists.yaml")
+        guard let lists = try? YAMLDecoder().decode([String: [String]]?.self, from: text) else { return [] }
+        return (lists ?? [:]).keys.sorted()
+    }
+
+    /// The lines of `path` a problem names: `<path>:<line>:<col>`, or
+    /// for a YAML syntax error `<path>:-1:0: yaml: line <n>`.
+    func problemLines(_ path: String) -> Set<Int> {
+        guard let problem = draftProblem ?? issue else { return [] }
+        var lines: Set<Int> = []
+        let marker = "/" + path + ":"
+        var rest = Substring(problem)
+        while let range = rest.range(of: marker) {
+            var after = rest[range.upperBound...]
+            if after.hasPrefix("-1:0: yaml: line ") { after = after.dropFirst("-1:0: yaml: line ".count) }
+            if let line = Int(after.prefix { $0.isNumber }) { lines.insert(line) }
+            rest = rest[range.upperBound...]
+        }
+        return lines
+    }
+
+    /// A problem as the tab shows it: paths relative to the rules
+    /// directory, `file, line n:` for positions, without the compiler's
+    /// framing.
+    func readable(_ problem: String) -> String {
+        var text = problem
+        if !directory.isEmpty { text = text.replacingOccurrences(of: directory + "/", with: "") }
+        text = text.replacingOccurrences(of: "rules don't compile:\n", with: "")
+        text = text.replacingOccurrences(
+            of: #"(\S+\.ya?ml):-1:0: yaml: line (\d+): "#, with: "$1, line $2: ", options: .regularExpression)
+        text = text.replacingOccurrences(
+            of: #"(\S+\.ya?ml):(\d+):\d+: "#, with: "$1, line $2: ", options: .regularExpression)
+        text = text.replacingOccurrences(of: "ERROR: ", with: "")
+        return text
+    }
+
+    /// `path`, or the same name with a number when it is taken.
+    func freePath(_ path: String) -> String {
+        guard paths.contains(path) else { return path }
+        let url = URL(fileURLWithPath: path)
+        let stem = url.deletingPathExtension().lastPathComponent
+        let dir = url.deletingLastPathComponent().relativePath
+        var n = 2
+        while paths.contains("\(dir)/\(stem)-\(n).yaml") { n += 1 }
+        return "\(dir)/\(stem)-\(n).yaml"
+    }
+
+    /// Adds the lists that are missing from lists.yaml, as an edit.
+    func addLists(_ lists: [String: [String]]) {
+        let missing = lists.keys.sorted().filter { !listNames.contains($0) }
+        guard !missing.isEmpty else { return }
+        var text = self.text("lists.yaml")
+        if !text.isEmpty, !text.hasSuffix("\n") { text += "\n" }
+        for name in missing {
+            text += "\(name): [\((lists[name] ?? []).joined(separator: ", "))]\n"
+        }
+        edits["lists.yaml"] = text
+    }
+
+    /// Starts a file from an example, with the lists it reads.
+    func start(_ example: RuleExamples.Example) {
+        addLists(example.lists)
+        newFile(freePath(example.path), text: example.text)
+    }
 
     /// Whether the file exists on disk, so it can be opened elsewhere.
     func isSaved(_ path: String) -> Bool { saved[path] != nil }

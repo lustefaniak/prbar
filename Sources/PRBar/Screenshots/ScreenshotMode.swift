@@ -56,6 +56,9 @@ enum ScreenshotMode {
     /// tried on.
     @MainActor static var initialRulesEdit: (path: String, text: String)?
     @MainActor static var initialRulesTarget: InboxPR?
+    /// `PRBAR_SCREENSHOT_RULES`: what the Rules tab shows besides the edit:
+    /// `complete`, `broken`, `examples`, `builder`, or `empty` (no rules).
+    static var rulesAction: String? { ProcessInfo.processInfo.environment["PRBAR_SCREENSHOT_RULES"] }
 
     /// Pre-selected segmented tab for the popover.
     @MainActor static var initialPopoverTab: PopoverTab?

@@ -238,7 +238,7 @@ enum RulesConvert {
 
     /// A plain YAML scalar where that reads back as the same string, else
     /// a double-quoted one: JSON's escaping is valid there.
-    private static func yaml(_ text: String) -> String {
+    static func yaml(_ text: String) -> String {
         let plain = !text.isEmpty
             && text.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || "-_./".unicodeScalars.contains($0) }
             && !["true", "false", "yes", "no", "on", "off", "null", "y", "n"].contains(text.lowercased())
@@ -248,7 +248,7 @@ enum RulesConvert {
         return quoted(text)
     }
 
-    private static func quoted(_ text: String) -> String {
+    static func quoted(_ text: String) -> String {
         let data = (try? JSONSerialization.data(withJSONObject: [text], options: [.withoutEscapingSlashes])) ?? Data()
         let array = String(data: data, encoding: .utf8) ?? "[\"\"]"
         return String(array.dropFirst().dropLast())

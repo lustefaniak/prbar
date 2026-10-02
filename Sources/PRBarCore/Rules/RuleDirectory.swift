@@ -103,7 +103,7 @@ enum RuleDirectory {
         let configure = sources("configure")
         guard !select.isEmpty || !decide.isEmpty || !configure.isEmpty else { return nil }
         var lists: [String: [String]] = [:]
-        if let text = files["lists.yaml"] {
+        if let text = files["lists.yaml"], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             do {
                 lists = try YAMLDecoder().decode([String: [String]]?.self, from: text) ?? [:]
             } catch {

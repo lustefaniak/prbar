@@ -43,9 +43,48 @@ private struct RulesWorkbenchView: View {
     let conversionIssue: String?
     @State private var newFileStage: String?
     @State private var converting = false
+    @State private var editorController = RuleEditorController()
+    @State private var showExamples = false
+    @State private var showBuilder = false
+    @State private var showFacts = false
     @State private var newFileName = ""
 
     var body: some View {
+        content.task { await screenshotAction() }
+    }
+
+    /// Screenshot mode only: the state a stage asks for.
+    private func screenshotAction() async {
+        guard ScreenshotMode.isActive, let action = ScreenshotMode.rulesAction else { return }
+        try? await Task.sleep(for: .seconds(1))
+        switch action {
+        case "complete":
+            guard let textView = editorController.textView else { return }
+            let ns = textView.string as NSString
+            let line = ns.lineRange(for: ns.range(of: "condition:"))
+            let end = NSMaxRange(line) - 1
+            textView.window?.makeFirstResponder(textView)
+            textView.setSelectedRange(NSRange(location: end, length: 0))
+            textView.insertText(" && pr.au", replacementRange: NSRange(location: end, length: 0))
+            textView.complete(nil)
+        case "broken":
+            if let path = workbench.selectedPath {
+                workbench.edit(path, workbench.text(path).replacingOccurrences(of: "pr.draft", with: "pr.drat"))
+            }
+        case "examples":
+            showExamples = true
+        case "example":
+            if let example = RuleExamples.all(repository: "acme/platform").first(where: { $0.id == "decide-large" }) {
+                workbench.start(example)
+            }
+        case "builder":
+            showBuilder = true
+        default:
+            break
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             if let conversionIssue {
                 HStack(alignment: .top) {
@@ -69,7 +108,7 @@ private struct RulesWorkbenchView: View {
                 banner(converted, color: .green)
             }
             if let issue = workbench.issue {
-                banner(issue, color: .orange)
+                banner(workbench.readable(issue), color: .orange)
             }
             if let error = workbench.error {
                 banner(error, color: .red)
@@ -80,7 +119,7 @@ private struct RulesWorkbenchView: View {
                 editor
                     .frame(minWidth: 320, maxWidth: .infinity)
                     .layoutPriority(1)
-                RulesResultsView(workbench: workbench, prs: prs)
+                RulesResultsView(workbench: workbench, prs: prs, reveal: reveal)
                     .frame(minWidth: 300, idealWidth: 360, maxWidth: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -119,6 +158,9 @@ private struct RulesWorkbenchView: View {
             Divider()
             HStack {
                 Menu {
+                    Button("From an example…") { showExamples = true }
+                    Button("Build a rule…") { showBuilder = true }
+                    Divider()
                     Button("Configure rule: settings per repository") { startNewFile("configure") }
                     Button("Select rule") { startNewFile("select") }
                     Button("Decide rule") { startNewFile("decide") }
@@ -159,6 +201,12 @@ private struct RulesWorkbenchView: View {
         }
         .popover(isPresented: Binding(get: { newFileStage != nil }, set: { if !$0 { newFileStage = nil } })) {
             newFilePopover
+        }
+        .sheet(isPresented: $showExamples) {
+            RuleExamplesSheet(workbench: workbench, prs: prs) { showExamples = false }
+        }
+        .sheet(isPresented: $showBuilder) {
+            RuleBuilderSheet(workbench: workbench) { showBuilder = false }
         }
     }
 
@@ -229,6 +277,16 @@ private struct RulesWorkbenchView: View {
         newFileStage = nil
     }
 
+    /// Opens the file a trace names at the line.
+    private func reveal(_ path: String, _ line: Int) {
+        let prefix = workbench.directory + "/"
+        guard path.hasPrefix(prefix) else { return }
+        let relative = String(path.dropFirst(prefix.count))
+        guard workbench.paths.contains(relative) else { return }
+        workbench.selectedPath = relative
+        DispatchQueue.main.async { editorController.reveal(line: line) }
+    }
+
     // MARK: - editor
 
     @ViewBuilder
@@ -238,6 +296,15 @@ private struct RulesWorkbenchView: View {
                 HStack {
                     Text(path).font(.headline.monospaced())
                     Spacer()
+                    if let stage = RuleCatalog.Stage(path: path) {
+                        Button("Facts") { showFacts.toggle() }
+                            .help("Everything a \(stage.rawValue) rule can read; click one to insert it")
+                            .popover(isPresented: $showFacts, arrowEdge: .bottom) {
+                                FactsPanel(stage: stage, lists: workbench.listNames) { text in
+                                    editorController.insert(text)
+                                }
+                            }
+                    }
                     if workbench.isSaved(path) {
                         Button("Open in Editor") {
                             NSWorkspace.shared.open(URL(fileURLWithPath: workbench.directory).appendingPathComponent(path))
@@ -254,19 +321,28 @@ private struct RulesWorkbenchView: View {
                 }
                 .padding(8)
                 Divider()
-                RuleTextEditor(path: path, workbench: workbench)
-                    .frame(maxHeight: .infinity)
+                RuleCodeEditor(
+                    path: path, text: workbench.text(path), lists: workbench.listNames,
+                    problemLines: workbench.problemLines(path), controller: editorController
+                ) { workbench.edit(path, $0) }
+                .frame(maxHeight: .infinity)
+                .clipped()
                 if let problem = workbench.draftProblem {
                     Divider()
-                    ScrollView {
-                        Text(problem)
-                            .font(.caption.monospaced())
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Doesn't compile yet, so it isn't tried and can't be saved", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption.bold())
                             .foregroundStyle(.red)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
+                        ScrollView {
+                            Text(workbench.readable(problem))
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
-                    .frame(maxHeight: 120)
+                    .padding(8)
+                    .frame(maxHeight: 130)
+                    .background(Color.red.opacity(0.08))
                 }
             }
         } else {
@@ -278,33 +354,12 @@ private struct RulesWorkbenchView: View {
     }
 }
 
-/// The text of one file. Held in local state and pushed to the workbench
-/// on change, so typing isn't routed through a re-derived binding.
-private struct RuleTextEditor: View {
-    let path: String
-    let workbench: RulesWorkbench
-    @State private var text = ""
-
-    var body: some View {
-        TextEditor(text: $text)
-            .font(.system(.body, design: .monospaced))
-            .autocorrectionDisabled()
-            .scrollContentBackground(.hidden)
-            .background(Color(nsColor: .textBackgroundColor))
-            .onAppear { text = workbench.text(path) }
-            .onChange(of: path) { _, new in text = workbench.text(new) }
-            .onChange(of: workbench.text(path)) { _, new in
-                if new != text { text = new }
-            }
-            .onChange(of: text) { _, new in workbench.edit(path, new) }
-    }
-}
-
 // MARK: - results
 
 private struct RulesResultsView: View {
     let workbench: RulesWorkbench
     let prs: [InboxPR]
+    let reveal: (String, Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -352,6 +407,10 @@ private struct RulesResultsView: View {
     @ViewBuilder
     private var result: some View {
         if let explanation = workbench.explanation {
+            if explanation.draftProblem != nil {
+                Label("The edit doesn't compile, so this is the rules as saved.", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             if let configured = explanation.configured {
                 ConfiguredView(configured: configured)
             }
@@ -364,7 +423,7 @@ private struct RulesResultsView: View {
             }
             ForEach(explanation.layers ?? [], id: \.layer) { layer in
                 if layer.select != nil || layer.decide != nil {
-                    LayerTraceView(layer: layer)
+                    LayerTraceView(layer: layer, reveal: reveal)
                 }
             }
         } else if let replay = workbench.replay {
@@ -376,7 +435,7 @@ private struct RulesResultsView: View {
                 outcomeRow("Edited", draft, highlight: draft != replay.now)
             }
             if let trace = replay.draftTrace ?? replay.trace {
-                TraceView(stage: replay.record.stage.rawValue.capitalized, trace: trace)
+                TraceView(stage: replay.record.stage.rawValue.capitalized, trace: trace, reveal: reveal)
             }
         } else if workbench.target == nil {
             Text("Choose a PR from the inbox, or a recent decision, to see every condition evaluated on it.")
@@ -429,14 +488,15 @@ private struct RulesResultsView: View {
 
 private struct LayerTraceView: View {
     let layer: RuleLayerTrace
+    let reveal: (String, Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(layer.layer == .repo ? "The repository's rules" : "Your rules")
                 .font(.subheadline.bold())
             Text(layer.source).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            if let select = layer.select { TraceView(stage: "Select", trace: select) }
-            if let decide = layer.decide { TraceView(stage: "Decide", trace: decide) }
+            if let select = layer.select { TraceView(stage: "Select", trace: select, reveal: reveal) }
+            if let decide = layer.decide { TraceView(stage: "Decide", trace: decide, reveal: reveal) }
         }
     }
 }
@@ -446,6 +506,7 @@ private struct LayerTraceView: View {
 private struct TraceView: View {
     let stage: String
     let trace: RuleTrace
+    let reveal: (String, Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -454,7 +515,7 @@ private struct TraceView: View {
                 Text("below: \(below)").font(.caption.monospaced()).foregroundStyle(.secondary)
             }
             ForEach(Array(trace.policies.enumerated()), id: \.offset) { _, policy in
-                PolicyView(policy: policy)
+                PolicyView(policy: policy, reveal: reveal)
             }
         }
     }
@@ -462,6 +523,7 @@ private struct TraceView: View {
 
 private struct PolicyView: View {
     let policy: RuleTrace.Policy
+    let reveal: (String, Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -471,7 +533,7 @@ private struct PolicyView: View {
                 resultBadge
             }
             ForEach(Array(policy.conditions.enumerated()), id: \.offset) { _, condition in
-                ConditionView(condition: condition)
+                ConditionView(condition: condition) { reveal(policy.path, $0) }
             }
         }
         .padding(8)
@@ -503,6 +565,7 @@ private struct PolicyView: View {
 
 private struct ConditionView: View {
     let condition: RuleTrace.Condition
+    let reveal: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -511,7 +574,10 @@ private struct ConditionView: View {
                 Text(condition.text).font(.caption.monospaced()).textSelection(.enabled)
                 Spacer(minLength: 4)
                 if let line = condition.line {
-                    Text("line \(line)").font(.caption2).foregroundStyle(.tertiary)
+                    Button("line \(line)") { reveal(line) }
+                        .buttonStyle(.link)
+                        .font(.caption2)
+                        .help("Show it in the editor")
                 }
             }
             if !(condition.terms.count == 1 && condition.terms[0].text == condition.text) {
