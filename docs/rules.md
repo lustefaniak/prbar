@@ -398,6 +398,16 @@ a repository's rules show in the trace but are edited in that repository.
 | `prbar-review rules history` | no | What your rules decided recently, newest first. `--pr`, `--days` (7), `--limit` (20), `--json`. |
 | `prbar-review rules replay <id>` | no | One recorded decision, run again with the rules as they are now: every condition, and whether the answer changed. A prefix of the id from `history` is enough. |
 | `prbar-review rules replay` | no | Every decision from the last 7 days (`--days`, `--pr`), run again: which answers your edits would change. |
+| `prbar-review rules catalog [stage]` | yes | Every fact, output field, function and example, from the PRBar that runs them. `--example <id>` prints one example. |
+| `prbar-review rules check --draft <dir>` | yes | Does a draft compile, laid over your rules? |
+| `prbar-review rules explain <pr> --draft <dir>` | yes | What the draft would decide for the PR, nothing saved. |
+| `prbar-review rules impact --draft <dir>` | yes | Every decision recorded in the last 30 days (`--days`) replayed with the draft, listing the ones it changes. |
+| `prbar-review rules propose --draft <dir> --title <text>` | yes | Hands the draft to PRBar to accept in Settings → Rules; `rules proposals`, `rules accept <id>`, `rules reject <id>`. |
+
+A draft is a directory of rule files at their paths (`decide/50-x.yaml`,
+`lists.yaml`), laid over yours; `--remove <path>` drops one of yours. With
+`--repo-rules <checkout>` instead, it is a repository's `.prbar/rules` as it
+would be once merged ([below](#repository-rules-one-policy-for-a-team)).
 | `... replay --watch` | no | Replay again each time a rule file changes. |
 
 **Every decision is recorded with the exact facts it was made on**, in
@@ -514,15 +524,38 @@ They sit between your rules and the settings:
   they can't be fetched after three tries five minutes apart), nothing is posted
   on its own for that repository until they do; your rules still apply above them.
   The reason shows in `prbar-review status`.
-- **Checking a change before it merges:** `rules explain <pr>` shows each layer's
-  conditions under its own heading. `rules history` marks decisions the
-  repository's rules made, and `rules replay --repo-rules <checkout>/.prbar/rules`
-  replays them against the rules in your checkout, so a rules PR can be checked
-  against the decisions they made recently.
+- **Checking a change before it merges:** `rules check --repo-rules <checkout>`
+  compiles the checkout's `.prbar/rules`; `rules explain <pr> --repo-rules
+  <checkout>` shows what they would decide for a PR, as if trusted, each layer
+  under its own heading; `rules impact --repo-rules <checkout>` replays the
+  decisions recorded for that repository with them (the repository comes from
+  the checkout's `origin`, or `--repo owner/name`), which is the list to put in
+  the pull request. `rules history` marks decisions the repository's rules made,
+  and `rules replay --repo-rules <checkout>/.prbar/rules` replays them against the
+  rules in your checkout.
 
 What belongs where: the team's agreed policy goes in the repository; anything
 about specific colleagues, or your own preferences, stays in your directory.
 Local reviews (`prbar-review <dir>`) use your rules only.
+
+## Coding agents writing rules
+
+`prbar-review mcp` gives a coding agent the same tools as the commands above:
+`rules_catalog`, `check_rules`, `explain_rules` and `rule_impact` take a draft
+(`draft_dir`, `remove`, or `repo_rules` for a repository's rules), and
+`propose_rules` hands a draft of your rules to PRBar. It never saves on its own
+unless you set `agents.rules: allow` ([configuration](configuration.md#coding-agents-agents)):
+the proposal shows at the top of Settings → Rules with what it writes, why, and
+how many recorded decisions it changes. Try opens its files as unsaved edits, to
+see what they decide on PRs before you accept. A change of the file since it was
+proposed refuses the accept, so it can't overwrite an edit you made meanwhile.
+
+The loop an agent follows: the catalog for the stage, a draft in a scratch
+directory, `check_rules`, `explain_rules` on a PR or two, `rule_impact`, then
+`propose_rules` with the impact in its reason. For a repository's rules it
+writes `.prbar/rules` in a checkout instead, checks and measures them the same
+way with `repo_rules`, and opens a pull request with the impact list in its
+description: the rules apply to everyone once it is merged.
 
 ## Cookbook
 

@@ -16,7 +16,8 @@ struct RulesSettings: View {
             if let workbench {
                 RulesWorkbenchView(
                     workbench: workbench, prs: inbox.prs,
-                    conversionIssue: config.needsConversion ? (config.loadIssue ?? "") : nil)
+                    conversionIssue: config.needsConversion ? (config.loadIssue ?? "") : nil,
+                    proposals: config.ruleProposals)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -41,6 +42,8 @@ private struct RulesWorkbenchView: View {
     let prs: [InboxPR]
     /// Set while prbar.yaml's `repos:` couldn't be converted: why.
     let conversionIssue: String?
+    /// Rule changes coding agents proposed, waiting for the user.
+    let proposals: [RuleProposal]
     @State private var newFileStage: String?
     @State private var converting = false
     @State private var editorController = RuleEditorController()
@@ -103,6 +106,9 @@ private struct RulesWorkbenchView: View {
                 }
                 .padding(10)
                 .background(Color.orange.opacity(0.12))
+            }
+            ForEach(proposals) { proposal in
+                ProposalBanner(workbench: workbench, proposal: proposal)
             }
             if let converted = workbench.converted {
                 banner(converted, color: .green)
@@ -355,6 +361,56 @@ private struct RulesWorkbenchView: View {
 }
 
 // MARK: - results
+
+/// A change an agent proposed: what it writes, why, and what it changes in
+/// the record, with Try (open it as edits), Accept and Reject.
+private struct ProposalBanner: View {
+    let workbench: RulesWorkbench
+    let proposal: RuleProposal
+    @State private var busy = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "sparkles").foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(proposal.by) proposes: \(proposal.title)").font(.callout.bold())
+                if !proposal.why.isEmpty {
+                    Text(proposal.why).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
+                Text(proposal.draft.summary + impact)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Try") { workbench.open(proposal) }
+                .help("Open its files as unsaved edits, to see what they decide on PRs and on the record")
+            Button("Reject") {
+                busy = true
+                Task {
+                    await workbench.reject(proposal)
+                    busy = false
+                }
+            }
+            Button("Accept") {
+                busy = true
+                Task {
+                    await workbench.accept(proposal)
+                    busy = false
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+        }
+        .disabled(busy)
+        .padding(10)
+        .background(Color.blue.opacity(0.10))
+    }
+
+    private var impact: String {
+        guard let impact = proposal.impact else { return "" }
+        let sentence = impact.sentence(days: 30)
+        return ". " + sentence.prefix(1).uppercased() + sentence.dropFirst() + "."
+    }
+}
 
 private struct RulesResultsView: View {
     let workbench: RulesWorkbench

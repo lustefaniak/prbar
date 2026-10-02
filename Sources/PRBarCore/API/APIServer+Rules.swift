@@ -53,6 +53,7 @@ extension APIServer {
     /// The latest record per PR, commit and stage, replayed against the
     /// rules now and against the draft.
     func ruleImpact(_ params: RuleImpactParams, now: Date = Date()) -> RuleImpact {
+        if params.draft.isRepository { return repoRuleImpact(params, now: now) }
         let rules: Rules
         do {
             rules = try draftRules(params.draft) ?? .empty

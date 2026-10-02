@@ -291,6 +291,17 @@ enum ScreenshotFixtures {
 
     /// The rules, and a recorded select decision for each PR waiting on a
     /// review, so the edit has something to change.
+    /// An agent's proposal waiting in Settings → Rules.
+    static var ruleProposal: RuleProposal {
+        let example = RuleExamples.all().first { $0.id == "decide-codeowner" }
+        return RuleProposal(
+            id: UUID(), at: Date(), by: "mcp:claude-code", title: "Approve code owners' clean changes",
+            why: "You asked to approve PRs whose author owns every changed file in CODEOWNERS when the review found nothing above a suggestion.",
+            draft: RuleDraft(files: [example.map(\.path) ?? "decide/25-codeowner.yaml": example?.text ?? ""]),
+            base: [:],
+            impact: RuleImpact(examined: 12, changes: []))
+    }
+
     static func seedRules(rules directory: URL, log: RuleEvaluationLog?) {
         for (path, text) in rulesFiles {
             let url = directory.appendingPathComponent(path)

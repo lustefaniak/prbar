@@ -66,6 +66,12 @@ final class RulesWorkbench {
         var convert: @Sendable () async throws -> RulesConvert.Written = {
             throw RPCError(code: RPCError.refused, message: "not available")
         }
+        var accept: @Sendable (UUID) async throws -> Void = { _ in
+            throw RPCError(code: RPCError.refused, message: "not available")
+        }
+        var reject: @Sendable (UUID) async throws -> Void = { _ in
+            throw RPCError(code: RPCError.refused, message: "not available")
+        }
     }
 
     init(call: Caller) {
@@ -92,6 +98,12 @@ final class RulesWorkbench {
             },
             convert: { @MainActor in
                 try await session.call(.convertRepos, ConvertReposParams(), as: RulesConvert.Written.self)
+            },
+            accept: { @MainActor id in
+                _ = try await session.call(.acceptRuleProposal, RuleProposalParams(id: id), as: APIEmpty.self)
+            },
+            reject: { @MainActor id in
+                _ = try await session.call(.rejectRuleProposal, RuleProposalParams(id: id), as: APIEmpty.self)
             }))
     }
 
@@ -123,7 +135,7 @@ final class RulesWorkbench {
     var listNames: [String] {
         let text = self.text("lists.yaml")
         guard let lists = try? YAMLDecoder().decode([String: [String]]?.self, from: text) else { return [] }
-        return (lists ?? [:]).keys.sorted()
+        return lists.keys.sorted()
     }
 
     /// The lines of `path` a problem names: `<path>:<line>:<col>`, or
@@ -305,6 +317,41 @@ final class RulesWorkbench {
             return
         }
         await load()
+    }
+
+    // MARK: - proposals
+
+    /// Opens a proposal's files as unsaved edits, so it is tried on PRs
+    /// and on the record like any edit before it is accepted.
+    func open(_ proposal: RuleProposal) {
+        for (path, text) in proposal.draft.files where RuleDirectory.isRuleFile(path) {
+            edits[path] = text
+        }
+        selectedPath = proposal.draft.files.keys.sorted().first ?? selectedPath
+        evaluateSoon(after: .zero)
+    }
+
+    func accept(_ proposal: RuleProposal) async {
+        do {
+            try await call.accept(proposal.id)
+            for path in proposal.draft.files.keys where edits[path] == proposal.draft.files[path] {
+                edits.removeValue(forKey: path)
+            }
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+            return
+        }
+        await load()
+    }
+
+    func reject(_ proposal: RuleProposal) async {
+        do {
+            try await call.reject(proposal.id)
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     // MARK: - evaluation

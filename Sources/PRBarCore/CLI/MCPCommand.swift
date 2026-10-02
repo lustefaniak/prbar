@@ -158,11 +158,52 @@ actor MCPSession {
                 let records = try await api { try await $0.call(.historyReviews, limit, as: [ReviewRecord].self) }
                 return ToolResult(text: records.isEmpty ? "No reviews recorded." : records.map(ClientCommand.describe).joined(separator: "\n"))
             case "explain_rules":
-                guard let ref = try Self.reference(try arguments(GetReviewArgs.self, line)?.pr) else {
+                let args = try arguments(RuleDraftArgs.self, line)
+                guard let ref = try Self.reference(args?.pr) else {
                     return ToolResult(error: "pr is required: a PR URL or owner/repo#number")
                 }
-                let explanation = try await api { try await $0.call(.explainRules, ExplainRulesParams(pr: ref), as: RulesExplanation.self) }
-                return ToolResult(text: RulesCommand.describe(explanation))
+                let draft = try await args?.source?.load()
+                let explanation = try await api {
+                    try await $0.call(.explainRules, ExplainRulesParams(pr: ref, draft: draft), as: RulesExplanation.self)
+                }
+                return ToolResult(text: RulesText.explanation(explanation, draft: draft))
+            case "rules_catalog":
+                let args = try arguments(RuleCatalogArgs.self, line)
+                let catalog = try await api {
+                    try await $0.call(.ruleCatalog, RuleCatalogParams(stage: args?.stage), as: RuleCatalogResult.self)
+                }
+                return ToolResult(text: RulesText.catalog(catalog, example: args?.example))
+            case "check_rules":
+                guard let source = try arguments(RuleDraftArgs.self, line)?.source else {
+                    return ToolResult(error: Self.needsDraft)
+                }
+                let draft = try await source.load()
+                let result = try await api { try await $0.call(.checkRules, CheckRulesParams(draft: draft), as: CheckRulesResult.self) }
+                return ToolResult(text: RulesText.check(result, draft: draft))
+            case "rule_impact":
+                let args = try arguments(RuleDraftArgs.self, line)
+                guard let source = args?.source else { return ToolResult(error: Self.needsDraft) }
+                let draft = try await source.load()
+                let days = min(max(args?.days ?? 30, 1), 60)
+                let impact = try await api {
+                    try await $0.call(.ruleImpact, RuleImpactParams(draft: draft, days: days), as: RuleImpact.self)
+                }
+                return ToolResult(text: RulesText.impact(impact, draft: draft, days: days, full: args?.full ?? false))
+            case "propose_rules":
+                let args = try arguments(RuleDraftArgs.self, line)
+                guard let source = args?.source, source.repoRules == nil else {
+                    return ToolResult(error: "propose_rules takes draft_dir (and remove): changes to the user's rules. A repository's rules change through a pull request to its .prbar/rules.")
+                }
+                guard let title = args?.title, !title.isEmpty else { return ToolResult(error: "title is required: what the change does, in a few words.") }
+                let draft = try await source.load()
+                let result = try await api {
+                    try await $0.call(
+                        .proposeRules, ProposeRulesParams(title: title, why: args?.why ?? "", draft: draft), as: ProposeRulesResult.self)
+                }
+                return ToolResult(text: RulesText.proposed(result))
+            case "rule_proposals":
+                let proposals = try await api { try await $0.call(.ruleProposals, as: [RuleProposal].self) }
+                return ToolResult(text: RulesText.proposals(proposals))
             case "watch":
                 let args = try arguments(WatchArgs.self, line)
                 if args?.pr != nil, args?.path != nil { return ToolResult(error: "pass pr or path, not both.") }
@@ -229,6 +270,8 @@ actor MCPSession {
             return ToolResult(text: "PRBar hasn't reviewed the changes in \(path) since it started. run_review with path \(path) starts a review.")
         }
     }
+
+    static let needsDraft = "pass draft_dir (rule files laid over the user's rules), remove, or repo_rules (a repository's .prbar/rules)."
 
     static func onePRorPath(_ pr: String?, _ path: String?) -> String? {
         switch (pr, path) {
@@ -381,6 +424,13 @@ actor MCPSession {
 enum MCPTools {
     static let watchMaxSeconds = 300
 
+    static let draftProperties: [String: MCPTool.Property] = [
+        "draft_dir": .init(type: "string", description: "Absolute path of a directory of rule files laid over the user's rules, by path: lists.yaml, select/*.yaml, decide/*.yaml, configure/*.yaml. Write the draft there, in a scratch directory."),
+        "remove": .init(type: "string", description: "The user's rule files the draft deletes, comma separated, like decide/10-x.yaml."),
+        "repo_rules": .init(type: "string", description: "Instead of a draft of the user's rules: absolute path of a repository's .prbar/rules, or the checkout holding it, as it would be once merged."),
+        "repository": .init(type: "string", description: "With repo_rules: owner/name, when the checkout's origin doesn't say."),
+    ]
+
     static let all: [MCPTool] = [
         MCPTool(
             name: "status",
@@ -430,10 +480,50 @@ enum MCPTools {
             annotations: .init(readOnlyHint: true)),
         MCPTool(
             name: "explain_rules",
-            description: "Why PRBar reviews a pull request or not, and what it posts once reviewed: every rule condition in the user's rules directory, with the facts it read, then the outcome. Read-only.",
+            description: "Why PRBar reviews a pull request or not, and what it posts once reviewed: every rule condition, layer by layer, with the facts it read, then the outcome. With a draft (draft_dir, remove or repo_rules), what the draft would decide instead, nothing saved. Read-only.",
             inputSchema: .init(
-                properties: ["pr": .init(type: "string", description: "PR URL or owner/repo#number")],
+                properties: draftProperties.merging([
+                    "pr": .init(type: "string", description: "PR URL or owner/repo#number"),
+                ]) { a, _ in a },
                 required: ["pr"]),
+            annotations: .init(readOnlyHint: true)),
+        MCPTool(
+            name: "rules_catalog",
+            description: "What PRBar rules can use, from the running PRBar: the stages, every fact a condition can read with its type, the output fields and their allowed values, functions, the user's list names, and example rules. Call it before writing a rule; without stage it gives an overview, with stage the facts and outputs in full, with example one example's text.",
+            inputSchema: .init(properties: [
+                "stage": .init(type: "string", description: "configure, select or decide", enumValues: ["configure", "select", "decide"]),
+                "example": .init(type: "string", description: "An example's id from the overview: its whole file."),
+            ]),
+            annotations: .init(readOnlyHint: true)),
+        MCPTool(
+            name: "check_rules",
+            description: "Compile a draft of rules without saving or running it: the user's rules with draft_dir laid over them (remove drops files), or a repository's .prbar/rules (repo_rules). Says file:line:column of the first problem. Read-only.",
+            inputSchema: .init(properties: draftProperties),
+            annotations: .init(readOnlyHint: true)),
+        MCPTool(
+            name: "rule_impact",
+            description: "Replay the decisions PRBar recorded (whether to review each PR, what to post) with a draft of rules, and list the ones whose answer would change. The evidence to give before proposing a change, or to put in the description of a pull request that changes a repository's rules. Read-only.",
+            inputSchema: .init(properties: draftProperties.merging([
+                "days": .init(type: "integer", description: "How far back, 1-60 (default 30)."),
+                "full": .init(type: "boolean", description: "List every change instead of the first \(RulesText.listLimit)."),
+            ]) { a, _ in a }),
+            annotations: .init(readOnlyHint: true)),
+        MCPTool(
+            name: "propose_rules",
+            description: "Hand a change to the user's own rules to PRBar: the files in draft_dir (paths like decide/50-x.yaml, lists.yaml) and remove. It is checked to compile, its impact is worked out, and it waits for the user to accept it in PRBar, unless the user set agents.rules to allow, which saves it at once. Check and measure the draft with check_rules and rule_impact first. Not for a repository's rules: those change through a pull request.",
+            inputSchema: .init(
+                properties: [
+                    "draft_dir": draftProperties["draft_dir"]!,
+                    "remove": draftProperties["remove"]!,
+                    "title": .init(type: "string", description: "What the change does, in a few words."),
+                    "why": .init(type: "string", description: "Why, for the user deciding: what they asked for, what the impact showed."),
+                ],
+                required: ["title"]),
+            annotations: .init(readOnlyHint: false)),
+        MCPTool(
+            name: "rule_proposals",
+            description: "Rule changes proposed by agents that wait for the user to accept or reject. Read-only.",
+            inputSchema: .init(properties: [:]),
             annotations: .init(readOnlyHint: true)),
         MCPTool(
             name: "watch",
@@ -714,7 +804,7 @@ struct InitializeResult: Encodable {
     var protocolVersion: String
     var capabilities = Capabilities()
     var serverInfo: ServerInfo
-    var instructions = "PRBar reviews the user's GitHub pull requests with an AI reviewer and tracks their review inbox. On a PR you are working on: get_review to read PRBar's findings, fix them, push, run_review, then watch with that pr until the review finishes. status says what the user lets agents do."
+    var instructions = "PRBar reviews the user's GitHub pull requests with an AI reviewer and tracks their review inbox. On a PR you are working on: get_review to read PRBar's findings, fix them, push, run_review, then watch with that pr until the review finishes. Rules decide which PRs are reviewed and what is posted: to change them, rules_catalog, write a draft, check_rules, explain_rules and rule_impact with it, then propose_rules for the user's own rules, or a pull request for a repository's .prbar/rules. status says what the user lets agents do."
 }
 
 struct ToolList: Encodable {
@@ -838,6 +928,36 @@ struct RunReviewArgs: Decodable, Sendable {
     var path: String?
     var base: String?
     var force: Bool?
+}
+
+struct RuleCatalogArgs: Decodable, Sendable {
+    var stage: String?
+    var example: String?
+}
+
+/// A draft of rules and whatever else a rules tool takes.
+struct RuleDraftArgs: Decodable, Sendable {
+    var pr: String?
+    var draftDir: String?
+    var remove: String?
+    var repoRules: String?
+    var repository: String?
+    var days: Int?
+    var full: Bool?
+    var title: String?
+    var why: String?
+
+    enum CodingKeys: String, CodingKey {
+        case pr, remove, repository, days, full, title, why
+        case draftDir = "draft_dir"
+        case repoRules = "repo_rules"
+    }
+
+    var source: RuleDraftSource? {
+        let removed = (remove ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let source = RuleDraftSource(dir: draftDir, remove: removed, repoRules: repoRules, repository: repository)
+        return source.isEmpty ? nil : source
+    }
 }
 
 struct HistoryArgs: Decodable, Sendable {

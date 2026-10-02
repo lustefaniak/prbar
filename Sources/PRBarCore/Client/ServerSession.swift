@@ -531,6 +531,8 @@ final class ConfigModel {
     private(set) var repositories: [String: RepoConfig] = [:]
     /// prbar.yaml still has `repos:`; Settings → Rules offers to convert.
     private(set) var needsConversion = false
+    /// Rule changes coding agents proposed, waiting for the user.
+    private(set) var ruleProposals: [RuleProposal] = []
     var providerOverrides: [ProviderID] { repositories.values.compactMap(\.providerOverride) }
 
     var defaults: ReviewDefaults {
@@ -605,6 +607,7 @@ final class ConfigModel {
         path = state.path
         if let repositories = state.repositories, repositories != self.repositories { self.repositories = repositories }
         if needsConversion != (state.needsConversion ?? false) { needsConversion = state.needsConversion ?? false }
+        if let proposals = state.ruleProposals, proposals != ruleProposals { ruleProposals = proposals }
         loadIssue = saveIssue ?? state.loadIssue ?? state.rulesIssue
         warnings = state.warnings
         migratedFromLegacy = state.migratedFromLegacy

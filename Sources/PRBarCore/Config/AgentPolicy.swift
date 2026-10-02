@@ -19,12 +19,16 @@ struct AgentPolicy: Sendable, Hashable, Codable {
         /// Comment, approve, request changes.
         case post
         case merge
+        /// Change the user's rules. `ask` makes a proposal the user accepts
+        /// or rejects in PRBar; `allow` saves it at once.
+        case rules
     }
 
     var read: AgentPermission = .allow
     var review: AgentPermission = .allow
     var post: AgentPermission = .ask
     var merge: AgentPermission = .off
+    var rules: AgentPermission = .ask
 
     init() {}
 
@@ -35,6 +39,7 @@ struct AgentPolicy: Sendable, Hashable, Codable {
             case .review: return review
             case .post: return post
             case .merge: return merge
+            case .rules: return rules
             }
         }
         set {
@@ -43,12 +48,13 @@ struct AgentPolicy: Sendable, Hashable, Codable {
             case .review: review = newValue
             case .post: post = newValue
             case .merge: merge = newValue
+            case .rules: rules = newValue
             }
         }
     }
 
     enum CodingKeys: String, CodingKey, CaseIterable {
-        case read, review, post, merge
+        case read, review, post, merge, rules
     }
 
     // A value that doesn't parse turns the capability off rather than

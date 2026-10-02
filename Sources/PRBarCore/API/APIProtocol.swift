@@ -30,6 +30,12 @@ enum APIMethod: String, CaseIterable, Sendable {
     case ruleImpact = "rules.impact"
     case saveRuleFile = "rules.save"
     case convertRepos = "rules.convert"
+    case ruleCatalog = "rules.catalog"
+    case checkRules = "rules.check"
+    case proposeRules = "rules.propose"
+    case ruleProposals = "rules.proposals"
+    case acceptRuleProposal = "rules.accept"
+    case rejectRuleProposal = "rules.reject"
     case enqueueAction = "action.enqueue"
     case retryAction = "action.retry"
     case dismissAction = "action.dismiss"
@@ -248,11 +254,20 @@ struct ConfiguredSummary: Codable, Sendable, Equatable {
 
 /// Unsaved edits to the user's rules directory, by path relative to it
 /// (`decide/10-x.yaml`, `lists.yaml`): what the Rules tab evaluates while
-/// the user types.
+/// the user types. With `layer` `repo`, a repository's whole
+/// `.prbar/rules` instead, standing in for its default branch.
 struct RuleDraft: Codable, Sendable, Equatable {
     var files: [String: String] = [:]
     /// Files deleted in the draft.
     var removed: [String] = []
+    /// Nil or `personal`: laid over the user's rules. `repo`: replaces the
+    /// rules the PR's repository holds, evaluated as if trusted. Nil from
+    /// an older client.
+    var layer: RuleLayer? = nil
+    /// `owner/name`: which repository a `repo` draft is for, for impact.
+    var repository: String? = nil
+
+    var isRepository: Bool { layer == .repo }
 
     /// The directory's files with the draft applied.
     func applied(to files: [String: String]) -> [String: String] {
@@ -312,7 +327,7 @@ struct RuleImpactParams: Codable, Sendable {
 
 /// What a draft would change: each recorded decision whose answer under
 /// the draft differs from its answer under the rules now.
-struct RuleImpact: Codable, Sendable {
+struct RuleImpact: Codable, Sendable, Equatable {
     struct Change: Codable, Sendable, Equatable, Identifiable {
         var record: RuleRecordSummary
         var now: String

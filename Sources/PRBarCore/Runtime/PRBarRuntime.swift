@@ -319,6 +319,8 @@ extension PRBarRuntime {
             reviewLog: ReviewLogStore(history: ReviewHistory(in: environment.historyDirectory)),
             ownsAutomation: ownsAutomation
         )
+        runtime.repoConfigs.proposals = RuleProposals(
+            file: JSONStateFile(url: environment.stateDirectory.appendingPathComponent("rule-proposals.json")))
         poller.loadCached()
         poller.start()
         return runtime

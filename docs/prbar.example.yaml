@@ -58,3 +58,4 @@ repositories:
 agents:
   review: allow
   post: "off"
+  rules: ask

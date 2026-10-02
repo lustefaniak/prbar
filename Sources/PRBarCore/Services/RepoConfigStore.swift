@@ -64,6 +64,8 @@ final class RepoConfigStore {
     /// edits affect the next review without a restart.
     @ObservationIgnored
     var onChange: (@MainActor () -> Void)?
+    /// Rule changes coding agents proposed, waiting for the user.
+    var proposals = RuleProposals()
 
     /// The repositories PRBar has seen in the inbox, so the config state
     /// can carry what the rules set for each: front ends show settings

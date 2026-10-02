@@ -283,7 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ScreenshotMode.initialRulesEdit = ScreenshotFixtures.rulesEdit
             ScreenshotMode.initialRulesTarget = ScreenshotFixtures.prInReview
         }
-        return PRBarRuntime(
+        let runtime = PRBarRuntime(
             poller: p,
             notifier: n,
             queue: q,
@@ -296,6 +296,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             reviewLog: ReviewLogStore(history: ReviewHistory(in: scratch)),
             ownsAutomation: false
         )
+        if ScreenshotMode.stage == .settingsRules, ScreenshotMode.rulesAction == "proposal" {
+            runtime.repoConfigs.proposals.add(ScreenshotFixtures.ruleProposal)
+        }
+        return runtime
     }
 
     /// Disable AppKit window state restoration. PRBar is a menu-bar

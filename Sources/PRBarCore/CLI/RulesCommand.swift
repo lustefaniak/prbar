@@ -8,8 +8,17 @@ import Foundation
 /// Exit status: 0 fine, 1 the rules don't compile, 2 bad arguments,
 /// 3 no reachable server.
 enum RulesCommand: Equatable {
-    case check(configPath: String?)
-    case explain(PRReference, configPath: String?)
+    /// Without a draft, compiled here; with one, by the server.
+    case check(configPath: String?, draft: RuleDraftSource? = nil)
+    case explain(PRReference, configPath: String?, draft: RuleDraftSource? = nil)
+    /// Facts, outputs, functions and examples, from the server's build.
+    case catalog(stage: String?, example: String?, configPath: String?)
+    /// What a draft changes in the recorded decisions.
+    case impact(RuleDraftSource, days: Int?, full: Bool, configPath: String?)
+    case propose(RuleDraftSource, title: String, why: String, configPath: String?)
+    case proposals(configPath: String?)
+    case accept(id: String, configPath: String?)
+    case reject(id: String, configPath: String?)
     case history(Filter, limit: Int, json: Bool)
     /// One recorded evaluation (by id prefix), or every one the filter keeps.
     case replay(id: String?, Filter, watch: Bool, configPath: String?, repoRules: String?)
@@ -34,6 +43,12 @@ enum RulesCommand: Equatable {
         var watch = false
         var repoRules: String?
         var dryRun = false
+        var draft = RuleDraftSource()
+        var days: Int?
+        var full = false
+        var example: String?
+        var title: String?
+        var why: String?
         var i = 2
         func value() -> String? {
             i += 1
@@ -54,6 +69,27 @@ enum RulesCommand: Equatable {
             case "--days":
                 guard let v = value(), let n = Int(v), n > 0 else { return nil }
                 filter.days = n
+                days = n
+            case "--draft":
+                guard let v = value() else { return nil }
+                draft.dir = v
+            case "--remove":
+                guard let v = value() else { return nil }
+                draft.remove.append(v)
+            case "--repo":
+                guard let v = value(), v.split(separator: "/").count == 2 else { return nil }
+                draft.repository = v
+            case "--full":
+                full = true
+            case "--example":
+                guard let v = value() else { return nil }
+                example = v
+            case "--title":
+                guard let v = value() else { return nil }
+                title = v
+            case "--why":
+                guard let v = value() else { return nil }
+                why = v
             case "--limit":
                 guard let v = value(), let n = Int(v), n > 0 else { return nil }
                 limit = n
@@ -66,6 +102,7 @@ enum RulesCommand: Equatable {
             case "--repo-rules":
                 guard let v = value() else { return nil }
                 repoRules = (v as NSString).expandingTildeInPath
+                draft.repoRules = repoRules
             case let flag where flag.hasPrefix("-"):
                 return nil
             default:
@@ -73,12 +110,27 @@ enum RulesCommand: Equatable {
             }
             i += 1
         }
+        let drafted = draft.isEmpty ? nil : draft
         switch args[1] {
         case "check" where positional.isEmpty:
-            self = .check(configPath: configPath)
+            self = .check(configPath: configPath, draft: drafted)
         case "explain" where positional.count == 1:
             guard let target = Invocation.parseTarget(positional[0]) else { return nil }
-            self = .explain(PRReference(owner: target.owner, repo: target.repo, number: target.number), configPath: configPath)
+            self = .explain(PRReference(owner: target.owner, repo: target.repo, number: target.number), configPath: configPath, draft: drafted)
+        case "catalog" where positional.count <= 1:
+            self = .catalog(stage: positional.first, example: example, configPath: configPath)
+        case "impact" where positional.isEmpty:
+            guard let drafted else { return nil }
+            self = .impact(drafted, days: days ?? 30, full: full, configPath: configPath)
+        case "propose" where positional.isEmpty:
+            guard let drafted, drafted.repoRules == nil, let title else { return nil }
+            self = .propose(drafted, title: title, why: why ?? "", configPath: configPath)
+        case "proposals" where positional.isEmpty:
+            self = .proposals(configPath: configPath)
+        case "accept" where positional.count == 1:
+            self = .accept(id: positional[0], configPath: configPath)
+        case "reject" where positional.count == 1:
+            self = .reject(id: positional[0], configPath: configPath)
         case "schema" where positional.count == 1:
             guard let file = RuleSchema.File(rawValue: positional[0]) else { return nil }
             self = .schema(file)
@@ -94,8 +146,13 @@ enum RulesCommand: Equatable {
     }
 
     static let usage = """
-    usage: prbar-review rules check [--config <path>]
-           prbar-review rules explain <pr-url|owner/repo#number> [--config <path>]
+    usage: prbar-review rules check [<draft>] [--config <path>]
+           prbar-review rules explain <pr-url|owner/repo#number> [<draft>] [--config <path>]
+           prbar-review rules catalog [select|decide|configure] [--example <id>]
+           prbar-review rules impact <draft> [--days <n>] [--full]
+           prbar-review rules propose --draft <dir> [--remove <path>]... --title <text> [--why <text>]
+           prbar-review rules proposals
+           prbar-review rules accept|reject <id>
            prbar-review rules history [--pr <pr>] [--days <n>] [--limit <n>] [--json]
            prbar-review rules replay [<id>] [--pr <pr>] [--days <n>] [--watch] [--config <path>]
                                      [--repo-rules <checkout>/.prbar/rules]
@@ -113,10 +170,23 @@ enum RulesCommand: Equatable {
     the first one that matches decides, and when none does the repo settings
     in prbar.yaml decide as before.
 
-      check     compile the rules here and list them, or say what's wrong
+    A <draft> is rules not saved yet: --draft <dir> lays the rule files in
+    <dir> (decide/50-x.yaml, lists.yaml) over yours, --remove <path> drops
+    one of yours; or --repo-rules <checkout> is a repository's .prbar/rules
+    as it would be merged (--repo owner/name when its origin can't tell).
+
+      check     compile the rules here and list them, or say what's wrong;
+                with a draft, the running PRBar compiles it
       explain   ask the running PRBar why it reviews a PR or not, and what
                 it posts for the review it holds: every condition, with the
-                facts it read
+                facts it read; with a draft, what the draft would do
+      catalog   every fact, output field, function and example a rule can
+                use, from the running PRBar
+      impact    replay the decisions recorded in the last --days (30) with
+                the draft, listing the ones it changes
+      propose   hand a draft of your rules to PRBar for you to accept in
+                Settings → Rules; what a coding agent does through MCP
+      proposals the proposals waiting; accept or reject one by id
       history   the rule evaluations PRBar recorded, newest first: each
                 keeps the exact facts the rules saw
       replay    run the rules as they are now on recorded facts. With an id
@@ -140,11 +210,100 @@ enum RulesCommand: Equatable {
     @MainActor
     func run(
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        connect: (() async throws -> ServerConnection.Connected)? = nil,
         print: (String) -> Void = { FileHandle.standardOutput.write(Data(($0 + "\n").utf8)) },
         fail: (String) -> Void = { FileHandle.standardError.write(Data("prbar-review: \($0)\n".utf8)) }
     ) async -> Int32 {
+        /// Runs `body` against the server, starting one when none answers.
+        func withServer(_ configPath: String?, _ body: (APIClient) async throws -> Int32) async -> Int32 {
+            let connected: ServerConnection.Connected
+            do {
+                if let connect {
+                    connected = try await connect()
+                } else {
+                    let configFile = try? CLIConfig.locate(path: configPath, environment: environment)
+                    connected = try await ClientReview.launcher(configFile: configFile)()
+                }
+            } catch {
+                fail("cannot reach the PRBar server: \(error.localizedDescription)")
+                return 3
+            }
+            defer { connected.client.close() }
+            do {
+                return try await body(connected.client)
+            } catch {
+                fail(error.localizedDescription)
+                return 1
+            }
+        }
+        /// A proposal by the start of its id.
+        func proposal(_ prefix: String, _ client: APIClient) async throws -> RuleProposal {
+            let all = try await client.call(.ruleProposals, as: [RuleProposal].self)
+            let matches = all.filter { $0.id.uuidString.lowercased().hasPrefix(prefix.lowercased()) }
+            guard matches.count == 1, let match = matches.first else {
+                throw RPCError(
+                    code: RPCError.notFound,
+                    message: matches.isEmpty ? "no rule proposal \(prefix); see `prbar-review rules proposals`" : "\(prefix) matches \(matches.count) proposals; give more of the id")
+            }
+            return match
+        }
+
         switch self {
-        case .check(let configPath):
+        case let .check(configPath, draft?):
+            return await withServer(configPath) { client in
+                let loaded = try await draft.load()
+                let result = try await client.call(.checkRules, CheckRulesParams(draft: loaded), as: CheckRulesResult.self)
+                print(RulesText.check(result, draft: loaded))
+                return result.problem == nil ? 0 : 1
+            }
+
+        case let .catalog(stage, example, configPath):
+            return await withServer(configPath) { client in
+                let catalog = try await client.call(.ruleCatalog, RuleCatalogParams(stage: stage), as: RuleCatalogResult.self)
+                print(RulesText.catalog(catalog, example: example))
+                return 0
+            }
+
+        case let .impact(source, days, full, configPath):
+            return await withServer(configPath) { client in
+                let draft = try await source.load()
+                let impact = try await client.call(.ruleImpact, RuleImpactParams(draft: draft, days: days), as: RuleImpact.self)
+                print(RulesText.impact(impact, draft: draft, days: days, full: full))
+                return impact.draftProblem == nil ? 0 : 1
+            }
+
+        case let .propose(source, title, why, configPath):
+            return await withServer(configPath) { client in
+                let draft = try await source.load()
+                let result = try await client.call(
+                    .proposeRules, ProposeRulesParams(title: title, why: why, draft: draft), as: ProposeRulesResult.self)
+                print(RulesText.proposed(result))
+                return 0
+            }
+
+        case .proposals(let configPath):
+            return await withServer(configPath) { client in
+                print(RulesText.proposals(try await client.call(.ruleProposals, as: [RuleProposal].self)))
+                return 0
+            }
+
+        case let .accept(id, configPath):
+            return await withServer(configPath) { client in
+                let found = try await proposal(id, client)
+                _ = try await client.call(.acceptRuleProposal, RuleProposalParams(id: found.id), as: APIEmpty.self)
+                print("Accepted \(RulesText.short(found.id)) \"\(found.title)\": \(RulesText.files(found.draft)).")
+                return 0
+            }
+
+        case let .reject(id, configPath):
+            return await withServer(configPath) { client in
+                let found = try await proposal(id, client)
+                _ = try await client.call(.rejectRuleProposal, RuleProposalParams(id: found.id), as: APIEmpty.self)
+                print("Rejected \(RulesText.short(found.id)) \"\(found.title)\"; nothing was saved.")
+                return 0
+            }
+
+        case .check(let configPath, nil):
             let configFile: URL
             do {
                 configFile = try CLIConfig.locate(path: configPath, environment: environment)
@@ -274,24 +433,13 @@ enum RulesCommand: Equatable {
             } while watch && !Task.isCancelled
             return code
 
-        case let .explain(ref, configPath):
-            let configFile = try? CLIConfig.locate(path: configPath, environment: environment)
-            let connected: ServerConnection.Connected
-            do {
-                connected = try await ClientReview.launcher(configFile: configFile)()
-            } catch {
-                fail("cannot reach the PRBar server: \(error.localizedDescription)")
-                return 3
-            }
-            defer { connected.client.close() }
-            do {
-                let explanation = try await connected.client.call(
-                    .explainRules, ExplainRulesParams(pr: ref), as: RulesExplanation.self)
-                print(Self.describe(explanation))
-                return 0
-            } catch {
-                fail(error.localizedDescription)
-                return 1
+        case let .explain(ref, configPath, source):
+            return await withServer(configPath) { client in
+                let draft = try await source?.load()
+                let explanation = try await client.call(
+                    .explainRules, ExplainRulesParams(pr: ref, draft: draft), as: RulesExplanation.self)
+                print(RulesText.explanation(explanation, draft: draft))
+                return explanation.draftProblem == nil ? 0 : 1
             }
         }
     }

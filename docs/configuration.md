@@ -206,6 +206,7 @@ agents:
   review: allow    # start an AI review
   post: ask        # comment, approve, request changes
   merge: off
+  rules: ask       # change your rules: a proposal you accept in PRBar
 ```
 
 Those are the shipped values, so a missing `agents:` means exactly this.
@@ -219,8 +220,11 @@ Those are the shipped values, so a missing `agents:` means exactly this.
   start a review where `aiReviewEnabled` is off, the repo is `excluded`, or the
   title matches `excludeTitlePatterns`. For drafts, already-reviewed PRs or a
   failed review at the same commit it gets the reason, and can pass `force`.
-- `ask` means PRBar asks you before acting. Asking isn't built yet, so for now `ask`
-  refuses, and the agent is told to have `allow` set if you want it.
+- `ask` means PRBar asks you before acting. For `rules` it does: an agent's change
+  to your rules waits in Settings → Rules (or `prbar-review rules proposals`) until
+  you accept or reject it, and `allow` saves it at once. Asking isn't built for the
+  others yet, so there `ask` refuses, and the agent is told to have `allow` set if
+  you want it.
 - A value other than `off`, `allow` or `ask` turns that capability **off**, rather
   than falling back to its default: a typo in a permission must not grant more than
   you wrote.

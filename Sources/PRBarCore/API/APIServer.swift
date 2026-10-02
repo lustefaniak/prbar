@@ -300,7 +300,8 @@ final class APIServer {
             migratedFromLegacy: store.migratedFromLegacy,
             rulesIssue: store.rulesIssue,
             repositories: store.configuredRepositories,
-            needsConversion: store.needsConversion)
+            needsConversion: store.needsConversion,
+            ruleProposals: store.proposals.pending)
     }
 
     private static func actions(_ queue: ActionQueue) -> ActionQueueState {
@@ -483,6 +484,36 @@ final class APIServer {
         case .convertRepos:
             return await reply(line, id, ConvertReposParams.self) { params in
                 try self.convertRepos(dryRun: params?.dryRun ?? false)
+            }
+        case .ruleCatalog:
+            return await reply(line, id, RuleCatalogParams.self) { params in try self.ruleCatalog(stage: params?.stage) }
+        case .checkRules:
+            return await reply(line, id, CheckRulesParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                return self.checkRules(params.draft)
+            }
+        case .proposeRules:
+            return await reply(line, id, ProposeRulesParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                let client = connection.flatMap { self.clients[ObjectIdentifier($0)] }
+                return try self.proposeRules(params, by: client?.client ?? "unknown", agent: self.isAgent(connection))
+            }
+        case .ruleProposals:
+            return await reply(line, id, APIEmpty.self) { _ in self.runtime.repoConfigs.proposals.pending }
+        case .acceptRuleProposal:
+            return await reply(line, id, RuleProposalParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                try self.acceptRuleProposal(params.id)
+                return APIEmpty()
+            }
+        case .rejectRuleProposal:
+            return await reply(line, id, RuleProposalParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                guard self.runtime.repoConfigs.proposals.proposal(params.id) != nil else {
+                    throw RPCError(code: RPCError.notFound, message: "no rule proposal \(params.id.uuidString)")
+                }
+                self.runtime.repoConfigs.proposals.remove(params.id)
+                return APIEmpty()
             }
         case .saveRuleFile:
             return await reply(line, id, SaveRuleFileParams.self) { params in
@@ -708,7 +739,7 @@ final class APIServer {
         case .hello, .event, .state, .notify:
             return nil
         case .status, .inbox, .refreshPR, .review, .reviewOutcome, .explainRules, .ruleFiles, .ruleRecords, .replayRule,
-             .ruleImpact, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
+             .ruleImpact, .ruleCatalog, .checkRules, .ruleProposals, .historyActions, .historyReviews, .poll, .subscribe, .fullReview,
              .loadDiff, .invalidateDiff, .loadCILog, .invalidateCILog:
             capability = .read
         case .runReview, .reviewLocal:
@@ -717,10 +748,16 @@ final class APIServer {
             // Post or merge depends on the action, so the handler decides
             // with `denial(of:under:)` once it knows which action it is.
             return nil
+        case .proposeRules:
+            // `ask` is a proposal and `allow` a save: the handler decides.
+            guard policy.rules == .off else { return nil }
+            return RPCError(
+                code: RPCError.notPermitted,
+                message: "PRBar's agents.rules is off in prbar.yaml, so coding agents can't propose rule changes")
         case .shutdown, .adopt:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop or adopt the PRBar server")
         case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setPreferences, .checkoutUsage, .checkoutPrune,
-             .setConfig, .saveRuleFile, .convertRepos, .clearReviewHistory, .setPopoverVisible, .reportHistoryImport, .reloadHistory:
+             .setConfig, .saveRuleFile, .convertRepos, .acceptRuleProposal, .rejectRuleProposal, .clearReviewHistory, .setPopoverVisible, .reportHistoryImport, .reloadHistory:
             return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
         }
         switch policy[capability] {
@@ -866,7 +903,7 @@ final class APIServer {
         var draftProblem: String?
         if let draft {
             do {
-                config = config.with(rules: try draftRules(draft))
+                config = Self.applying(draft, compiled: try compile(draft), to: config)
             } catch {
                 draftProblem = error.localizedDescription
             }
@@ -931,7 +968,7 @@ final class APIServer {
             decide = text + "\n\nOutcome: " + (decideOutcome ?? "")
         }
         var all = runtime.repoConfigs.config
-        if draft != nil, draftProblem == nil { all.compiledRules = config.rules }
+        if let draft, !draft.isRepository, draftProblem == nil { all.compiledRules = config.rules }
         return RulesExplanation(
             pr: pr, select: select, decide: decide, layers: layers, selectOutcome: selectOutcome,
             decideOutcome: decideOutcome, draftProblem: draftProblem,

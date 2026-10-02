@@ -271,7 +271,10 @@ The agent gets `status`, `list_inbox`, `get_review` (verdict, summary and every
 finding with file and lines, also for PRs PRBar no longer tracks), `run_review`
 (a PR, or with `path` the uncommitted work in a checkout),
 `get_history` and `watch` (waits until a review finishes or something else
-changes, with a cursor so nothing is missed between calls). The loop it is for:
+changes, with a cursor so nothing is missed between calls). For rules it gets
+`explain_rules`, `rules_catalog`, `check_rules`, `rule_impact` and
+`propose_rules`: a rule change it drafts waits for you in Settings → Rules
+([docs/rules.md](docs/rules.md#coding-agents-writing-rules)). The loop it is for:
 on the PR you're working on, the agent reads PRBar's findings, fixes them, pushes,
 asks for another review and watches for it to finish. What agents may do is set by `agents:` in
 `prbar.yaml` ([docs/configuration.md](docs/configuration.md)); by default they can

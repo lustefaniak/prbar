@@ -84,6 +84,9 @@ struct ConfigState: Codable, Sendable, Equatable {
     var repositories: [String: RepoConfig]? = nil
     /// prbar.yaml still has `repos:`, refused until converted to rules.
     var needsConversion: Bool? = nil
+    /// Rule changes coding agents proposed, waiting for the user. Nil from
+    /// an older server.
+    var ruleProposals: [RuleProposal]? = nil
 }
 
 /// GitHub writes queued, running, retrying or failed, per PR, and the ones
