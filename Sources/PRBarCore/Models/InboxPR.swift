@@ -227,12 +227,13 @@ struct InboxPR: Identifiable, Sendable, Hashable, Codable {
         humanReviews.last { $0.isFromViewer }
     }
 
-    /// True when another reviewer has handled this PR. Because GitHub generally
-    /// drops you from requested-reviewers after you submit a review, a
+    /// True when another reviewer has handled this PR. GitHub generally drops
+    /// you from requested-reviewers after you submit a review, so a
     /// review-request still surfaced in the Inbox with a non-null aggregate
-    /// `reviewDecision` is one *someone else* weighed in on — not one you
-    /// reviewed. Shared by the Inbox "hide reviewed by others" filter, the AI
-    /// auto-enqueue skip, and sequential-focus so they can't drift apart.
+    /// `reviewDecision` is usually one *someone else* weighed in on. Shared by
+    /// the Inbox "hide reviewed by others" filter, the AI auto-enqueue skip,
+    /// sequential focus and the `pr.reviewed_by_others` rule fact so they
+    /// can't drift apart.
     ///
     /// APPROVED counts as a sign-off (GitHub dismisses approvals itself when
     /// branch protection requires it) — but only when someone other than the
