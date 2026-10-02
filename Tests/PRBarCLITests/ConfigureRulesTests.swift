@@ -117,6 +117,22 @@ final class ConfigureRulesTests: XCTestCase {
         }
     }
 
+    /// Until `repos:` is converted, nothing runs: the settings in effect
+    /// are the shipped defaults, not the ones the file asks for, and a
+    /// review on the wrong budget and split costs money even when nothing
+    /// is posted.
+    @MainActor
+    func testARefusedConfigReviewsNothing() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prbar-refused-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("prbar.yaml")
+        try ConfigFile.write(Self.oldConfig, to: file)
+        let store = RepoConfigStore(fileURL: file, lastGoodURL: nil)
+        XCTAssertTrue(store.needsConversion)
+        XCTAssertFalse(store.resolve(owner: "acme", repo: "monorepo").aiReviewEnabled)
+        XCTAssertFalse(store.resolve(owner: "acme", repo: "other").autoApprove.enabled)
+    }
+
     // MARK: - The stage
 
     func testFilesMergeInOrderAndTheRepositoryListsApply() throws {
