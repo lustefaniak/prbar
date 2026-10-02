@@ -3,9 +3,10 @@
 # $PRBAR_CONFIG). JSON is valid YAML, so a prbar.json works too.
 #
 # Every key is optional; an empty file means the shipped defaults, which
-# review PRs and post nothing. How values combine (repo rule, then
-# `defaults`, then the shipped default; a key present in a repo rule is an
-# override, a missing one inherits) is explained in docs/configuration.md.
+# review PRs and post nothing. What differs per repository is set by
+# `configure` rules in rules/ beside this file (see
+# docs/rules.example/configure/10-repos.yaml); what they don't set comes
+# from `defaults`, then the shipped default. Details: docs/configuration.md.
 version: 1
 
 # auto | claude | codex. auto picks claude when installed, else codex.
@@ -25,7 +26,7 @@ defaults:
 
   reviewDrafts: false
   skipAIIfReviewedByOthers: true
-  # Repo rules add to this list; negate a pattern there to opt out.
+  # Configure rules add to this list; negate a pattern there to opt out.
   excludeTitlePatterns:
     - "chore: bump *"
     - "Release *"
@@ -42,22 +43,18 @@ defaults:
   resolveThreads:
     enabled: false
 
-# First matching rule wins. A key present here overrides `defaults` for that
-# repo; leave it out to inherit. autoApprove / autoDeny / resolveThreads
-# override as a whole block: fields missing inside a block take the shipped
-# values, not the ones in `defaults`.
+# Which repositories PRBar handles. Globs, later ones winning, `!` excluding.
+repositories:
+  # Review requests PRBar triages; leave out for every repository.
+  triage: ["acme/*", "me/*"]
+  # Never shown in PRBar at all.
+  hide: ["*/infra-*"]
+  # Whose own .prbar/rules are read, at their default branch. They decide
+  # what is posted under your name.
+  trustRules: ["acme/monorepo"]
+
 # What coding agents may do through `prbar-review mcp`: off, allow or ask.
 # Anything else turns the capability off.
 agents:
   review: allow
   post: "off"
-
-repos:
-  - repoGlobs: ["getsynq/cloud"]
-    rootPatterns: ["kernel-*", "lib/*", "dev-tools"]
-    providerOverride: codex
-    collapseAboveSubreviewCount: 8
-    shareFindings: all_findings
-
-  - repoGlobs: ["*/infra-*"]
-    excluded: true

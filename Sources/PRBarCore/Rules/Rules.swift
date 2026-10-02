@@ -153,6 +153,7 @@ struct Rules: Sendable {
 
     let select: [TypedProgram<SelectFacts, RuleSelection?>]
     let decide: [TypedProgram<DecideFacts, RuleDecision?>]
+    let configure: [TypedProgram<ConfigureFacts, RuleConfiguration?>]
     let lists: [String: [String]]
     let sources: [Source]
     /// Tells versions of the rules apart, in history records.
@@ -214,7 +215,9 @@ struct Rules: Sendable {
     }
 
     /// - Throws: `ValidationError` with every problem, positioned in its file.
-    static func compile(select: [Source], decide: [Source], lists: [String: [String]] = [:]) throws -> Rules {
+    static func compile(
+        select: [Source], decide: [Source], configure: [Source] = [], lists: [String: [String]] = [:]
+    ) throws -> Rules {
         let env = try environment()
         func load<F, O>(_ source: Source, _ fields: [RuleOutputs.Field]) throws -> TypedProgram<F, O?> {
             let text = try RuleOutputs.expand(source.text, path: source.path, fields: fields)
@@ -224,20 +227,54 @@ struct Rules: Sendable {
         }
         return Rules(
             select: try select.map { try load($0, RuleOutputs.select) },
-            decide: try decide.map { try load($0, RuleOutputs.decide) }, lists: lists,
-            sources: select + decide, digest: digest(select + decide, lists: lists), failure: nil)
+            decide: try decide.map { try load($0, RuleOutputs.decide) },
+            configure: try configure.map { try load($0, RuleOutputs.configure) }, lists: lists,
+            sources: select + decide + configure, digest: digest(select + decide + configure, lists: lists), failure: nil)
     }
 
     /// No rules: what the user's layer holds without a rules directory.
-    static let empty = Rules(select: [], decide: [], lists: [:], sources: [], digest: "none", failure: nil)
+    static let empty = Rules(select: [], decide: [], configure: [], lists: [:], sources: [], digest: "none", failure: nil)
 
     static func unloaded(_ reason: String) -> Rules {
-        Rules(select: [], decide: [], lists: [:], sources: [], digest: "unloaded", failure: reason)
+        Rules(select: [], decide: [], configure: [], lists: [:], sources: [], digest: "unloaded", failure: reason)
     }
 
     static let unloadedRuleID = "rules-not-loaded"
     /// The id a decision carries when evaluating the rules failed.
     static let errorRuleID = "rule-error"
+
+    /// What the configure policies set for a repository: each file's
+    /// first match, files in order, later fields replacing earlier ones.
+    /// A policy that fails to evaluate turns posting off for the
+    /// repository, since what it would have set may be what held a post
+    /// back.
+    func configure(owner: String, name: String) -> Configured {
+        var config = RepoConfig.default
+        var applied: [String] = []
+        let facts = ConfigureFacts(repo: RepoFacts(owner: owner, name: name), lists: lists)
+        for (index, program) in configure.enumerated() {
+            do {
+                guard let output = try program.evaluate(facts) else { continue }
+                output.apply(to: &config)
+                applied.append(output.rule)
+            } catch {
+                let path = sources[select.count + decide.count + index].path
+                config.autoApprove = AutoApproveConfig()
+                config.autoDeny = AutoDenyConfig()
+                config.shareFindings = .off
+                return Configured(config: config, rules: applied, error: "\(path): \(error)")
+            }
+        }
+        return Configured(config: config, rules: applied, error: nil)
+    }
+
+    struct Configured: Sendable, Hashable {
+        /// Overrides of the review defaults, as a `repos:` entry held them.
+        var config: RepoConfig
+        /// The ids of the rules that set something, in order.
+        var rules: [String]
+        var error: String?
+    }
 
     /// Nil when no select policy matches. Every fact must be known.
     func select(_ facts: SelectFacts) throws -> RuleSelection? {

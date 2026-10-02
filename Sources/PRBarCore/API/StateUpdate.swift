@@ -79,6 +79,11 @@ struct ConfigState: Codable, Sendable, Equatable {
     var migratedFromLegacy: Bool
     /// The rules directory doesn't compile. Nil from an older server.
     var rulesIssue: String? = nil
+    /// What the configure rules set for each repository in the inbox, by
+    /// `owner/name`: a front end can't run the rules itself.
+    var repositories: [String: RepoConfig]? = nil
+    /// prbar.yaml still has `repos:`, refused until converted to rules.
+    var needsConversion: Bool? = nil
 }
 
 /// GitHub writes queued, running, retrying or failed, per PR, and the ones

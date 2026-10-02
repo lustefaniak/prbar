@@ -16,6 +16,9 @@ enum ConfigFile {
         case unreadable(path: String, reason: String)
         case invalid(path: String, reason: String)
         case unsupportedVersion(path: String, version: Int)
+        /// `repos:` is how per-repository settings were written before
+        /// they moved to `configure` rules.
+        case reposMoved(path: String)
 
         var errorDescription: String? {
             switch self {
@@ -25,6 +28,8 @@ enum ConfigFile {
                 return "invalid config \(path): \(reason)"
             case let .unsupportedVersion(path, version):
                 return "config \(path) is version \(version); this PRBar understands up to \(PRBarConfig.currentVersion)"
+            case let .reposMoved(path):
+                return "config \(path) still has `repos:`. Per-repository settings are rules now: convert them with `prbar-review rules convert` or the Convert button in Settings → Rules. Until then PRBar runs with its shipped defaults, which post nothing on their own"
             }
         }
     }
@@ -34,8 +39,9 @@ enum ConfigFile {
     # Saving from the app's Settings rewrites this file: hand edits are kept,
     # comments are not.
     #
-    # A key in a repo rule overrides `defaults` for that repo; a missing key
-    # inherits. A key missing from `defaults` means PRBar's shipped default.
+    # `defaults` apply to every repository; `configure` rules in rules/ beside
+    # this file set what differs per repository. A key missing from
+    # `defaults` means PRBar's shipped default.
     # Details: https://github.com/lustefaniak/prbar/blob/main/docs/configuration.md
 
     """
@@ -48,8 +54,11 @@ enum ConfigFile {
             throw Error.invalid(path: path, reason: String(describing: error))
         }
         guard let node else { return Loaded(config: PRBarConfig(), warnings: []) }
-        guard node.mapping != nil else {
+        guard let mapping = node.mapping else {
             throw Error.invalid(path: path, reason: "top level must be a mapping")
+        }
+        if let repos = mapping["repos"], repos.sequence?.isEmpty == false {
+            throw Error.reposMoved(path: path)
         }
         let config: PRBarConfig
         do {
@@ -140,7 +149,7 @@ enum ConfigFile {
     }
 
     private static let reviewSettings: Schema = {
-        var s = keys(ReviewDefaults.CodingKeys.self).merging(keys(RepoConfig.CodingKeys.self)) { a, _ in a }
+        var s = keys(ReviewDefaults.CodingKeys.self)
         s["autoApprove"] = .object(keys(AutoApproveConfig.CodingKeys.self))
         s["autoDeny"] = .object(keys(AutoDenyConfig.CodingKeys.self))
         s["resolveThreads"] = .object(keys(ResolveThreadsConfig.CodingKeys.self))
@@ -150,13 +159,11 @@ enum ConfigFile {
     private static let schema: Schema = {
         var top = keys(PRBarConfig.CodingKeys.self)
         var defaults = keys(ReviewDefaults.CodingKeys.self)
-        var repo = keys(RepoConfig.CodingKeys.self)
         for nested in ["autoApprove", "autoDeny", "resolveThreads"] {
             defaults[nested] = reviewSettings[nested]
-            repo[nested] = reviewSettings[nested]
         }
         top["defaults"] = .object(defaults)
-        top["repos"] = .list(repo)
+        top["repositories"] = .object(keys(RepositoryScope.CodingKeys.self))
         top["agents"] = .object(keys(AgentPolicy.CodingKeys.self))
         return top
     }()

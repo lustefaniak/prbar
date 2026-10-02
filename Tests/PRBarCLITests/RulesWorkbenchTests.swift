@@ -165,12 +165,13 @@ final class RulesWorkbenchTests: XCTestCase {
 
     func testNewFilesStartWithRulesThatCompile() throws {
         var files: [String: String] = [:]
-        for path in ["lists.yaml", "select/10-first.yaml", "decide/10-first.yaml"] {
+        for path in ["lists.yaml", "select/10-first.yaml", "decide/10-first.yaml", "configure/10-first.yaml"] {
             files[path] = RulesWorkbench.template(for: path)
         }
         let rules = try XCTUnwrap(try RuleDirectory.compile(files, root: "/r"))
         XCTAssertEqual(rules.select.count, 1)
         XCTAssertEqual(rules.decide.count, 1)
+        XCTAssertEqual(rules.configure.count, 1)
         XCTAssertEqual(rules.lists, ["team": []])
     }
 

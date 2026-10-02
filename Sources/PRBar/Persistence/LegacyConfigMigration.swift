@@ -29,7 +29,7 @@ enum LegacyConfigMigration {
         guard !repos.isEmpty || defaultsData != nil || hasAgentKeys else { return nil }
 
         var config = PRBarConfig()
-        config.repos = repos
+        config.legacyRepos = repos
         if let defaultsData,
            let decoded = try? JSONDecoder().decode(ReviewDefaults.self, from: defaultsData) {
             config.defaults = decoded

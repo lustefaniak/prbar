@@ -7,7 +7,7 @@ import Foundation
 /// `docs/schema/rules/` are this output, checked by a test.
 enum RuleSchema {
     enum File: String, CaseIterable, Sendable {
-        case select, decide, lists
+        case select, decide, configure, lists
     }
 
     static let baseURL = "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/"
@@ -21,6 +21,8 @@ enum RuleSchema {
                                       what: "whether PRBar reviews a pull request")
         case .decide: object = policy(file, fields: RuleOutputs.decide, title: "PRBar decide rules",
                                       what: "what PRBar posts once a review is in")
+        case .configure: object = policy(file, fields: RuleOutputs.configure, title: "PRBar configure rules",
+                                         what: "how a repository's pull requests are reviewed")
         case .lists: object = lists()
         }
         let data = (try? JSONSerialization.data(
@@ -50,7 +52,9 @@ enum RuleSchema {
             "$schema": "http://json-schema.org/draft-07/schema#",
             "$id": url(file),
             "title": title,
-            "description": "A policy in rules/\(file.rawValue)/: \(what). The stage's files run in name order and the first match decides; with no match, the prbar.yaml settings do. Guide: \(guide)",
+            "description": "A policy in rules/\(file.rawValue)/: \(what). " + (file == .configure
+                ? "Conditions read `repo` (owner, name, full_name) and `lists`. Each file's first match applies, files in name order, a later file's fields replacing an earlier one's; what no rule sets comes from the review defaults in prbar.yaml."
+                : "The stage's files run in name order and the first match decides; with no match, the prbar.yaml settings do.") + " Guide: \(guide)",
             "type": "object",
             "additionalProperties": false,
             "required": ["rule"],
@@ -134,6 +138,21 @@ enum RuleSchema {
             let names = AnnotationSeverity.allCases.map(\.rawValue)
             out["type"] = "string"
             out["enum"] = names + names.map { "severity.\($0)" }
+        case .number:
+            out["type"] = "number"
+            out["minimum"] = 0
+        case .strings:
+            out["type"] = "array"
+            out["items"] = ["type": "string"]
+        case .stringMap:
+            out["type"] = "object"
+            out["additionalProperties"] = ["type": "string"]
+        case .object(let fields):
+            out["type"] = "object"
+            out["additionalProperties"] = false
+            var properties: [String: Any] = [:]
+            for field in fields { properties[field.name] = property(field) }
+            out["properties"] = properties
         }
         return out
     }

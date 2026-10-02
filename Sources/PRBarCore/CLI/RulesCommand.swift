@@ -15,6 +15,8 @@ enum RulesCommand: Equatable {
     case replay(id: String?, Filter, watch: Bool, configPath: String?, repoRules: String?)
     /// The JSON schema of a rules file, for editors.
     case schema(RuleSchema.File)
+    /// prbar.yaml's old `repos:` into a configure rule.
+    case convert(configPath: String?, dryRun: Bool)
 
     struct Filter: Equatable {
         /// `owner/repo#number`, or a checkout's root for local reviews.
@@ -31,6 +33,7 @@ enum RulesCommand: Equatable {
         var json = false
         var watch = false
         var repoRules: String?
+        var dryRun = false
         var i = 2
         func value() -> String? {
             i += 1
@@ -58,6 +61,8 @@ enum RulesCommand: Equatable {
                 json = true
             case "--watch":
                 watch = true
+            case "--dry-run":
+                dryRun = true
             case "--repo-rules":
                 guard let v = value() else { return nil }
                 repoRules = (v as NSString).expandingTildeInPath
@@ -77,6 +82,8 @@ enum RulesCommand: Equatable {
         case "schema" where positional.count == 1:
             guard let file = RuleSchema.File(rawValue: positional[0]) else { return nil }
             self = .schema(file)
+        case "convert" where positional.isEmpty:
+            self = .convert(configPath: configPath, dryRun: dryRun)
         case "history" where positional.isEmpty:
             self = .history(filter, limit: limit, json: json)
         case "replay" where positional.count <= 1:
@@ -92,13 +99,15 @@ enum RulesCommand: Equatable {
            prbar-review rules history [--pr <pr>] [--days <n>] [--limit <n>] [--json]
            prbar-review rules replay [<id>] [--pr <pr>] [--days <n>] [--watch] [--config <path>]
                                      [--repo-rules <checkout>/.prbar/rules]
-           prbar-review rules schema select|decide|lists
+           prbar-review rules schema select|decide|configure|lists
+           prbar-review rules convert [--config <path>] [--dry-run]
 
     The rules live in `rules/` beside prbar.yaml (or $PRBAR_RULES):
 
       rules/lists.yaml        named lists, e.g. `trusted: [alice, bob]`
       rules/select/*.yaml     whether to review a PR at all
       rules/decide/*.yaml     what to post once it is reviewed
+      rules/configure/*.yaml  how a repository's PRs are reviewed
 
     Each file is a CEL policy in cel-go's format. Files run in name order;
     the first one that matches decides, and when none does the repo settings
@@ -120,6 +129,11 @@ enum RulesCommand: Equatable {
       schema    the JSON schema of a rules file, which editors use to
                 complete and check it; also published at
                 \(RuleSchema.baseURL)<file>.schema.json
+      convert   turn the `repos:` entries of an older prbar.yaml into
+                rules/configure/50-repos.yaml and the `repositories:` lists,
+                after checking every repository PRBar has seen resolves to
+                the same settings. The old file is kept as
+                prbar.yaml.before-rules. --dry-run prints the rule only
 
     """
 
@@ -155,6 +169,30 @@ enum RulesCommand: Equatable {
         case .schema(let file):
             print(String(RuleSchema.json(file).dropLast()))
             return 0
+
+        case let .convert(configPath, dryRun):
+            do {
+                let configURL = try CLIConfig.locate(path: configPath, environment: environment)
+                    ?? ConfigLocation.userConfigURL(environment: environment)
+                let rulesURL = RuleDirectory.url(configFile: configURL, environment: environment)
+                let written = try RulesConvert.run(
+                    configURL: configURL, rulesURL: rulesURL,
+                    repositories: RulesConvert.knownRepositories(
+                        stateDirectory: ConfigLocation.stateDirectory(environment: environment)),
+                    dryRun: dryRun)
+                if dryRun {
+                    print(written.ruleText)
+                    print("# checked \(written.checked.count) repositories: \(written.checked.joined(separator: ", "))")
+                } else {
+                    print("Converted \(written.entries) repos: entries into \(written.rulePath).")
+                    print("Checked \(written.checked.count) repositories; each resolves to the same settings as before.")
+                    print("The old config is kept as \(written.backupPath).")
+                }
+                return 0
+            } catch {
+                fail(error.localizedDescription)
+                return 1
+            }
 
         case let .history(filter, limit, json):
             let records = Array(Self.evaluations(filter, environment: environment).prefix(limit))

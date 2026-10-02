@@ -73,7 +73,7 @@ final class CLIRunnerTests: XCTestCase {
     /// through to the "pass --force" advice — which does nothing for it.
     func testExcludedRepoSaysSoRatherThanSuggestingForce() async {
         var config = PRBarConfig()
-        config.repos = [RepoConfig(repoGlobs: ["o/r"], excluded: true)]
+        config.repositories.hide = ["o/r"]
 
         let outcome = await review(runner(config), pr: Self.pr(), force: true)
 

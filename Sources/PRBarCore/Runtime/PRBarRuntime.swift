@@ -151,6 +151,7 @@ final class PRBarRuntime {
 
         q.configResolver = rc.makeResolver()
         p.configResolver = rc.makeResolver()
+        rc.noteRepositories(p.prs)
         // Provider / model / effort defaults come from prbar.yaml. "auto"
         // resolves to whichever CLI is installed (claude wins ties).
         rc.config.applyAgentDefaults(to: q)
@@ -177,6 +178,7 @@ final class PRBarRuntime {
         // inbox, and start AI triage straight away for new requests.
         p.onPollSuccess = { [weak self, weak coord, weak rc, weak q] prs in
             guard let coord, let rc else { return }
+            rc.noteRepositories(prs)
             coord.track(prs: prs, configResolver: rc.resolve(owner:repo:))
             if self?.ownsAutomation ?? false {
                 q?.enqueueNewReviewRequests(from: prs)

@@ -83,7 +83,7 @@ extension APIServer {
         guard RuleDirectory.isRuleFile(params.path) else {
             throw RPCError(
                 code: RPCError.invalidParams,
-                message: "\(params.path) isn't a rule file: lists.yaml, or a .yaml file in select/ or decide/")
+                message: "\(params.path) isn't a rule file: lists.yaml, or a .yaml file in select/, decide/ or configure/")
         }
         let directory = runtime.repoConfigs.rulesURL
         let url = directory.appendingPathComponent(params.path)
@@ -110,6 +110,47 @@ extension APIServer {
             throw RPCError(code: RPCError.internalError, message: "\(params.path): \(error.localizedDescription)")
         }
         runtime.repoConfigs.reloadIfChanged()
+    }
+
+    /// Converts prbar.yaml's `repos:` into a configure rule, checked on
+    /// every repository in the inbox and the histories, then reloads.
+    func convertRepos(dryRun: Bool) throws -> RulesConvert.Written {
+        var names = Set(runtime.poller.prs.map(\.nameWithOwner))
+        names.formUnion((runtime.queue.ruleLog?.readAll() ?? []).map(\.repo))
+        names.formUnion(runtime.reviewLog.entries.map { "\($0.owner)/\($0.repo)" })
+        let store = runtime.repoConfigs
+        let written: RulesConvert.Written
+        do {
+            written = try RulesConvert.run(
+                configURL: store.fileURL, rulesURL: store.rulesURL,
+                repositories: names.filter { $0.split(separator: "/").count == 2 }, dryRun: dryRun)
+        } catch {
+            throw RPCError(code: RPCError.refused, message: error.localizedDescription)
+        }
+        if !dryRun { store.reloadIfChanged() }
+        return written
+    }
+
+    nonisolated static func summary(_ configured: Rules.Configured, name: String, scope: RepositoryScope) -> ConfiguredSummary {
+        var settings: [String] = []
+        var rule = configured.config
+        rule.excluded = false
+        rule.trustRepoRules = nil
+        rule.repoGlobs = []
+        let encoder = JSONEncoder()
+        encoder.userInfo[RepoConfig.omitIDUserInfoKey] = true
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        if let data = try? encoder.encode(rule),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in object.keys.sorted() where key != "repoGlobs" && key != "excluded" {
+                let value = object[key].flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.fragmentsAllowed, .sortedKeys, .withoutEscapingSlashes]) }
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                settings.append("\(key): \(value)")
+            }
+        }
+        return ConfiguredSummary(
+            repository: name, rules: configured.rules, settings: settings, triaged: scope.triages(name),
+            hidden: scope.hides(name), trustsRules: scope.trustsRules(name), error: configured.error)
     }
 
     nonisolated static func summary(_ record: RuleEvaluation) -> RuleRecordSummary {

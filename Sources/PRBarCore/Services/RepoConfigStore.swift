@@ -53,6 +53,10 @@ final class RepoConfigStore {
     private(set) var rulesIssue: String?
 
     @ObservationIgnored let rulesURL: URL
+    /// The file still has `repos:`, which is refused until converted
+    /// (`rules convert`). Nothing is saved meanwhile: a save would write
+    /// the config in effect, the shipped defaults, over the entries.
+    private(set) var needsConversion = false
     @ObservationIgnored private var watchTask: Task<Void, Never>?
 
     /// Hook fired after every change, from Settings or from the file.
@@ -61,7 +65,27 @@ final class RepoConfigStore {
     @ObservationIgnored
     var onChange: (@MainActor () -> Void)?
 
-    var userConfigs: [RepoConfig] { config.repos }
+    /// The repositories PRBar has seen in the inbox, so the config state
+    /// can carry what the rules set for each: front ends show settings
+    /// but can't run the rules.
+    private(set) var knownRepositories: Set<String> = []
+
+    func noteRepositories(_ prs: [InboxPR]) {
+        let names = Set(prs.map(\.nameWithOwner))
+        guard !names.isSubset(of: knownRepositories) else { return }
+        knownRepositories.formUnion(names)
+    }
+
+    /// What the rules set for each known repository.
+    var configuredRepositories: [String: RepoConfig] {
+        var out: [String: RepoConfig] = [:]
+        for name in knownRepositories {
+            let parts = name.split(separator: "/", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            out[name] = config.rule(owner: parts[0], repo: parts[1])
+        }
+        return out
+    }
 
     /// App-level values every rule inherits from. Edited in Settings →
     /// Review defaults.
@@ -100,7 +124,7 @@ final class RepoConfigStore {
     /// picker labels, Diagnostics tool list) so the `compactMap` predicate
     /// can't drift between them.
     var providerOverrides: [ProviderID] {
-        userConfigs.compactMap(\.providerOverride)
+        configuredRepositories.values.compactMap(\.providerOverride)
     }
 
     /// - Parameters:
@@ -148,26 +172,6 @@ final class RepoConfigStore {
 
     // MARK: - edits
 
-    /// Replace the user-config list and persist.
-    func setAll(_ configs: [RepoConfig]) {
-        mutate { $0.repos = configs }
-    }
-
-    /// Upsert by stable `id`.
-    func upsert(_ rule: RepoConfig) {
-        mutate { config in
-            if let idx = config.repos.firstIndex(where: { $0.id == rule.id }) {
-                config.repos[idx] = rule
-            } else {
-                config.repos.append(rule)
-            }
-        }
-    }
-
-    func remove(id: UUID) {
-        mutate { $0.repos.removeAll { $0.id == id } }
-    }
-
     /// Replace the whole config, as a front end editing its own copy does.
     func replace(with config: PRBarConfig) {
         mutate { $0 = config }
@@ -191,6 +195,10 @@ final class RepoConfigStore {
     // MARK: - file I/O
 
     private func save() {
+        guard !needsConversion else {
+            loadIssue = "Not saved: prbar.yaml still has `repos:`. Convert them to rules first (Settings → Rules)."
+            return
+        }
         do {
             let text = try ConfigFile.encode(config)
             try ConfigFile.write(text, to: fileURL)
@@ -212,17 +220,38 @@ final class RepoConfigStore {
                 lastSeenData = data
                 try apply(data: data, path: fileURL.path)
             } catch {
+                needsConversion = (error as? ConfigFile.Error).map { if case .reposMoved = $0 { return true }; return false } ?? false
                 loadIssue = "\(error.localizedDescription). Using the last config that loaded."
                 PRBarLog.config.error("load failed: \(error.localizedDescription, privacy: .public)")
                 loadLastGood()
             }
             return
         }
-        if let migrated = legacy?() {
+        if var migrated = legacy?() {
+            if !migrated.legacyRepos.isEmpty {
+                convertLegacyRepos(&migrated)
+            }
             config = migrated
             migratedFromLegacy = true
             PRBarLog.config.notice("migrated legacy settings to \(self.fileURL.path, privacy: .public)")
             save()
+        }
+    }
+
+    /// Writes repo rules read from the old store as the configure rule
+    /// `rules convert` would, and their lists into the config.
+    private func convertLegacyRepos(_ config: inout PRBarConfig) {
+        let entries = config.legacyRepos
+        config.legacyRepos = []
+        config.repositories.hide = RulesConvert.firstMatchList(entries, default: false) { $0.excluded }
+        config.repositories.trustRules = RulesConvert.firstMatchList(entries, default: false) { $0.trustRepoRules ?? false }
+        let url = rulesURL.appendingPathComponent(RulesConvert.rulePath)
+        guard !FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(RulesConvert.policy(entries, date: Date()).utf8).write(to: url, options: .atomic)
+        } catch {
+            PRBarLog.config.error("legacy repo rules not written: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -243,10 +272,10 @@ final class RepoConfigStore {
         let loaded = try ConfigFile.decode(text, path: path)
         var next = loaded.config
         next.compiledRules = config.compiledRules
-        next.repos = Self.keepingIdentity(next.repos, from: config.repos)
         config = next
         warnings = loaded.warnings
         loadIssue = nil
+        needsConversion = false
         saveLastGood(text)
     }
 
@@ -280,19 +309,6 @@ final class RepoConfigStore {
         return true
     }
 
-    /// The file carries no rule ids, so a reload would otherwise hand
-    /// every rule a fresh UUID and drop the Settings selection. Reuse the
-    /// old id for a rule at the same position with the same globs.
-    private static func keepingIdentity(_ fresh: [RepoConfig], from old: [RepoConfig]) -> [RepoConfig] {
-        fresh.enumerated().map { index, rule in
-            var rule = rule
-            if index < old.count, old[index].repoGlobs == rule.repoGlobs {
-                rule.id = old[index].id
-            }
-            return rule
-        }
-    }
-
     private func saveLastGood(_ text: String) {
         guard let lastGoodURL else { return }
         try? ConfigFile.write(text, to: lastGoodURL)
@@ -312,6 +328,7 @@ final class RepoConfigStore {
         do {
             try apply(data: data, path: fileURL.path)
         } catch {
+            needsConversion = (error as? ConfigFile.Error).map { if case .reposMoved = $0 { return true }; return false } ?? false
             loadIssue = "\(error.localizedDescription). Keeping the previous config."
             PRBarLog.config.error("reload failed: \(error.localizedDescription, privacy: .public)")
             return

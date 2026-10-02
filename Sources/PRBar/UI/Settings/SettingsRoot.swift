@@ -8,8 +8,6 @@ struct SettingsRoot: View {
                 .tabItem { Label("General", systemImage: "gear") }
             ReviewDefaultsSettings()
                 .tabItem { Label("Review defaults", systemImage: "slider.horizontal.3") }
-            RepositoriesSettings()
-                .tabItem { Label("Repositories", systemImage: "folder.badge.gearshape") }
             RulesSettings()
                 .tabItem { Label("Rules", systemImage: "list.bullet.rectangle") }
             ReviewHistoryView()

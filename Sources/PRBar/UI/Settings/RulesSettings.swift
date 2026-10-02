@@ -8,12 +8,13 @@ import SwiftUI
 struct RulesSettings: View {
     @Environment(ServerSession.self) private var session
     @Environment(InboxModel.self) private var inbox
+    @Environment(ConfigModel.self) private var config
     @State private var workbench: RulesWorkbench?
 
     var body: some View {
         Group {
             if let workbench {
-                RulesWorkbenchView(workbench: workbench, prs: inbox.prs)
+                RulesWorkbenchView(workbench: workbench, prs: inbox.prs, needsConversion: config.needsConversion)
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -36,11 +37,33 @@ struct RulesSettings: View {
 private struct RulesWorkbenchView: View {
     @Bindable var workbench: RulesWorkbench
     let prs: [InboxPR]
+    let needsConversion: Bool
     @State private var newFileStage: String?
+    @State private var converting = false
     @State private var newFileName = ""
 
     var body: some View {
         VStack(spacing: 0) {
+            if needsConversion {
+                HStack(alignment: .top) {
+                    Text("prbar.yaml still has per-repository settings under `repos:`. They are rules now, so PRBar runs on its shipped defaults, which post nothing, until they are converted. Converting writes them as rules/configure/50-repos.yaml, checks that every repository PRBar has seen keeps the same settings, and keeps the old file beside the new one.")
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button(converting ? "Converting…" : "Convert") {
+                        converting = true
+                        Task {
+                            await workbench.convert()
+                            converting = false
+                        }
+                    }
+                    .disabled(converting)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.12))
+            }
+            if let converted = workbench.converted {
+                banner(converted, color: .green)
+            }
             if let issue = workbench.issue {
                 banner(issue, color: .orange)
             }
@@ -76,6 +99,7 @@ private struct RulesWorkbenchView: View {
         VStack(alignment: .leading, spacing: 0) {
             List(selection: $workbench.selectedPath) {
                 section("Lists", paths: workbench.paths.filter { $0 == "lists.yaml" })
+                section("Configure: per repository", paths: workbench.paths.filter { $0.hasPrefix("configure/") })
                 section("Select: review or skip", paths: workbench.paths.filter { $0.hasPrefix("select/") })
                 section("Decide: what is posted", paths: workbench.paths.filter { $0.hasPrefix("decide/") })
             }
@@ -91,6 +115,7 @@ private struct RulesWorkbenchView: View {
             Divider()
             HStack {
                 Menu {
+                    Button("Configure rule: settings per repository") { startNewFile("configure") }
                     Button("Select rule") { startNewFile("select") }
                     Button("Decide rule") { startNewFile("decide") }
                     if !workbench.paths.contains("lists.yaml") {
@@ -103,6 +128,14 @@ private struct RulesWorkbenchView: View {
                 .fixedSize()
                 .help("New rule file")
                 Spacer()
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: workbench.directory)])
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.borderless)
+                .help("Show the rules directory in Finder")
+                .disabled(workbench.directory.isEmpty || !FileManager.default.fileExists(atPath: workbench.directory))
                 Button {
                     Task { await workbench.load() }
                 } label: {
@@ -145,7 +178,7 @@ private struct RulesWorkbenchView: View {
     }
 
     private func startNewFile(_ stage: String) {
-        newFileName = "50-\(stage == "select" ? "skip" : "post")"
+        newFileName = "50-" + (stage == "select" ? "skip" : stage == "configure" ? "settings" : "post")
         newFileStage = stage
     }
 
@@ -201,6 +234,12 @@ private struct RulesWorkbenchView: View {
                 HStack {
                     Text(path).font(.headline.monospaced())
                     Spacer()
+                    if workbench.isSaved(path) {
+                        Button("Open in Editor") {
+                            NSWorkspace.shared.open(URL(fileURLWithPath: workbench.directory).appendingPathComponent(path))
+                        }
+                        .help("Open the saved file in your editor; it has completion for the file's structure through its JSON schema. Changes saved there show here.")
+                    }
                     if workbench.isEdited(path) {
                         Button("Revert") { workbench.revert(path) }
                         Button("Save") { Task { await workbench.save(path) } }
@@ -229,7 +268,7 @@ private struct RulesWorkbenchView: View {
         } else {
             ContentUnavailableView(
                 "No rules yet", systemImage: "list.bullet.rectangle",
-                description: Text("Add a select or decide rule with +. Nothing changes until you save, and until then you can try it on PRs and on recent decisions."))
+                description: Text("Review defaults decide for every repository until a rule says otherwise. Add one with +: configure sets what differs per repository, select whether a PR is reviewed, decide what is posted. Pick a PR under Try on to see what decides it now. Nothing changes until you save."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -309,6 +348,9 @@ private struct RulesResultsView: View {
     @ViewBuilder
     private var result: some View {
         if let explanation = workbench.explanation {
+            if let configured = explanation.configured {
+                ConfiguredView(configured: configured)
+            }
             outcomeRow("Select", explanation.selectOutcome)
             if let decide = explanation.decideOutcome {
                 outcomeRow("Decide", decide)
@@ -510,5 +552,42 @@ private struct ValueIcon: View {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 .help(other)
         }
+    }
+}
+
+/// What the configure rules and the repository lists set for the PR's
+/// repository: the settings everything else runs with.
+private struct ConfiguredView: View {
+    let configured: ConfiguredSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Settings for \(configured.repository)").font(.subheadline.bold())
+            if !configured.triaged {
+                Text("Not in `repositories.triage`: review requests here aren't triaged.").font(.caption).foregroundStyle(.orange)
+            }
+            if configured.hidden {
+                Text("In `repositories.hide`: never shown.").font(.caption).foregroundStyle(.orange)
+            }
+            if configured.trustsRules {
+                Text("Its own .prbar/rules are read.").font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = configured.error {
+                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            }
+            if configured.rules.isEmpty {
+                Text("No configure rule matches: Review defaults apply as they are.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Review defaults, changed by \(configured.rules.joined(separator: ", ")):")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(configured.settings, id: \.self) { line in
+                    Text(line).font(.caption2.monospaced()).textSelection(.enabled)
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
     }
 }

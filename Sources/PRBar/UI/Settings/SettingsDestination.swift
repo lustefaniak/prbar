@@ -14,7 +14,6 @@ import AppKit
 enum SettingsDestination: String, CaseIterable, Sendable {
     case general
     case reviewDefaults
-    case repositories
     case rules
     case reviewHistory
     case diagnostics
@@ -23,10 +22,9 @@ enum SettingsDestination: String, CaseIterable, Sendable {
         switch self {
         case .general:        return 0
         case .reviewDefaults: return 1
-        case .repositories:   return 2
-        case .rules:          return 3
-        case .reviewHistory:  return 4
-        case .diagnostics:    return 5
+        case .rules:          return 2
+        case .reviewHistory:  return 3
+        case .diagnostics:    return 4
         }
     }
 
@@ -35,7 +33,6 @@ enum SettingsDestination: String, CaseIterable, Sendable {
         switch self {
         case .general:        return "General"
         case .reviewDefaults: return "Review defaults"
-        case .repositories:   return "Repositories"
         case .rules:          return "Rules"
         case .reviewHistory:  return "Review History"
         case .diagnostics:    return "Diagnostics"

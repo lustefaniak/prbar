@@ -527,12 +527,21 @@ final class ConfigModel {
     private var unansweredWrites = 0
 
     var fileURL: URL { URL(fileURLWithPath: path) }
-    var userConfigs: [RepoConfig] { config.repos }
-    var providerOverrides: [ProviderID] { userConfigs.compactMap(\.providerOverride) }
+    /// What the configure rules set per repository, from the server.
+    private(set) var repositories: [String: RepoConfig] = [:]
+    /// prbar.yaml still has `repos:`; Settings → Rules offers to convert.
+    private(set) var needsConversion = false
+    var providerOverrides: [ProviderID] { repositories.values.compactMap(\.providerOverride) }
 
     var defaults: ReviewDefaults {
         get { config.defaults }
         set { mutate { $0.defaults = newValue } }
+    }
+
+    /// prbar.yaml's `repositories:` lists.
+    var repositoryScope: RepositoryScope {
+        get { config.repositories }
+        set { mutate { $0.repositories = newValue } }
     }
 
     var defaultProvider: ProviderChoice {
@@ -561,29 +570,11 @@ final class ConfigModel {
     }
 
     func resolve(owner: String, repo: String) -> ResolvedRepoConfig {
-        config.resolve(owner: owner, repo: repo)
+        ResolvedRepoConfig(rule: rule(owner: owner, repo: repo), defaults: config.defaults)
     }
 
     func rule(owner: String, repo: String) -> RepoConfig {
-        config.rule(owner: owner, repo: repo)
-    }
-
-    func setAll(_ configs: [RepoConfig]) {
-        mutate { $0.repos = configs }
-    }
-
-    func upsert(_ rule: RepoConfig) {
-        mutate { config in
-            if let idx = config.repos.firstIndex(where: { $0.id == rule.id }) {
-                config.repos[idx] = rule
-            } else {
-                config.repos.append(rule)
-            }
-        }
-    }
-
-    func remove(id: UUID) {
-        mutate { $0.repos.removeAll { $0.id == id } }
+        repositories["\(owner)/\(repo)"] ?? config.rule(owner: owner, repo: repo)
     }
 
     func apply(_ update: StateUpdate) {
@@ -612,6 +603,8 @@ final class ConfigModel {
             adoptedRevision = state.revision
         }
         path = state.path
+        if let repositories = state.repositories, repositories != self.repositories { self.repositories = repositories }
+        if needsConversion != (state.needsConversion ?? false) { needsConversion = state.needsConversion ?? false }
         loadIssue = saveIssue ?? state.loadIssue ?? state.rulesIssue
         warnings = state.warnings
         migratedFromLegacy = state.migratedFromLegacy

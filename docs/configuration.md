@@ -9,7 +9,8 @@ the `prbar-review` CLI:
 - **Format:** YAML. JSON is valid YAML, so an older `prbar.json` still loads.
 - **Editing:** use Settings in the app, or edit the file by hand. The app picks up
   hand edits within about 2 seconds. Saving from Settings rewrites the file: your
-  values are kept, comments and formatting are not.
+  values are kept, comments and formatting are not. What differs per repository is
+  not in this file: it is set by `configure` rules (see below).
 - **Errors:**
   - A file that doesn't parse leaves the previous configuration in effect, and the
     error shows in Settings → Review defaults (stderr for the CLI). At launch, a
@@ -25,51 +26,55 @@ A complete example: [`prbar.example.yaml`](prbar.example.yaml).
 Every review setting is resolved for a specific repository, in three layers. The
 first layer that sets a value wins:
 
-1. **The first repo rule in `repos:` whose `repoGlobs` match** the repository
-   (`owner/repo`). Rules are tried in file order and only one rule applies; a later
-   matching rule is never consulted.
+1. **What the `configure` rules set** for the repository: policies in
+   `rules/configure/` beside this file, matched on the repository's name. Each
+   file's first match applies; files run in name order, and a later file's
+   fields replace an earlier one's. [rules.md](rules.md#configure-settings-per-repository)
+   explains them.
 2. **`defaults:`**
 3. **PRBar's shipped default** for that setting.
 
 ```yaml
+# prbar.yaml
 defaults:
-  maxCostUsdPerSubreview: 5      # every repo: $5, unless a rule says otherwise
+  maxCostUsdPerSubreview: 5      # every repository: $5, unless a rule says otherwise
+```
 
-repos:
-  - repoGlobs: [acme/monorepo]
-    maxCostUsdPerSubreview: 10   # acme/monorepo: $10
-  - repoGlobs: [acme/docs]
-    aiReviewEnabled: false       # acme/docs: AI off, cost cap still $5 (from defaults)
+```yaml
+# rules/configure/10-repos.yaml
+name: repos
+rule:
+  match:
+    - condition: repo.full_name == "acme/monorepo"
+      output:
+        rule: monorepo
+        max_cost_usd_per_subreview: 10   # acme/monorepo: $10
+    - condition: repo.full_name == "acme/docs"
+      output:
+        rule: docs
+        ai_review_enabled: false         # acme/docs: AI off, cost cap still $5
 ```
 
 `reviewTimeoutSeconds` is set nowhere above, so every repository gets the shipped
 600.
 
-### A key present in a repo rule is an override; a missing key inherits
+Older versions kept per-repository settings in a `repos:` list in this file.
+**A `prbar.yaml` that still has `repos:` is refused** until it is converted, and
+PRBar runs on its shipped defaults meanwhile, which post nothing on their own.
+Convert with the button in Settings → Rules, or:
 
-Inside a `repos:` entry, **the presence of a key is what makes it an override.**
-Leave a key out and the repository follows `defaults:` (and, through it, the shipped
-default) for that setting, including any later change you make there.
-
-A key that is present pins its value for that repository, even when the value
-happens to equal the current default:
-
-```yaml
-repos:
-  - repoGlobs: [acme/api]
-    reviewTimeoutSeconds: 600    # pinned: raising defaults.reviewTimeoutSeconds
-                                 # later does NOT change acme/api
+```sh
+prbar-review rules convert --dry-run   # print the rule it would write
+prbar-review rules convert
 ```
 
-To make a repository follow the defaults again, delete the line, or untick the
-checkbox next to the field in Settings → Repositories (unticked fields come from
-Review defaults).
-
-> **Rules migrated from older PRBar versions list almost every field.** Before
-> settings could be inherited, a repo rule stored a value for every field, so
-> migration kept them all as explicit overrides: dropping the ones that equal
-> today's defaults would change what those rules do. Delete the lines you don't
-> mean to pin.
+It writes `rules/configure/50-repos.yaml`, keeping the entries in their order
+(the first that matches a repository sets its settings, as before), moves
+`excluded` and `trustRepoRules` into the `repositories:` lists below, and keeps
+the old file as `prbar.yaml.before-rules`. Before writing anything it checks
+that every repository PRBar has seen (the inbox, the review and rule histories,
+and a name for each pattern) resolves to the same settings both ways, and
+writes nothing if one doesn't.
 
 ### In `defaults:`, a missing key means the shipped default
 
@@ -86,89 +91,105 @@ Two consequences:
 `autoApprove`, `autoDeny` and `resolveThreads` are blocks of several fields that
 inherit **as one unit**, not field by field:
 
-- A repo rule with an `autoApprove:` block replaces `defaults.autoApprove`
-  entirely.
+- A configure rule with an `auto_approve:` block replaces `defaults.autoApprove`
+  entirely for its repositories.
 - Fields left out of a block take PRBar's **shipped** values for that block, not
   the values in `defaults:`.
 
 ```yaml
+# prbar.yaml
 defaults:
   autoApprove:
     enabled: true
     minConfidence: 0.9
     maxAdditions: 500
+```
 
-repos:
-  - repoGlobs: [acme/web]
-    autoApprove:
-      enabled: true
-      # minConfidence is 0.85 and maxAdditions is 200 here: the shipped values,
-      # not 0.9 / 500 from defaults. Repeat them if you want them.
+```yaml
+# rules/configure/20-web.yaml
+name: web
+rule:
+  match:
+    - condition: repo.full_name == "acme/web"
+      output:
+        rule: web
+        auto_approve:
+          enabled: true
+          # min_confidence is 0.85 and max_additions is 200 here: the shipped
+          # values, not 0.9 / 500 from defaults. Repeat them if you want them.
 ```
 
 This is deliberate: half-inherited gates on something that approves PRs on GitHub
 are too easy to misread. Each block shows exactly what applies.
 
-The app writes only the fields of a block that differ from the shipped values, but
-always writes `enabled` (or `action` for `autoDeny`), so a block is never empty.
-
 ### How lists combine
 
-- **`excludeTitlePatterns` combines:** the repository's patterns are **added** to
-  the ones in `defaults:`. To exempt one repository from a pattern in `defaults:`,
-  add the same pattern prefixed with `!` to its rule (`"!chore: bump *"`).
-- **`agentEnvironment` merges key by key:** a repository's variables are applied on
-  top of the ones in `defaults:`. A key written as `!NAME` removes an inherited
+- **`excludeTitlePatterns` combines:** a rule's `exclude_title_patterns` are
+  **added** to the ones in `defaults:`. To exempt a repository from a pattern in
+  `defaults:`, add the same pattern prefixed with `!` (`"!chore: bump *"`).
+- **`agentEnvironment` merges key by key:** a rule's `agent_environment` is applied
+  on top of the one in `defaults:`. A key written as `!NAME` removes an inherited
   variable.
-- **Every other list** (`rootPatterns`, `repoGlobs`) belongs to the rule and is
-  not inherited.
+- **Every other list** (`root_patterns`) belongs to the rule and is not inherited.
 
 ### Settings that use a value for "off"
 
 Two settings need a value that means "off", because leaving the key out already
 means "inherit":
 
-- `collapseAboveSubreviewCount: 0` turns collapsing off.
+- `collapseAboveSubreviewCount: 0` (`collapse_above_subreview_count: 0` in a
+  rule) turns collapsing off.
 - `customSystemPrompt: ""` means no custom prompt.
+
+## Which repositories: `repositories:`
+
+Three lists of repository patterns (`owner/repo` globs, a later pattern winning,
+`!` leaving one out). They are permissions rather than review settings, so they
+stay in this file, where they can be read at a glance:
+
+```yaml
+repositories:
+  triage: ["acme/*", "me/*"]     # review requests PRBar triages; leave out for all
+  hide: ["*/infra-*"]            # never shown in PRBar
+  trustRules: ["acme/monorepo"]  # whose own .prbar/rules are read
+```
+
+- **`triage`**: PRBar reviews review requests only from these. Leave it out to
+  triage every repository.
+- **`hide`**: these never appear in PRBar at all.
+- **`trustRules`**: these repositories' own rules, `.prbar/rules/` on their
+  default branch, decide between your rules and your settings. They decide what
+  is posted under your name, so list only repositories whose maintainers you
+  trust. See [rules.md](rules.md#repository-rules-one-policy-for-a-team).
+
+Settings → Review defaults edits them, one pattern per line.
 
 ## Top-level keys
 
 | Key | Meaning |
 |---|---|
 | `version` | File format version, currently `1`. A file with a newer version than this PRBar understands is refused rather than half-read. |
-| `defaultProvider` | `auto`, `claude` or `codex`. `auto` picks claude when it's installed, else codex. Missing means `auto`. A repo's `providerOverride` wins. |
-| `defaultClaudeModel`, `defaultCodexModel` | Passed as `--model`. Missing means PRBar's default (`sonnet` for claude; none for codex). `""` passes no flag, so the CLI's own configured default applies. A repo's `claudeModelOverride` / `codexModelOverride` wins. |
+| `defaultProvider` | `auto`, `claude` or `codex`. `auto` picks claude when it's installed, else codex. Missing means `auto`. A configure rule's `provider` wins. |
+| `defaultClaudeModel`, `defaultCodexModel` | Passed as `--model`. Missing means PRBar's default (`sonnet` for claude; none for codex). `""` passes no flag, so the CLI's own configured default applies. A configure rule's `claude_model` / `codex_model` wins. |
 | `defaultClaudeEffort`, `defaultCodexEffort` | Same, for effort. Missing or `""` passes no flag. |
 | `defaults` | Review settings for every repository (see above). |
-| `repos` | Repo rules, first match wins (see above). |
+| `repositories` | Which repositories PRBar triages, hides, and reads rules from (see above). |
 | `agents` | What coding agents may do through `prbar-review mcp` (see below). |
 
-The review settings themselves (`defaults:` keys, and the same keys in a repo rule)
-are the fields of
-[`ReviewDefaults`](../Sources/PRBarCore/Models/ReviewDefaults.swift) and
-[`RepoConfig`](../Sources/PRBarCore/Models/RepoConfig.swift), each with a comment
-explaining it. A few keys exist only on repo rules: `repoGlobs` (required),
-`excluded`, `rootPatterns`, `providerOverride`, the model and effort overrides, and
-`skipMergeConfirmation`. The name `toolMode` in `defaults:` is
-`toolModeOverride` in a repo rule.
+The review settings in `defaults:` are the fields of
+[`ReviewDefaults`](../Sources/PRBarCore/Models/ReviewDefaults.swift), each with a
+comment explaining it. A configure rule sets the same settings in snake case
+(`maxCostUsdPerSubreview` is `max_cost_usd_per_subreview`), plus a few that only
+make sense per repository: `root_patterns`, `provider`, the model and effort
+overrides, and `skip_merge_confirmation`. The JSON schema
+[`configure.schema.json`](schema/rules/configure.schema.json) lists every one.
 
 ## Rules
 
-Decisions the settings can't express live in rules: CEL policies in a directory
-of their own beside this file (`rules/`), never in `prbar.yaml`. When no rule
-matches, these settings decide. [rules.md](rules.md) is the guide.
-
-One setting here belongs to rules: **`trustRepoRules`** (off by default, in
-`defaults:` or a repo rule) lets a repository's own rules, `.prbar/rules/` on its
-default branch, decide between your rules and these settings. They decide what is
-posted under your name, so turn it on only for repositories whose maintainers you
-trust:
-
-```yaml
-repos:
-  - repoGlobs: [acme/monorepo]
-    trustRepoRules: true
-```
+Everything that differs per repository, and decisions the settings can't
+express, live in rules: CEL policies in a directory of their own beside this
+file (`rules/`), never in `prbar.yaml`. Settings → Rules edits and tries them.
+[rules.md](rules.md) is the guide.
 
 ## Coding agents: `agents:`
 

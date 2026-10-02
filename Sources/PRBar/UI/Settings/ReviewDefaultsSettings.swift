@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Settings → Review defaults: the app-level value of every setting a repo
-/// rule can override.
+/// Settings → Review defaults: which repositories PRBar handles, and the
+/// value of every setting a `configure` rule can change per repository.
 ///
 /// These used to exist only on a per-repo rule, which meant a user with no
 /// rule ran on compiled-in numbers with nothing in the UI to show them —
@@ -18,6 +18,29 @@ struct ReviewDefaultsSettings: View {
 
         Form {
             ConfigFileSection()
+
+            Section {
+                GlobListEditor(
+                    title: "Triage review requests from",
+                    placeholder: "Every repository",
+                    globs: Binding(
+                        get: { store.repositoryScope.triage ?? [] },
+                        set: { store.repositoryScope.triage = $0.isEmpty ? nil : $0 }))
+                GlobListEditor(
+                    title: "Never show",
+                    placeholder: "None",
+                    globs: $store.repositoryScope.hide)
+                GlobListEditor(
+                    title: "Read their own rules (.prbar/rules)",
+                    placeholder: "None",
+                    globs: $store.repositoryScope.trustRules)
+            } header: {
+                Text("Repositories")
+            } footer: {
+                Text("One pattern per line, like `acme/*`; a later line wins and `!acme/old` leaves one out. A repository's own rules decide what is posted under your name, so list only repositories whose maintainers you trust. How each repository is reviewed is set by configure rules in Settings → Rules.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Section {
                 ReviewSettingControls.costCap($store.defaults.maxCostUsdPerSubreview)
@@ -41,8 +64,6 @@ struct ReviewDefaultsSettings: View {
                 ReviewSettingControls.toolMode($store.defaults.toolMode)
                 Toggle("Always do a full review (ignore prior verdict)", isOn: $store.defaults.forceFullReview)
                     .help("When the PR head moves, retriages re-evaluate the whole diff with no incremental framing. Off keeps cost down but biases the AI toward judging only the increment.")
-                Toggle("Use the repository's own rules (.prbar/rules)", isOn: $store.defaults.trustRepoRules)
-                    .help("Read .prbar/rules/ from the repository's default branch and let it decide between your rules and these settings. Its rules decide what is posted under your name, so turn this on only for repositories whose maintainers you trust.")
             } header: {
                 Text("AI review")
             }
@@ -56,7 +77,7 @@ struct ReviewDefaultsSettings: View {
             } header: {
                 Text("Splitter")
             } footer: {
-                Text("Root patterns are the one splitter setting with no app-level default — a directory layout belongs to its repo. Set those per repo in Settings → Repositories.")
+                Text("Root patterns are the one splitter setting with no app-level default — a directory layout belongs to its repo. Set them per repository with `root_patterns` in a configure rule (Settings → Rules).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -172,5 +193,38 @@ struct ReviewDefaultsSettings: View {
             format: "The daily cap is $%.2f, so a subreview can never reach $%.2f. Raise the daily cap in %@.",
             dailyCapUsd, perSubreview, SettingsDestination.general.settingsPath
         )
+    }
+}
+
+/// A list of repository globs, one per line. The text is held locally and
+/// written back as the list on change: re-deriving it from the list would
+/// drop the newline just typed.
+private struct GlobListEditor: View {
+    let title: String
+    let placeholder: String
+    @Binding var globs: [String]
+    @State private var text = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $text)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 44, maxHeight: 80)
+                    .autocorrectionDisabled()
+                if text.isEmpty {
+                    Text(placeholder)
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 5)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .onAppear { text = globs.joined(separator: "\n") }
+        .onChange(of: text) { _, new in
+            let list = new.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            if list != globs { globs = list }
+        }
     }
 }

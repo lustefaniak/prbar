@@ -50,54 +50,32 @@ final class RepoConfigStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.file.path))
     }
 
-    func testUpsertPersistsAcrossInstances() throws {
+    func testRepositoryListsPersistAcrossInstances() throws {
         let p = try paths()
         let store1 = store(p)
-        var cfg = RepoConfig.default
-        cfg.repoGlobs = ["acme/infra"]
-        store1.upsert(cfg)
-        XCTAssertEqual(store1.userConfigs.count, 1)
-
-        let store2 = store(p)
-        XCTAssertEqual(store2.userConfigs.count, 1)
-        XCTAssertEqual(store2.userConfigs.first?.repoGlobs, ["acme/infra"])
+        store1.replace(with: {
+            var c = store1.config
+            c.repositories = RepositoryScope(triage: ["acme/*"], hide: ["acme/infra"])
+            return c
+        }())
+        XCTAssertEqual(store(p).config.repositories.hide, ["acme/infra"])
+        XCTAssertEqual(store(p).config.repositories.triage, ["acme/*"])
     }
 
-    func testRemoveDropsRule() throws {
+    /// `repos:` is refused until converted, and nothing Settings does may
+    /// write over it meanwhile: the config in effect is the shipped
+    /// defaults, so a save would erase the entries.
+    func testAReposKeyIsRefusedAndNeverOverwritten() throws {
         let p = try paths()
+        let old = "repos:\n  - repoGlobs: [acme/x]\n    reviewDrafts: true\n"
+        try ConfigFile.write(old, to: p.file)
         let s = store(p)
-        var cfg = RepoConfig.default
-        cfg.repoGlobs = ["acme/x"]
-        s.upsert(cfg)
-        s.remove(id: cfg.id)
+        XCTAssertTrue(s.needsConversion)
+        XCTAssertTrue(s.loadIssue?.contains("rules convert") == true, s.loadIssue ?? "")
 
-        XCTAssertEqual(store(p).userConfigs.count, 0)
-    }
-
-    func testEditRepoGlobsKeepsIdentityInMemory() throws {
-        let s = store(try paths())
-        var cfg = RepoConfig.default
-        cfg.repoGlobs = ["acme/x"]
-        s.upsert(cfg)
-
-        var renamed = cfg
-        renamed.repoGlobs = ["acme/y"]
-        s.upsert(renamed)
-
-        XCTAssertEqual(s.userConfigs.count, 1)
-        XCTAssertEqual(s.userConfigs.first?.id, cfg.id)
-        XCTAssertEqual(s.userConfigs.first?.repoGlobs, ["acme/y"])
-    }
-
-    func testSetAllPreservesOrder() throws {
-        let p = try paths()
-        let s = store(p)
-        var a = RepoConfig.default; a.repoGlobs = ["acme/a"]
-        var b = RepoConfig.default; b.repoGlobs = ["acme/b"]
-        var c = RepoConfig.default; c.repoGlobs = ["acme/c"]
-        s.setAll([c, a, b])
-
-        XCTAssertEqual(store(p).userConfigs.map(\.repoGlobs), [["acme/c"], ["acme/a"], ["acme/b"]])
+        s.defaults.maxCostUsdPerSubreview = 4
+        XCTAssertEqual(try String(contentsOf: p.file, encoding: .utf8), old)
+        XCTAssertTrue(s.loadIssue?.contains("Not saved") == true, s.loadIssue ?? "")
     }
 
     func testAgentDefaultsPersist() throws {
@@ -127,19 +105,24 @@ final class RepoConfigStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.defaults.toolMode, .minimal)
     }
 
-    func testResolveFoldsDefaultsIntoTheMatchingRule() throws {
-        let s = store(try paths())
+    func testResolveFoldsDefaultsIntoWhatTheRulesSet() throws {
+        let p = try paths()
+        let rules = p.file.deletingLastPathComponent().appendingPathComponent("rules/configure")
+        try FileManager.default.createDirectory(at: rules, withIntermediateDirectories: true)
+        try """
+            name: infra
+            rule:
+              match:
+                - condition: repo.full_name == "acme/infra"
+                  output: {rule: infra, review_timeout_seconds: 120}
+            """.write(to: rules.appendingPathComponent("10-infra.yaml"), atomically: true, encoding: .utf8)
+        let s = store(p)
         s.defaults.maxCostUsdPerSubreview = 6.0
         s.defaults.reviewTimeoutSeconds = 1200
 
-        var rule = RepoConfig.default
-        rule.repoGlobs = ["acme/infra"]
-        rule.reviewTimeoutSeconds = 120
-        s.upsert(rule)
-
         let matched = s.resolve(owner: "acme", repo: "infra")
-        XCTAssertEqual(matched.reviewTimeoutSeconds, 120, "rule overrides")
-        XCTAssertEqual(matched.maxCostUsdPerSubreview, 6.0, "rest inherits")
+        XCTAssertEqual(matched.reviewTimeoutSeconds, 120, "the rule sets it")
+        XCTAssertEqual(matched.maxCostUsdPerSubreview, 6.0, "rest from defaults")
 
         let unmatched = s.resolve(owner: "other", repo: "thing")
         XCTAssertEqual(unmatched.reviewTimeoutSeconds, 1200)
@@ -178,25 +161,21 @@ final class RepoConfigStoreTests: XCTestCase {
     func testOutsideEditIsPickedUpAndFiresOnChange() throws {
         let p = try paths()
         let s = store(p)
-        var rule = RepoConfig.default
-        rule.repoGlobs = ["acme/x"]
-        s.upsert(rule)
+        s.defaults.maxCostUsdPerSubreview = 4
         var fired = 0
         s.onChange = { fired += 1 }
 
         try ConfigFile.write("""
         defaults:
           maxCostUsdPerSubreview: 9
-        repos:
-          - repoGlobs: [acme/x]
-            reviewDrafts: true
+        repositories:
+          hide: [acme/x]
         """, to: p.file)
         s.reloadIfChanged()
 
         XCTAssertEqual(fired, 1)
         XCTAssertEqual(s.defaults.maxCostUsdPerSubreview, 9)
-        XCTAssertEqual(s.userConfigs.first?.reviewDrafts, true)
-        XCTAssertEqual(s.userConfigs.first?.id, rule.id, "same rule keeps its Settings identity")
+        XCTAssertTrue(s.resolve(owner: "acme", repo: "x").excluded)
         XCTAssertNil(s.loadIssue)
 
         // Nothing changed on disk: no reload, no churn.
@@ -269,10 +248,13 @@ final class RepoConfigStoreTests: XCTestCase {
         let s = store(p, legacy: legacy)
 
         XCTAssertTrue(s.migratedFromLegacy)
-        XCTAssertEqual(s.userConfigs.map(\.repoGlobs), [["acme/infra"], ["acme/web"]])
-        XCTAssertEqual(s.userConfigs.first?.maxCostUsdPerSubreview, 2)
-        XCTAssertEqual(s.userConfigs.first?.rootPatterns, ["kernel-*"])
-        XCTAssertEqual(s.userConfigs.last?.excluded, true)
+        // The repo rules became a configure rule beside the file.
+        let infra = s.resolve(owner: "acme", repo: "infra")
+        XCTAssertEqual(infra.maxCostUsdPerSubreview, 2)
+        XCTAssertEqual(infra.rootPatterns, ["kernel-*"])
+        XCTAssertTrue(s.resolve(owner: "acme", repo: "web").excluded)
+        XCTAssertEqual(s.config.repositories.hide, ["acme/web"])
+        XCTAssertFalse(try String(contentsOf: p.file, encoding: .utf8).contains("repos:"))
         XCTAssertEqual(s.defaults.reviewTimeoutSeconds, 900)
         XCTAssertEqual(s.defaultProvider, .codex)
         XCTAssertEqual(s.defaultClaudeModel, "")

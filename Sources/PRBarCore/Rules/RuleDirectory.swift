@@ -30,7 +30,7 @@ enum RuleDirectory {
         }
     }
 
-    static let stages = ["select", "decide"]
+    static let stages = ["select", "decide", "configure"]
 
     /// `$PRBAR_RULES`, else `rules/` beside the config file.
     static func url(
@@ -100,7 +100,8 @@ enum RuleDirectory {
         }
         let select = sources("select")
         let decide = sources("decide")
-        guard !select.isEmpty || !decide.isEmpty else { return nil }
+        let configure = sources("configure")
+        guard !select.isEmpty || !decide.isEmpty || !configure.isEmpty else { return nil }
         var lists: [String: [String]] = [:]
         if let text = files["lists.yaml"] {
             do {
@@ -111,7 +112,7 @@ enum RuleDirectory {
             }
         }
         do {
-            return try Rules.compile(select: select, decide: decide, lists: lists)
+            return try Rules.compile(select: select, decide: decide, configure: configure, lists: lists)
         } catch {
             throw Error.invalid(String(describing: error))
         }

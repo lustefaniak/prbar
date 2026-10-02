@@ -38,6 +38,8 @@ final class RulesWorkbench {
     var impactDays = 60
 
     private(set) var isEvaluating = false
+    /// What the last conversion of prbar.yaml's `repos:` did, in words.
+    private(set) var converted: String?
     /// The last request that failed, in words.
     private(set) var error: String?
 
@@ -60,6 +62,9 @@ final class RulesWorkbench {
         var replay: @Sendable (UUID, RuleDraft?) async throws -> RuleReplayResult
         var impact: @Sendable (RuleDraft, Int?) async throws -> RuleImpact
         var save: @Sendable (SaveRuleFileParams) async throws -> Void
+        var convert: @Sendable () async throws -> RulesConvert.Written = {
+            throw RPCError(code: RPCError.refused, message: "not available")
+        }
     }
 
     init(call: Caller) {
@@ -83,6 +88,9 @@ final class RulesWorkbench {
             },
             save: { @MainActor params in
                 _ = try await session.call(.saveRuleFile, params, as: APIEmpty.self)
+            },
+            convert: { @MainActor in
+                try await session.call(.convertRepos, ConvertReposParams(), as: RulesConvert.Written.self)
             }))
     }
 
@@ -95,8 +103,9 @@ final class RulesWorkbench {
 
     private static func order(_ path: String) -> String {
         if path == "lists.yaml" { return "0" }
-        if path.hasPrefix("select/") { return "1" + path }
-        return "2" + path
+        if path.hasPrefix("configure/") { return "1" + path }
+        if path.hasPrefix("select/") { return "2" + path }
+        return "3" + path
     }
 
     func text(_ path: String) -> String {
@@ -108,6 +117,9 @@ final class RulesWorkbench {
     }
 
     var hasEdits: Bool { paths.contains(where: isEdited) }
+
+    /// Whether the file exists on disk, so it can be opened elsewhere.
+    func isSaved(_ path: String) -> Bool { saved[path] != nil }
 
     /// The unsaved edits, as the server evaluates them.
     var draft: RuleDraft? {
@@ -170,9 +182,25 @@ final class RulesWorkbench {
         if path == "lists.yaml" {
             return "# Named lists of logins, read in rules as lists.<name>.\nteam: []\n"
         }
-        let stage = path.hasPrefix("select/") ? "select" : "decide"
+        let stage = path.split(separator: "/").first.map(String.init) ?? "decide"
         let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-        let schema = "# yaml-language-server: $schema=\(RuleSchema.url(stage == "select" ? .select : .decide))\n"
+        let file = RuleSchema.File(rawValue: stage) ?? .decide
+        let schema = "# yaml-language-server: $schema=\(RuleSchema.url(file))\n"
+        if stage == "configure" {
+            return schema + """
+                # Settings for some repositories; what this doesn't set comes
+                # from Review defaults. `repo.full_name`, `repo.owner`, `repo.name`.
+                name: \(name)
+                rule:
+                  match:
+                    - condition: glob(repo.full_name, "my-org/*")
+                      output:
+                        rule: \(name)
+                        max_cost_usd_per_subreview: 2
+                        review_drafts: false
+
+                """
+        }
         if stage == "select" {
             return schema + """
                 name: \(name)
@@ -196,6 +224,19 @@ final class RulesWorkbench {
                     action: share
 
             """
+    }
+
+    /// Turns prbar.yaml's `repos:` into a configure rule.
+    func convert() async {
+        do {
+            let written = try await call.convert()
+            converted = "Converted \(written.entries) repos: entries into \(written.rulePath). Each of the \(written.checked.count) repositories PRBar has seen resolves to the same settings as before. The old prbar.yaml is kept as \(written.backupPath)."
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+            return
+        }
+        await load()
     }
 
     // MARK: - evaluation

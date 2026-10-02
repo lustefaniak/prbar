@@ -85,7 +85,7 @@ extension Rules {
         if let failure {
             trace = RuleTrace(policies: [RuleTrace.Policy(path: "", conditions: [], result: .error(failure))])
         } else {
-            trace = Self.trace(decide, facts, paths: sources.dropFirst(select.count).map(\.path)) { Self.describe($0) }
+            trace = Self.trace(decide, facts, paths: sources.dropFirst(select.count).prefix(decide.count).map(\.path)) { Self.describe($0) }
         }
         trace.below = facts.below.map(Self.describe)
         return trace

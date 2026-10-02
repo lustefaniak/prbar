@@ -1,19 +1,25 @@
 # Writing rules
 
-Rules decide two things PRBar otherwise takes from the per-repository settings
-in `prbar.yaml`: **whether to review a pull request**, and **what to post once
-the review is in**. The settings can say "auto-approve in this repository"; a
-rule can say "approve when everyone who pushed is on the trusted list, CI
-passed, nothing sensitive changed and the review found nothing worse than a
-suggestion".
+Rules decide three things on top of the review defaults in `prbar.yaml`: **how
+each repository is reviewed** (`configure`), **whether to review a pull
+request** (`select`), and **what to post once the review is in** (`decide`).
+The defaults can say "auto-approve"; a configure rule can say "but not in
+acme/docs"; a decide rule can say "approve when everyone who pushed is on the
+trusted list, CI passed, nothing sensitive changed and the review found nothing
+worse than a suggestion".
 
 Rules are written in [CEL](https://github.com/google/cel-spec), the expression
 language Kubernetes and Google Cloud use for policies, in the YAML policy format
 of [cel-go](https://github.com/cel-expr/cel-go). They are optional: with no
-rules, PRBar does exactly what `prbar.yaml` says.
+rules, every repository is reviewed with the defaults in `prbar.yaml`.
+
+The quickest way to start is **Settings → Rules** in the app: pick a PR to see
+what decides it now, add a rule with `+`, and see what it changes before you
+save ([Trying rules in PRBar](#trying-rules-in-prbar-settings--rules)).
 
 - [Your first rule](#your-first-rule)
 - [How a decision is made](#how-a-decision-is-made)
+- [configure: settings per repository](#configure-settings-per-repository)
 - [Writing conditions](#writing-conditions)
 - [Editor support: the JSON schemas](#editor-support-the-json-schemas)
 - [Working on rules: check, explain, history, replay](#working-on-rules-check-explain-history-replay)
@@ -27,8 +33,9 @@ rules, PRBar does exactly what `prbar.yaml` says.
 ## Your first rule
 
 Rules live in a directory of their own beside `prbar.yaml`:
-`~/.config/prbar/rules/`, or wherever `$PRBAR_RULES` points. PRBar never writes
-there, so your comments and layout stay as you wrote them.
+`~/.config/prbar/rules/`, or wherever `$PRBAR_RULES` points. PRBar writes there
+only when you save a file in Settings → Rules or run `rules convert`, so your
+comments and layout stay as you wrote them.
 
 **1. Write a policy.** Skip pull requests that only touch documentation:
 
@@ -103,6 +110,8 @@ review requested ─▶ select ──review──▶ AI review ─▶ decide ─
 ```
 rules/
   lists.yaml               # named lists: trusted: [alice, bob]
+  configure/               # settings per repository
+    50-repos.yaml
   select/                  # whether to review
     10-bots.yaml
     20-docs.yaml
@@ -111,7 +120,7 @@ rules/
     90-share.yaml
 ```
 
-For each stage:
+For `select` and `decide`:
 
 1. The stage's files run **in file name order**; within a file, the `match`
    entries run top to bottom.
@@ -119,6 +128,9 @@ For each stage:
 3. **When nothing matches, the settings in `prbar.yaml` decide**, exactly as
    they did before you had rules. So rules can take over one case at a time: a
    rule for bots, a rule for docs, the settings for everything else.
+
+`configure` works differently, since it sets values rather than deciding one
+thing: see the next section.
 
 ### Adjusting the settings instead of restating them: `below`
 
@@ -151,6 +163,61 @@ A `select` rule's `review` overrides the settings that would skip (drafts, AI
 review off, title patterns). Two checks still follow it, because they only stop
 a repeat: a review that already failed at this commit, and a verdict some PRBar
 already posted for this commit.
+
+## configure: settings per repository
+
+Everything that used to be a `repos:` entry in `prbar.yaml` is a configure
+rule: how a repository's PRs are split, which model reviews them, the budgets,
+the auto-approve, auto-deny and share gates, drafts, title patterns. Conditions
+see the repository only: `repo.full_name`, `repo.owner`, `repo.name`, and
+`lists`.
+
+```yaml
+# rules/configure/10-monorepo.yaml
+name: monorepo
+rule:
+  match:
+    - condition: repo.full_name == "acme/monorepo"
+      output:
+        rule: monorepo
+        split_mode: perSubfolder
+        root_patterns: [services/*/, lib/*/]
+        max_cost_usd_per_subreview: 3
+        exclude_title_patterns: ["[Prod deploy]*"]
+    - condition: glob(repo.full_name, "acme/*")
+      output:
+        rule: acme
+        auto_approve:
+          enabled: true
+          max_additions: 400
+```
+
+- **Within a file, the first match applies**, like the other stages.
+- **Every file applies**, in name order, and a later file's fields replace an
+  earlier one's. So one file can hold the layout of each repository and another
+  the budgets for all of them.
+- **What no rule sets comes from the defaults** in `prbar.yaml`, then PRBar's
+  shipped default.
+- The gate blocks (`auto_approve`, `auto_deny`, `resolve_threads`) replace the
+  defaults' block as a whole: a field left out takes its shipped value.
+- A configure rule that fails to evaluate turns posting off for that
+  repository: what it would have set may have been what kept a post back.
+
+Every field, with what it does, is in
+[`configure.schema.json`](schema/rules/configure.schema.json), which your editor
+uses to complete them. In PRBar, picking a PR in Settings → Rules shows the
+settings its repository gets and which rules set them.
+
+Which repositories PRBar triages at all, hides, and reads repository rules from
+are lists in `prbar.yaml` instead (`repositories:`, see
+[configuration.md](configuration.md#which-repositories-repositories)): they are
+permissions, not review settings.
+
+**Converting from `repos:`.** A `prbar.yaml` that still has `repos:` is refused
+until converted. The Convert button in Settings → Rules, or
+`prbar-review rules convert`, writes them as `rules/configure/50-repos.yaml` in
+their order, after checking that every repository PRBar has seen resolves to the
+same settings as before; `--dry-run` prints the rule without writing.
 
 ## Writing conditions
 
@@ -267,6 +334,7 @@ its kind:
 ```
 # yaml-language-server: $schema=https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/select.schema.json
 # yaml-language-server: $schema=https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/decide.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/configure.schema.json
 # yaml-language-server: $schema=https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/lists.schema.json
 ```
 
@@ -276,11 +344,12 @@ Or map them once in VS Code's settings and skip the line:
 "yaml.schemas": {
   "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/select.schema.json": "**/prbar/rules/select/*.yaml",
   "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/decide.schema.json": "**/prbar/rules/decide/*.yaml",
+  "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/configure.schema.json": "**/prbar/rules/configure/*.yaml",
   "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/lists.schema.json": "**/prbar/rules/lists.yaml"
 }
 ```
 
-`prbar-review rules schema select|decide|lists` prints the schema of the
+`prbar-review rules schema select|decide|configure|lists` prints the schema of the
 version you run, for offline use. The schema covers the file's shape and the
 outputs; the conditions are CEL, which it can't check, so `rules check` stays
 the final word.
@@ -292,8 +361,10 @@ what it does before it decides anything:
 
 - **The files** of your rules directory, by stage, with an editor. A new file
   (`+`) starts from a rule that compiles. An edit is held unsaved, and the dot
-  beside the file name says so.
-- **Try on** a PR from your inbox, or a recent recorded decision. Every
+  beside the file name says so. **Open in Editor** opens a saved file in your
+  editor, where the JSON schema completes it; saves there show in the tab.
+- **Try on** a PR from your inbox, or a recent recorded decision. The settings
+  its repository gets come first, with the configure rules that set them. Every
   condition is shown with whether it held, each part of it, and the facts it
   read, for each layer of rules, with what `below` was for that layer. This
   is `rules explain` as a tree, and it is evaluated against your unsaved edits
@@ -388,10 +459,12 @@ A repository can keep rules for everyone who reviews it with PRBar, in
 trust that repository in `prbar.yaml`:
 
 ```yaml
-repos:
-  - repoGlobs: [acme/monorepo]
-    trustRepoRules: true
+repositories:
+  trustRules: [acme/monorepo]
 ```
+
+Its `configure/` files are not read: how a repository is reviewed on your
+machine (the model, the budgets) stays yours to set.
 
 They sit between your rules and the settings:
 
@@ -686,9 +759,17 @@ Posts wait out the same 30-second undo window as the settings' auto-reviews.
   until they do (every `decide` answers "nothing"). PRBar still reviews.
 - Evaluation is bounded: a cost limit, and one second per decision.
 
+### `configure`: settings per repository
+
+Runs whenever a repository's settings are needed, with `repo` and `lists` as
+facts. Its output fields are the settings; see
+[configure: settings per repository](#configure-settings-per-repository) and the
+[schema](schema/rules/configure.schema.json).
+
 ## Reference: facts
 
-Field names are snake case. `select` sees `pr`, `trigger`, `viewer`, `lists`
+Field names are snake case. `configure` sees `repo` (`owner`, `name`,
+`full_name`) and `lists`. `select` sees `pr`, `trigger`, `viewer`, `lists`
 and `now`; `decide` sees the same with `review` in place of `trigger`. Using
 `review` in a select rule is a load error, since no review exists yet.
 

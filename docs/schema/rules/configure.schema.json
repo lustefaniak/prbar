@@ -1,0 +1,448 @@
+{
+  "$id" : "https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/configure.schema.json",
+  "$schema" : "http://json-schema.org/draft-07/schema#",
+  "additionalProperties" : false,
+  "definitions" : {
+    "match" : {
+      "additionalProperties" : false,
+      "oneOf" : [
+        {
+          "required" : [
+            "output"
+          ]
+        },
+        {
+          "required" : [
+            "rule"
+          ]
+        }
+      ],
+      "properties" : {
+        "condition" : {
+          "description" : "A CEL expression that is true or false. The first match whose condition holds decides; a match without one always does. Facts and functions: https://github.com/lustefaniak/prbar/blob/main/docs/rules.md#reference-facts",
+          "type" : "string"
+        },
+        "explanation" : {
+          "type" : "string"
+        },
+        "output" : {
+          "description" : "What this rule decides, as YAML fields, or as a quoted CEL expression for an output that has to be computed.",
+          "oneOf" : [
+            {
+              "$ref" : "#/definitions/output"
+            },
+            {
+              "description" : "A CEL map with the same fields, for an output that has to be computed: '{\"rule\": \"x\", \"action\": <a CEL expression>}'.",
+              "type" : "string"
+            }
+          ]
+        },
+        "rule" : {
+          "$ref" : "#/definitions/rule",
+          "description" : "Rules that apply only when this match's condition holds; when none of them matches, evaluation goes on after this match."
+        }
+      },
+      "type" : "object"
+    },
+    "output" : {
+      "additionalProperties" : false,
+      "description" : "What this rule decides.",
+      "properties" : {
+        "agent_environment" : {
+          "additionalProperties" : {
+            "type" : "string"
+          },
+          "description" : "Extra environment variables for the reviewing agent, added to the default ones; a `!NAME` key drops one.",
+          "type" : "object"
+        },
+        "ai_review_enabled" : {
+          "description" : "Whether PRBar reviews this repository's PRs at all.",
+          "type" : "boolean"
+        },
+        "auto_approve" : {
+          "additionalProperties" : false,
+          "description" : "When PRBar approves on its own. Replaces the default block as a whole: a field left out takes its shipped value, not the default block's.",
+          "properties" : {
+            "allow_approve_with_notes" : {
+              "description" : "Approve a review whose verdict is 'comment' too.",
+              "type" : "boolean"
+            },
+            "claude_min_confidence" : {
+              "description" : "The floor for claude's reviews, when it differs.",
+              "minimum" : 0,
+              "type" : "number"
+            },
+            "codex_min_confidence" : {
+              "description" : "The floor for codex's reviews, when it differs.",
+              "minimum" : 0,
+              "type" : "number"
+            },
+            "enabled" : {
+              "description" : "Approve on its own when every gate below passes.",
+              "type" : "boolean"
+            },
+            "max_additions" : {
+              "description" : "At most this many added lines; 0 for no cap. Default 200.",
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "max_annotation_severity" : {
+              "description" : "No finding may be worse than this. Default suggestion.",
+              "enum" : [
+                "info",
+                "suggestion",
+                "warning",
+                "blocker",
+                "severity.info",
+                "severity.suggestion",
+                "severity.warning",
+                "severity.blocker"
+              ],
+              "type" : "string"
+            },
+            "max_annotations" : {
+              "description" : "At most this many findings; 0 for no cap.",
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "max_changed_files" : {
+              "description" : "At most this many changed files; 0 for no cap.",
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "max_deletions" : {
+              "description" : "At most this many deleted lines; 0 for no cap.",
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "min_confidence" : {
+              "description" : "The review's confidence must be at least this. Default 0.85.",
+              "minimum" : 0,
+              "type" : "number"
+            },
+            "post_attribution_comment" : {
+              "description" : "Approve with a one-line body naming PRBar.",
+              "type" : "boolean"
+            },
+            "post_inline_annotations" : {
+              "description" : "Post the findings inline with the approval.",
+              "type" : "boolean"
+            }
+          },
+          "type" : "object"
+        },
+        "auto_deny" : {
+          "additionalProperties" : false,
+          "description" : "When PRBar pushes back on its own. Replaces the default block as a whole.",
+          "properties" : {
+            "action" : {
+              "description" : "What a pushback posts: nothing, a flag in PRBar, a comment, or a request for changes.",
+              "enum" : [
+                "off",
+                "flag_only",
+                "comment",
+                "request_changes"
+              ],
+              "type" : "string"
+            },
+            "claude_min_confidence" : {
+              "description" : "The floor for claude's reviews, when it differs.",
+              "minimum" : 0,
+              "type" : "number"
+            },
+            "codex_min_confidence" : {
+              "description" : "The floor for codex's reviews, when it differs.",
+              "minimum" : 0,
+              "type" : "number"
+            },
+            "max_additions" : {
+              "description" : "Only PRs with at most this many added lines; 0 for no cap.",
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "min_confidence" : {
+              "description" : "The review's confidence must be at least this. Default 0.85.",
+              "minimum" : 0,
+              "type" : "number"
+            },
+            "min_matching_annotations" : {
+              "description" : "At least this many such findings. Default 1.",
+              "minimum" : 0,
+              "type" : "integer"
+            },
+            "post_inline_annotations" : {
+              "description" : "Post the findings inline with it. Default on.",
+              "type" : "boolean"
+            },
+            "required_severity" : {
+              "description" : "Findings counted are at least this bad. Default warning.",
+              "enum" : [
+                "info",
+                "suggestion",
+                "warning",
+                "blocker",
+                "severity.info",
+                "severity.suggestion",
+                "severity.warning",
+                "severity.blocker"
+              ],
+              "type" : "string"
+            }
+          },
+          "type" : "object"
+        },
+        "churn_history_depth" : {
+          "description" : "How many commits of history the risk brief reads.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "churn_window_days" : {
+          "description" : "How far back the risk brief counts a file's recent changes.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "claude_effort" : {
+          "description" : "claude's --effort: low, medium, high, xhigh or max.",
+          "type" : "string"
+        },
+        "claude_model" : {
+          "description" : "claude's --model, such as sonnet or opus.",
+          "type" : "string"
+        },
+        "codex_effort" : {
+          "description" : "codex's reasoning effort: none, minimal, low, medium, high or xhigh.",
+          "type" : "string"
+        },
+        "codex_model" : {
+          "description" : "codex's --model.",
+          "type" : "string"
+        },
+        "collapse_above_subreview_count" : {
+          "description" : "More subreviews than this become one review of the whole PR; 0 turns that off.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "custom_system_prompt" : {
+          "description" : "Added to the review prompt; an empty string for none.",
+          "type" : "string"
+        },
+        "exclude_title_patterns" : {
+          "description" : "PRs whose title matches are not reviewed. Added to the default patterns; `!pattern` drops one.",
+          "items" : {
+            "type" : "string"
+          },
+          "type" : "array"
+        },
+        "force_full_review" : {
+          "description" : "Review the whole PR again on every push, rather than what changed since the last review.",
+          "type" : "boolean"
+        },
+        "max_cost_usd_per_subreview" : {
+          "description" : "A review that would cost more is stopped.",
+          "minimum" : 0,
+          "type" : "number"
+        },
+        "max_parallel_subreviews" : {
+          "description" : "Subreviews of one PR run at most this many at a time.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "max_tool_calls_per_subreview" : {
+          "description" : "A soft cap on the agent's tool calls in one review.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "min_files_per_subreview" : {
+          "description" : "Fewer changed files than this in a subfolder fold it into the root review.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "notify_policy" : {
+          "description" : "When PRBar tells you a PR is ready for you: as each is ready, or once the inbox settles.",
+          "enum" : [
+            "eachReady",
+            "batchSettled"
+          ],
+          "type" : "string"
+        },
+        "provider" : {
+          "description" : "The agent that reviews: claude or codex.",
+          "enum" : [
+            "claude",
+            "codex"
+          ],
+          "type" : "string"
+        },
+        "replace_base_system_prompt" : {
+          "description" : "Use custom_system_prompt instead of PRBar's prompt, not beside it.",
+          "type" : "boolean"
+        },
+        "resolve_threads" : {
+          "additionalProperties" : false,
+          "description" : "Resolve PRBar's own threads whose finding is gone and the author replied to.",
+          "properties" : {
+            "enabled" : {
+              "description" : "Resolve threads PRBar opened once their finding is gone.",
+              "type" : "boolean"
+            },
+            "min_confidence" : {
+              "description" : "Only after a review at least this confident. Default 0.85.",
+              "minimum" : 0,
+              "type" : "number"
+            }
+          },
+          "type" : "object"
+        },
+        "review_drafts" : {
+          "description" : "Review draft PRs too.",
+          "type" : "boolean"
+        },
+        "review_timeout_seconds" : {
+          "description" : "A review running longer is stopped.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "risk_brief_enabled" : {
+          "description" : "Give the review a reading order of the riskiest files.",
+          "type" : "boolean"
+        },
+        "root_patterns" : {
+          "description" : "Subfolder patterns for perSubfolder, like `kernel-*/`.",
+          "items" : {
+            "type" : "string"
+          },
+          "type" : "array"
+        },
+        "rule" : {
+          "description" : "The rule's id, shown in `rules explain` with the settings it set.",
+          "type" : "string"
+        },
+        "share_findings" : {
+          "description" : "When neither gate fires, post the findings at or above this level as a comment review with no verdict.",
+          "enum" : [
+            "off",
+            "warnings_and_blockers",
+            "all_findings"
+          ],
+          "type" : "string"
+        },
+        "share_max_comments" : {
+          "description" : "At most this many inline comments in one share, worst first.",
+          "minimum" : 0,
+          "type" : "integer"
+        },
+        "share_min_confidence" : {
+          "description" : "Findings are shared only from a review at least this confident.",
+          "minimum" : 0,
+          "type" : "number"
+        },
+        "skip_ai_if_reviewed_by_others" : {
+          "description" : "Don't review a PR someone else already approved or requested changes on.",
+          "type" : "boolean"
+        },
+        "skip_merge_confirmation" : {
+          "description" : "Merge from PRBar without asking first.",
+          "type" : "boolean"
+        },
+        "split_mode" : {
+          "description" : "One review for the whole PR, or one per subfolder that matches root_patterns. perSubfolder: One review per subfolder that matches root_patterns. single: One review of the whole diff.",
+          "enum" : [
+            "perSubfolder",
+            "single"
+          ],
+          "type" : "string"
+        },
+        "tool_mode" : {
+          "description" : "What the reviewing agent may use: a sandboxed checkout, read-only tools, or none.",
+          "enum" : [
+            "sandboxed",
+            "minimal",
+            "none"
+          ],
+          "type" : "string"
+        },
+        "unmatched_strategy" : {
+          "description" : "What happens to changes outside every root pattern.",
+          "enum" : [
+            "reviewAtRoot",
+            "skipReview",
+            "groupAsOther"
+          ],
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "rule"
+      ],
+      "type" : "object"
+    },
+    "rule" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "description" : {
+          "type" : "string"
+        },
+        "id" : {
+          "type" : "string"
+        },
+        "match" : {
+          "description" : "Tried top to bottom; the first whose condition holds decides.",
+          "items" : {
+            "$ref" : "#/definitions/match"
+          },
+          "type" : "array"
+        },
+        "variables" : {
+          "description" : "Named sub-expressions, read in conditions as variables.<name>.",
+          "items" : {
+            "$ref" : "#/definitions/variable"
+          },
+          "type" : "array"
+        }
+      },
+      "required" : [
+        "match"
+      ],
+      "type" : "object"
+    },
+    "variable" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "description" : {
+          "type" : "string"
+        },
+        "expression" : {
+          "description" : "A CEL expression.",
+          "type" : "string"
+        },
+        "name" : {
+          "pattern" : "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "name",
+        "expression"
+      ],
+      "type" : "object"
+    }
+  },
+  "description" : "A policy in rules/configure/: how a repository's pull requests are reviewed. Conditions read `repo` (owner, name, full_name) and `lists`. Each file's first match applies, files in name order, a later file's fields replacing an earlier one's; what no rule sets comes from the review defaults in prbar.yaml. Guide: https://github.com/lustefaniak/prbar/blob/main/docs/rules.md",
+  "properties" : {
+    "description" : {
+      "type" : "string"
+    },
+    "name" : {
+      "description" : "The policy's name.",
+      "type" : "string"
+    },
+    "rule" : {
+      "$ref" : "#/definitions/rule"
+    }
+  },
+  "required" : [
+    "rule"
+  ],
+  "title" : "PRBar configure rules",
+  "type" : "object"
+}

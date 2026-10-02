@@ -172,23 +172,14 @@ final class ServerSessionTests: XCTestCase {
         let text = try String(contentsOf: runtime.repoConfigs.fileURL, encoding: .utf8)
         XCTAssertTrue(text.contains("maxCostUsdPerSubreview: 9"), text)
 
-        // Rule ids are UI identity: they survive the round trip, so the
-        // Settings selection does too.
-        var rule = RepoConfig.default
-        rule.repoGlobs = ["o/r"]
-        model.upsert(rule)
-        try await until { runtime.repoConfigs.userConfigs.first?.id == rule.id }
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(model.userConfigs.map(\.id), [rule.id])
-
-        try "repos:\n  - repoGlobs: [x/y]\n".write(to: runtime.repoConfigs.fileURL, atomically: true, encoding: .utf8)
+        try "repositories:\n  hide: [x/y]\n".write(to: runtime.repoConfigs.fileURL, atomically: true, encoding: .utf8)
         runtime.repoConfigs.reloadIfChanged()
-        try await until { model.userConfigs.map(\.repoGlobs) == [["x/y"]] }
+        try await until { model.config.repositories.hide == ["x/y"] }
 
-        try "repos: [broken".write(to: runtime.repoConfigs.fileURL, atomically: true, encoding: .utf8)
+        try "repositories: [broken".write(to: runtime.repoConfigs.fileURL, atomically: true, encoding: .utf8)
         runtime.repoConfigs.reloadIfChanged()
         try await until { model.loadIssue != nil }
-        XCTAssertEqual(model.userConfigs.map(\.repoGlobs), [["x/y"]], "a broken file keeps the config in effect")
+        XCTAssertEqual(model.config.repositories.hide, ["x/y"], "a broken file keeps the config in effect")
     }
 
     func testHistoryArrivesAsAppendsAndFullReviewsOnRequest() async throws {

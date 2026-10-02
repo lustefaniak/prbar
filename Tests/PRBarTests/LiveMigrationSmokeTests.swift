@@ -26,8 +26,8 @@ final class LiveMigrationSmokeTests: XCTestCase {
         try ConfigFile.write(yaml, to: out.appendingPathComponent("prbar.yaml"))
         let reloaded = try ConfigFile.decode(yaml)
         XCTAssertEqual(reloaded.warnings, [])
-        XCTAssertEqual(reloaded.config.repos.count, config.repos.count)
-        print("live-migration: config repos=\(config.repos.count) provider=\(config.defaultProvider) in \(Date().timeIntervalSince(t))s")
+        XCTAssertEqual(reloaded.config.defaults, config.defaults)
+        print("live-migration: config repos=\(config.legacyRepos.count) provider=\(config.defaultProvider) in \(Date().timeIntervalSince(t))s")
 
         t = Date()
         let history = out.appendingPathComponent("history")

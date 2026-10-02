@@ -79,7 +79,7 @@ final class CLIConfigTests: XCTestCase {
         for text in ["", "{}", "version: 1\n"] {
             let cfg = try decode(text)
             XCTAssertEqual(cfg.defaultProvider, .auto)
-            XCTAssertTrue(cfg.repos.isEmpty)
+            XCTAssertEqual(cfg.repositories, RepositoryScope())
             // The gates that post to GitHub stay off unless asked for.
             let resolved = cfg.resolver()("o", "r")
             XCTAssertFalse(resolved.autoApprove.enabled)
@@ -87,20 +87,21 @@ final class CLIConfigTests: XCTestCase {
         }
     }
 
-    func testRepoRuleOverridesDefaults() throws {
+    func testRepositoryListsApply() throws {
         let cfg = try decode("""
         defaults:
           aiReviewEnabled: true
-        repos:
-          - repoGlobs: [o/r]
-            aiReviewEnabled: false
+        repositories:
+          triage: ["o/*", "!o/r"]
+          hide: [o/hidden]
         """)
-        XCTAssertFalse(cfg.resolver()("o", "r").aiReviewEnabled, "repo rule should win")
-        XCTAssertTrue(cfg.resolver()("o", "other").aiReviewEnabled, "non-matching repo inherits")
+        XCTAssertFalse(cfg.resolver()("o", "r").aiReviewEnabled, "outside triage")
+        XCTAssertTrue(cfg.resolver()("o", "other").aiReviewEnabled)
+        XCTAssertTrue(cfg.resolver()("o", "hidden").excluded)
     }
 
     func testJSONStillLoads() throws {
-        let cfg = try decode(#"{"defaultProvider": "codex", "repos": [{"repoGlobs": ["o/r"], "excluded": true}]}"#)
+        let cfg = try decode(#"{"defaultProvider": "codex", "repositories": {"hide": ["o/r"]}}"#)
         XCTAssertEqual(cfg.defaultProvider, .codex)
         XCTAssertTrue(cfg.resolver()("o", "r").excluded)
     }
@@ -136,23 +137,22 @@ final class CLIConfigTests: XCTestCase {
           maxCostUsdPerSubreview: 2
           autoApprove:
             enabld: true
-        repos:
-          - repoGlobs: [o/r]
-            rootPattern: [x]
+        repositories:
+          trustRule: [o/r]
         """, to: url)
         let cfg = try CLIConfig.load(path: url.path, environment: [:], warn: { warnings.append($0) })
         XCTAssertEqual(cfg.defaults.maxCostUsdPerSubreview, 2)
         XCTAssertEqual(warnings.count, 3, "\(warnings)")
         XCTAssertTrue(warnings.contains { $0.contains("`defaultProvidr`") })
         XCTAssertTrue(warnings.contains { $0.contains("`defaults.autoApprove.enabld`") })
-        XCTAssertTrue(warnings.contains { $0.contains("`repos[0].rootPattern`") })
+        XCTAssertTrue(warnings.contains { $0.contains("`repositories.trustRule`") })
     }
 
     func testMalformedYAMLAndFutureVersionsAreErrors() {
         XCTAssertThrowsError(try decode("defaults: [unclosed"))
         XCTAssertThrowsError(try decode("- a\n- b\n"), "top level must be a mapping")
         XCTAssertThrowsError(try decode("version: 99\n"))
-        XCTAssertThrowsError(try decode("repos:\n  - excluded: true\n"), "repoGlobs is required")
+        XCTAssertThrowsError(try decode("repos:\n  - excluded: true\n"), "repos: moved to rules")
     }
 
     /// The file the app writes must read back to the same value, and must
@@ -168,15 +168,11 @@ final class CLIConfigTests: XCTestCase {
         cfg.defaults.autoDeny.action = .off
         cfg.defaults.excludeTitlePatterns = ["chore: bump *", "!keep: *"]
         cfg.defaults.agentEnvironment = ["CLAUDE_CONFIG_DIR": "~/.claude-work"]
-        var rule = RepoConfig(repoGlobs: ["o/*"], rootPatterns: ["lib/*"])
-        rule.shareFindings = .off
-        rule.autoApprove = AutoApproveConfig(enabled: true)
-        rule.customSystemPrompt = "Line one.\nLine two: with a colon."
-        cfg.repos = [rule]
+        cfg.defaults.customSystemPrompt = "Line one.\nLine two: with a colon."
+        cfg.repositories = RepositoryScope(triage: ["o/*"], trustRules: ["o/r"])
 
         cfg.defaults.shareMinConfidence = 0.65
-        rule.autoApprove?.minConfidence = 0.9
-        cfg.repos = [rule]
+        cfg.defaults.autoApprove.minConfidence = 0.9
 
         let text = try ConfigFile.encode(cfg)
         XCTAssertFalse(text.contains("id:"), "rule ids are UI identity, not file content")
@@ -185,9 +181,7 @@ final class CLIConfigTests: XCTestCase {
         XCTAssertFalse(text.contains("maxAnnotations"), "nested gates stay sparse too")
         XCTAssertFalse(text.contains("reviewTimeoutSeconds"), "unchanged defaults are not written")
 
-        var back = try ConfigFile.decode(text).config
-        XCTAssertEqual(back.repos.count, 1)
-        back.repos[0].id = rule.id
+        let back = try ConfigFile.decode(text).config
         XCTAssertEqual(back, cfg)
         XCTAssertTrue(try ConfigFile.decode(text).warnings.isEmpty)
     }
@@ -216,7 +210,7 @@ final class ExampleConfigTests: XCTestCase {
         XCTAssertEqual(cfg.defaultClaudeModel, "sonnet")
         XCTAssertEqual(cfg.defaultClaudeEffort, "")
 
-        let base = cfg.resolver()("some", "repo")
+        let base = cfg.resolver()("acme", "repo")
         XCTAssertEqual(base.toolMode, .sandboxed)
         XCTAssertEqual(base.splitMode, .perSubfolder)
         XCTAssertEqual(base.maxParallelSubreviews, 2)
@@ -234,17 +228,26 @@ final class ExampleConfigTests: XCTestCase {
         XCTAssertEqual(cfg.agents.merge, .off)
     }
 
-    func testExampleRepoRulesOverrideAndExclude() throws {
-        let cfg = try loadExample().config
+    func testExampleConfigureRulesAndRepositoryLists() throws {
+        var cfg = try loadExample().config
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        cfg.compiledRules = try RuleDirectory.load(root.appendingPathComponent("docs/rules.example"))
 
-        let cloud = cfg.resolver()("getsynq", "cloud")
-        XCTAssertEqual(cloud.providerOverride, .codex)
-        XCTAssertEqual(cloud.shareFindings, .allFindings, "repo rule should win over defaults")
-        XCTAssertEqual(cloud.collapseAboveSubreviewCount, 8)
-        XCTAssertEqual(cloud.rootPatterns, ["kernel-*", "lib/*", "dev-tools"])
-        XCTAssertEqual(cloud.maxParallelSubreviews, 2, "unset fields still inherit")
+        let monorepo = cfg.resolver()("acme", "monorepo")
+        XCTAssertEqual(monorepo.providerOverride, .codex)
+        XCTAssertEqual(monorepo.shareFindings, .allFindings, "the rule wins over defaults")
+        XCTAssertEqual(monorepo.collapseAboveSubreviewCount, 8)
+        XCTAssertEqual(monorepo.rootPatterns, ["kernel-*", "lib/*", "dev-tools"])
+        XCTAssertEqual(monorepo.maxParallelSubreviews, 2, "unset fields come from defaults")
+        XCTAssertTrue(monorepo.trustRepoRules)
 
-        XCTAssertTrue(cfg.resolver()("anyone", "infra-tools").excluded, "glob should match")
-        XCTAssertFalse(cfg.resolver()("anyone", "tools").excluded)
+        let mine = cfg.resolver()("me", "tool")
+        XCTAssertEqual(mine.splitMode, .single)
+        XCTAssertTrue(mine.autoApprove.enabled)
+        XCTAssertEqual(mine.autoApprove.maxAdditions, 100)
+
+        XCTAssertTrue(cfg.resolver()("acme", "infra-tools").excluded, "glob should match")
+        XCTAssertFalse(cfg.resolver()("acme", "tools").excluded)
+        XCTAssertFalse(cfg.resolver()("stranger", "repo").aiReviewEnabled, "outside triage")
     }
 }

@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/lustefaniak/prbar/main/docs/schema/rules/configure.schema.json
+#
+# Per-repository settings, beside prbar.yaml in rules/configure/. Each file's
+# first match applies; files run in name order and a later file's fields
+# replace an earlier one's. What no rule sets comes from `defaults`.
+name: repos
+rule:
+  match:
+    - condition: repo.full_name == "acme/monorepo"
+      output:
+        rule: monorepo
+        root_patterns: [kernel-*, lib/*, dev-tools]
+        provider: codex
+        collapse_above_subreview_count: 8
+        share_findings: all_findings
+    - condition: repo.owner == "me"
+      output:
+        rule: my-repos
+        split_mode: single
+        auto_approve:
+          enabled: true
+          max_additions: 100

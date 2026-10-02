@@ -632,7 +632,9 @@ struct RepoConfig: Sendable, Hashable, Codable {
     /// but biases the model toward judging only the increment. Flip on
     /// for repos where every retriage should re-evaluate the whole diff.
     var forceFullReview: Bool?
-    /// See `ReviewDefaults.trustRepoRules`.
+    /// Read the repository's own rules (`.prbar/rules/` on its default
+    /// branch). Set from `repositories.trustRules`; decoded here only from
+    /// the `repos:` entries the converter reads.
     var trustRepoRules: Bool?
 
     /// The rule used for any repo without one of its own: matches

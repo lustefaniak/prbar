@@ -25,6 +25,55 @@ enum ProviderChoice: String, Codable, Sendable, Hashable, CaseIterable {
     }
 }
 
+/// Which repositories PRBar handles, as glob lists (`owner/*`, `!owner/x`,
+/// later patterns winning). How their PRs are reviewed is up to the
+/// `configure` rules; these are the permissions above that.
+struct RepositoryScope: Sendable, Hashable, Codable {
+    /// Review requests PRBar triages. Nil: every repository.
+    var triage: [String]?
+    /// Repositories PRBar never shows.
+    var hide: [String] = []
+    /// Repositories whose own `.prbar/rules` are read, at their default
+    /// branch. They decide what is posted under your name.
+    var trustRules: [String] = []
+
+    init(triage: [String]? = nil, hide: [String] = [], trustRules: [String] = []) {
+        self.triage = triage
+        self.hide = hide
+        self.trustRules = trustRules
+    }
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case triage, hide, trustRules
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        triage = try c.decodeIfPresent([String].self, forKey: .triage)
+        hide = try c.decodeIfPresent([String].self, forKey: .hide) ?? []
+        trustRules = try c.decodeIfPresent([String].self, forKey: .trustRules) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(triage, forKey: .triage)
+        if !hide.isEmpty { try c.encode(hide, forKey: .hide) }
+        if !trustRules.isEmpty { try c.encode(trustRules, forKey: .trustRules) }
+    }
+
+    func triages(_ nameWithOwner: String) -> Bool {
+        triage.map { GlobMatcher.anyMatch($0, nameWithOwner) } ?? true
+    }
+
+    func hides(_ nameWithOwner: String) -> Bool {
+        GlobMatcher.anyMatch(hide, nameWithOwner)
+    }
+
+    func trustsRules(_ nameWithOwner: String) -> Bool {
+        GlobMatcher.anyMatch(trustRules, nameWithOwner)
+    }
+}
+
 /// Everything PRBar's review behaviour depends on, as one value — the
 /// contents of `prbar.yaml`. The menu-bar app and the `prbar-review` CLI
 /// read the same file into this type, so there is one configuration
@@ -48,7 +97,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
     var defaultCodexEffort: String?
 
     var defaults = ReviewDefaults()
-    var repos: [RepoConfig] = []
+    var repositories = RepositoryScope()
     /// What coding agents may do through `prbar-review mcp`.
     var agents = AgentPolicy()
     /// The rules directory (`RuleDirectory`), compiled by whoever loaded
@@ -56,6 +105,10 @@ struct PRBarConfig: Sendable, Hashable, Codable {
     /// prbar.yaml: not part of the file, not sent over the API, and never
     /// rewritten by Settings.
     var compiledRules: Rules?
+    /// Per-repository settings read from where they were kept before rules
+    /// (the SwiftData store), to be converted into a configure rule when
+    /// the file is first written. Never part of the file.
+    var legacyRepos: [RepoConfig] = []
 
     init() {}
 
@@ -63,7 +116,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         case version, defaultProvider
         case defaultClaudeModel, defaultClaudeEffort
         case defaultCodexModel, defaultCodexEffort
-        case defaults, repos, agents
+        case defaults, repositories, agents
     }
 
     init(from decoder: Decoder) throws {
@@ -75,7 +128,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         defaultCodexModel = try c.decodeIfPresent(String.self, forKey: .defaultCodexModel)
         defaultCodexEffort = try c.decodeIfPresent(String.self, forKey: .defaultCodexEffort)
         defaults = try c.decodeIfPresent(ReviewDefaults.self, forKey: .defaults) ?? ReviewDefaults()
-        repos = try c.decodeIfPresent([RepoConfig].self, forKey: .repos) ?? []
+        repositories = try c.decodeIfPresent(RepositoryScope.self, forKey: .repositories) ?? RepositoryScope()
         agents = try c.decodeIfPresent(AgentPolicy.self, forKey: .agents) ?? AgentPolicy()
     }
 
@@ -88,19 +141,27 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         try c.encodeIfPresent(defaultCodexModel, forKey: .defaultCodexModel)
         try c.encodeIfPresent(defaultCodexEffort, forKey: .defaultCodexEffort)
         if defaults != ReviewDefaults() { try c.encode(defaults, forKey: .defaults) }
-        if !repos.isEmpty { try c.encode(repos, forKey: .repos) }
+        if repositories != RepositoryScope() { try c.encode(repositories, forKey: .repositories) }
         if agents != AgentPolicy() { try c.encode(agents, forKey: .agents) }
     }
 
-    /// The rule that applies to a repository, without defaults folded in:
-    /// the first matching repo rule, else the built-in fallback. Settings
-    /// needs it unresolved to show which fields are overridden.
+    /// A repository's overrides of the review defaults: what the
+    /// `configure` rules set, with the `repositories:` lists applied.
     func rule(owner: String, repo: String) -> RepoConfig {
-        let nameWithOwner = "\(owner)/\(repo)"
-        if let rule = repos.first(where: { $0.matches(nameWithOwner: nameWithOwner) }) {
-            return rule
+        configured(owner: owner, repo: repo).config
+    }
+
+    func configured(owner: String, repo: String) -> Rules.Configured {
+        var configured = compiledRules?.configure(owner: owner, name: repo)
+            ?? Rules.Configured(config: .default, rules: [], error: nil)
+        let name = "\(owner)/\(repo)"
+        configured.config.excluded = repositories.hides(name)
+        if repositories.trustsRules(name) { configured.config.trustRepoRules = true }
+        if !repositories.triages(name) { configured.config.aiReviewEnabled = false }
+        if let error = configured.error {
+            PRBarLog.config.error("configure rule failed for \(name, privacy: .public): \(error, privacy: .public)")
         }
-        return RepoConfig.match(owner: owner, repo: repo)
+        return configured
     }
 
     func resolve(owner: String, repo: String) -> ResolvedRepoConfig {
@@ -108,9 +169,15 @@ struct PRBarConfig: Sendable, Hashable, Codable {
     }
 
     /// `resolve` as a snapshot closure, for the worker and the poller.
+    /// Each repository is resolved once per snapshot: the configure rules
+    /// see the repository alone, so its answer can't change until the
+    /// config or the rules do, and those hand out a new resolver.
     func resolver() -> @Sendable (String, String) -> ResolvedRepoConfig {
         let config = self
-        return { owner, repo in config.resolve(owner: owner, repo: repo) }
+        let cache = ResolutionCache()
+        return { owner, repo in
+            cache.value("\(owner)/\(repo)") { config.resolve(owner: owner, repo: repo) }
+        }
     }
 
     /// Push the agent defaults into a worker. Nil fields reset to the
@@ -123,5 +190,19 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         worker.defaultClaudeEffort = defaultClaudeEffort ?? ""
         worker.defaultCodexModel = defaultCodexModel ?? ""
         worker.defaultCodexEffort = defaultCodexEffort ?? ""
+    }
+}
+
+private final class ResolutionCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: ResolvedRepoConfig] = [:]
+
+    func value(_ key: String, _ make: () -> ResolvedRepoConfig) -> ResolvedRepoConfig {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = values[key] { return cached }
+        let made = make()
+        values[key] = made
+        return made
     }
 }

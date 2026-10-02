@@ -450,7 +450,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return popover.contentViewController?.view.window?.windowNumber ?? 0
         case .windowDetail:
             return screenshotWindow?.windowNumber ?? 0
-        case .settingsGeneral, .settingsReviewDefaults, .settingsRepositories, .settingsRules, .settingsDiagnostics:
+        case .settingsGeneral, .settingsReviewDefaults, .settingsRules, .settingsDiagnostics:
             // SwiftUI's Settings window may not exist immediately after
             // `openSettings(_:)` returns — the selector dispatches
             // asynchronously. Pick the first titled, visible, non-popover
@@ -493,9 +493,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openSettings(nil)
         case .settingsReviewDefaults:
             SettingsDestination.reviewDefaults.select()
-            openSettings(nil)
-        case .settingsRepositories:
-            SettingsDestination.repositories.select()
             openSettings(nil)
         case .settingsRules:
             SettingsDestination.rules.select()

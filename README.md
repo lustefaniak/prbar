@@ -39,11 +39,11 @@ For long diffs and detailed review reading. Same content as the popover, full si
 
 ### Settings
 
-| General | Review defaults | Repositories | Diagnostics |
-|---|---|---|---|
-| ![General](docs/screenshots/settings-general.png) | ![Review defaults](docs/screenshots/settings-review-defaults.png) | ![Repositories](docs/screenshots/settings-repositories.png) | ![Diagnostics](docs/screenshots/settings-diagnostics.png) |
+| General | Review defaults | Diagnostics |
+|---|---|---|
+| ![General](docs/screenshots/settings-general.png) | ![Review defaults](docs/screenshots/settings-review-defaults.png) | ![Diagnostics](docs/screenshots/settings-diagnostics.png) |
 
-Review defaults set the app-level value of every review setting; a repo rule overrides only what it needs and inherits the rest.
+Review defaults set the value of every review setting for every repository; `configure` rules in Settings → Rules change what differs per repository, and inherit the rest.
 
 ## How it works
 
@@ -174,10 +174,13 @@ the PR: it posts findings as a comment and never casts a verdict.
 
 ### Rules
 
-For decisions the per-repo settings can't express ("approve small PRs from these
-people", "never act on anything under `infra/` on its own", "skip dependency
-bumps from bots"), write rules: [CEL](https://github.com/google/cel-spec) policies
-in a `rules/` directory beside `prbar.yaml`, one stage per subdirectory:
+What differs per repository, and decisions the defaults can't express ("approve
+small PRs from these people", "never act on anything under `infra/` on its own",
+"skip dependency bumps from bots"), are rules: [CEL](https://github.com/google/cel-spec)
+policies in a `rules/` directory beside `prbar.yaml`, one stage per
+subdirectory: `configure/` (settings per repository), `select/` (whether to
+review) and `decide/` (what to post). Settings → Rules edits them and shows what
+an edit changes before you save it.
 
 ```yaml
 # ~/.config/prbar/rules/decide/10-trusted.yaml
@@ -192,8 +195,10 @@ rule:
         action: approve
 ```
 
-The first rule that matches decides; when none does, the settings above decide
-as before. Rules are checked when they load, with the file and line of any
+For `select` and `decide`, the first rule that matches decides; when none does,
+the defaults do. A `prbar.yaml` from an older version with per-repository
+`repos:` entries is converted with `prbar-review rules convert` (or the button in
+Settings → Rules). Rules are checked when they load, with the file and line of any
 mistake. `prbar-review rules check` validates them, `prbar-review rules explain
 <pr>` shows every condition evaluated for a PR with the facts it read, and every
 decision is recorded with its facts so `prbar-review rules replay <id> --watch`

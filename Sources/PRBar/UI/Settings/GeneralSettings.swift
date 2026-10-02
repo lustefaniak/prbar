@@ -93,7 +93,7 @@ struct GeneralSettings: View {
             } header: {
                 Text("AI provider")
             } footer: {
-                Text("App-wide default. \"Auto\" picks claude when it's installed, otherwise codex. A repo's `providerOverride` (Settings → Repositories) wins over this; PRDetailView's \"Re-run with…\" menu can override either for a single run. If a chosen provider isn't installed the review fails with a clear message — see Diagnostics for current status.")
+                Text("App-wide default. \"Auto\" picks claude when it's installed, otherwise codex. A configure rule's `provider` (Settings → Rules) wins over this for its repositories; PRDetailView's \"Re-run with…\" menu can override either for a single run. If a chosen provider isn't installed the review fails with a clear message — see Diagnostics for current status.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -120,7 +120,7 @@ struct GeneralSettings: View {
             } header: {
                 Text("Claude model & effort")
             } footer: {
-                Text("Applies to reviews that run on the claude provider. Defaults to \"sonnet\" so PRBar never inherits whatever model you last picked in an interactive claude session — that's what silently burns extra quota. A repo's override (Settings → Repositories) wins over this.")
+                Text("Applies to reviews that run on the claude provider. Defaults to \"sonnet\" so PRBar never inherits whatever model you last picked in an interactive claude session — that's what silently burns extra quota. A configure rule's `claude_model` (Settings → Rules) wins over this for its repositories.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -142,7 +142,7 @@ struct GeneralSettings: View {
             } header: {
                 Text("Codex model & effort")
             } footer: {
-                Text("Codex has no stable short model aliases the way claude does (sonnet/opus/haiku/fable) — this is a literal model id passed straight to --model. Leave blank to use whatever's in ~/.codex/config.toml. A repo's override (Settings → Repositories) wins over this.")
+                Text("Codex has no stable short model aliases the way claude does (sonnet/opus/haiku/fable) — this is a literal model id passed straight to --model. Leave blank to use whatever's in ~/.codex/config.toml. A configure rule's `codex_model` (Settings → Rules) wins over this for its repositories.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -167,7 +167,7 @@ struct GeneralSettings: View {
             } header: {
                 Text("Budgets")
             } footer: {
-                Text("Stops new reviews from queuing once today's spend hits the cap. The window resets at local midnight (your calendar's start of day). Spend is tallied from the Review History ledger — codex runs and claude runs killed before their final cost-report event count as $0 against the cap. Per-subreview cost cap (live SIGTERM mid-stream) is set per-repo in Settings → Repositories.")
+                Text("Stops new reviews from queuing once today's spend hits the cap. The window resets at local midnight (your calendar's start of day). Spend is tallied from the Review History ledger — codex runs and claude runs killed before their final cost-report event count as $0 against the cap. The per-subreview cost cap (live SIGTERM mid-stream) is in Review defaults, and per repository in a configure rule (Settings → Rules).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -177,7 +177,7 @@ struct GeneralSettings: View {
             } header: {
                 Text("Merging")
             } footer: {
-                Text("When on, the Squash / Merge / Rebase button merges immediately instead of asking to confirm first. A per-repo override (Settings → Repositories) wins over this default.")
+                Text("When on, the Squash / Merge / Rebase button merges immediately instead of asking to confirm first. A configure rule's `skip_merge_confirmation` (Settings → Rules) wins over this for its repositories.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

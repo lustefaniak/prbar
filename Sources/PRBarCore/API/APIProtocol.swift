@@ -29,6 +29,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case replayRule = "rules.replay"
     case ruleImpact = "rules.impact"
     case saveRuleFile = "rules.save"
+    case convertRepos = "rules.convert"
     case enqueueAction = "action.enqueue"
     case retryAction = "action.retry"
     case dismissAction = "action.dismiss"
@@ -227,6 +228,22 @@ struct RulesExplanation: Codable, Sendable {
     var decideOutcome: String?
     /// Why the draft couldn't be evaluated: it doesn't compile.
     var draftProblem: String?
+    /// What the configure rules set for the PR's repository.
+    var configured: ConfiguredSummary?
+}
+
+/// The settings configure rules set for a repository, for showing.
+struct ConfiguredSummary: Codable, Sendable, Equatable {
+    var repository: String
+    /// The ids of the rules that set something, in order.
+    var rules: [String]
+    /// `name: value` for each setting they set.
+    var settings: [String]
+    /// From the `repositories:` lists in prbar.yaml.
+    var triaged: Bool
+    var hidden: Bool
+    var trustsRules: Bool
+    var error: String?
 }
 
 /// Unsaved edits to the user's rules directory, by path relative to it
@@ -308,6 +325,12 @@ struct RuleImpact: Codable, Sendable {
     var examined: Int
     var changes: [Change]
     var draftProblem: String?
+}
+
+/// Turn the `repos:` of an old prbar.yaml into a configure rule.
+struct ConvertReposParams: Codable, Sendable {
+    /// Check and return the rule without writing anything.
+    var dryRun: Bool?
 }
 
 struct SaveRuleFileParams: Codable, Sendable {

@@ -298,7 +298,9 @@ final class APIServer {
             loadIssue: store.loadIssue,
             warnings: store.warnings,
             migratedFromLegacy: store.migratedFromLegacy,
-            rulesIssue: store.rulesIssue)
+            rulesIssue: store.rulesIssue,
+            repositories: store.configuredRepositories,
+            needsConversion: store.needsConversion)
     }
 
     private static func actions(_ queue: ActionQueue) -> ActionQueueState {
@@ -477,6 +479,10 @@ final class APIServer {
             return await reply(line, id, RuleImpactParams.self) { params in
                 guard let params else { throw Self.missingParams }
                 return self.ruleImpact(params)
+            }
+        case .convertRepos:
+            return await reply(line, id, ConvertReposParams.self) { params in
+                try self.convertRepos(dryRun: params?.dryRun ?? false)
             }
         case .saveRuleFile:
             return await reply(line, id, SaveRuleFileParams.self) { params in
@@ -714,7 +720,7 @@ final class APIServer {
         case .shutdown, .adopt:
             return RPCError(code: RPCError.notPermitted, message: "coding agents can't stop or adopt the PRBar server")
         case .autoReviewUndo, .autoReviewPostNow, .autoReviewDismissFlagged, .setPreferences, .checkoutUsage, .checkoutPrune,
-             .setConfig, .saveRuleFile, .clearReviewHistory, .setPopoverVisible, .reportHistoryImport, .reloadHistory:
+             .setConfig, .saveRuleFile, .convertRepos, .clearReviewHistory, .setPopoverVisible, .reportHistoryImport, .reloadHistory:
             return RPCError(code: RPCError.notPermitted, message: "\(method.rawValue) is for the user's own PRBar, not for coding agents")
         }
         switch policy[capability] {
@@ -915,9 +921,12 @@ final class APIServer {
             decideOutcome = Self.describe(outcome)
             decide = text + "\n\nOutcome: " + (decideOutcome ?? "")
         }
+        var all = runtime.repoConfigs.config
+        if draft != nil, draftProblem == nil { all.compiledRules = config.rules }
         return RulesExplanation(
             pr: pr, select: select, decide: decide, layers: layers, selectOutcome: selectOutcome,
-            decideOutcome: decideOutcome, draftProblem: draftProblem)
+            decideOutcome: decideOutcome, draftProblem: draftProblem,
+            configured: Self.summary(all.configured(owner: pr.owner, repo: pr.repo), name: pr.nameWithOwner, scope: all.repositories))
     }
 
     private func layerSource(_ layer: RuleLayer, pr: InboxPR) -> String {
