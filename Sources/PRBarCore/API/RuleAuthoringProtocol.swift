@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// What rules can read and write, from the server's own build: a client of
 /// another version would offer names this server's compiler refuses.
