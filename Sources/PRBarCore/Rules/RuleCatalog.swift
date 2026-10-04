@@ -163,6 +163,7 @@ extension RuleCatalog {
         "below.reason": "Why, in words, when there is a reason.",
         "below.rule": "The id of the rule that decided; empty when the settings did.",
         "below.source": "`settings`, or `repo` when the repository's rules decided.",
+        "below.held": "decide: every auto-approve gate in the settings this review fails: `disabled`, `verdict`, `confidence`, `severity`, `count`, `additions`, `deletions`, `files`. Empty when the settings would approve; null in select.",
         "pr": "The pull request.",
         "pr.repo": "`owner/name`.",
         "pr.owner": "The repository's owner.",
@@ -238,5 +239,12 @@ extension RuleCatalog {
         "review.prior[].confidence": "That review's confidence.",
         "review.prior[].findings": "How many findings.",
         "review.prior[].max_severity": "The worst finding's severity.",
+        "review.threads": "PRBar's inline threads already on the PR, from any reviewer's PRBar. Null when they couldn't be read.",
+        "review.threads.total": "How many.",
+        "review.threads.resolved": "Resolved.",
+        "review.threads.outdated": "Unresolved, and the code they point at changed since.",
+        "review.threads.answered": "Unresolved, and the PR author replied.",
+        "review.threads.unaddressed": "Unresolved, the code unchanged and no reply from the PR author.",
+        "review.threads.raised_again": "Unresolved, and this review reports the same finding again.",
     ]
 }

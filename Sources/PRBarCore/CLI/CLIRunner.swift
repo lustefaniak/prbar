@@ -90,11 +90,11 @@ struct Runner {
         //   them already false and exit mid-write. Registering the post
         //   here happens synchronously inside `fireBatch`, before it
         //   returns, so the wait below cannot miss it.
-        worker.enqueueAutoReview = { [reviewPoster, reviewerRequester] pr, kind, body, comments, cost, source in
+        worker.enqueueAutoReview = { [reviewPoster, reviewerRequester] pr, kind, body, comments, cost, source, stamp in
             posts.expect()
             Task { @MainActor in
                 let outgoing = source.isAutomated
-                    ? PRBarVerdictMarker.append(to: body, sha: pr.headSha)
+                    ? PRBarVerdictMarker.append(to: body, sha: pr.headSha, stamp: stamp)
                     : body
                 do {
                     try await reviewPoster(pr, kind, outgoing, comments)

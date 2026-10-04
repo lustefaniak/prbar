@@ -35,6 +35,8 @@ struct GHAction: Sendable, Identifiable, Hashable, Codable {
     let costUsd: Double?
     let enqueuedAt: Date
     var attempts: Int
+    /// Appended to the verdict marker of an automated review post.
+    var stamp: VerdictStamp?
 
     init(
         id: UUID = UUID(),
@@ -43,7 +45,8 @@ struct GHAction: Sendable, Identifiable, Hashable, Codable {
         source: ActionSource = .manual,
         costUsd: Double? = nil,
         enqueuedAt: Date = Date(),
-        attempts: Int = 0
+        attempts: Int = 0,
+        stamp: VerdictStamp? = nil
     ) {
         self.id = id
         self.pr = pr
@@ -52,6 +55,7 @@ struct GHAction: Sendable, Identifiable, Hashable, Codable {
         self.costUsd = costUsd
         self.enqueuedAt = enqueuedAt
         self.attempts = attempts
+        self.stamp = stamp
     }
 }
 
@@ -282,7 +286,8 @@ final class ActionQueue {
         _ pr: InboxPR,
         kind: GHActionKind,
         source: ActionSource = .manual,
-        costUsd: Double? = nil
+        costUsd: Double? = nil,
+        stamp: VerdictStamp? = nil
     ) {
         let nodeId = pr.nodeId
         if let existing = entries[nodeId]?.state, existing.isBusy {
@@ -301,7 +306,7 @@ final class ActionQueue {
             PRBarLog.actions.notice("enqueue refused reason=disallowed-merge pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) method=\(method.rawValue, privacy: .public)")
             return
         }
-        let action = GHAction(pr: pr, kind: kind, source: source, costUsd: costUsd)
+        let action = GHAction(pr: pr, kind: kind, source: source, costUsd: costUsd, stamp: stamp)
         entries[nodeId] = ActionEntry(action: action, state: .queued)
         pending.append(action)
         PRBarLog.actions.notice("enqueue pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) kind=\(Self.label(kind), privacy: .public) source=\(String(describing: source), privacy: .public)")
@@ -367,7 +372,7 @@ final class ActionQueue {
                 // reviewers' AI runs off a *human* verdict is a different
                 // policy, and `skipAIIfReviewedByOthers` already owns it.
                 let outgoing = action.source.isAutomated
-                    ? PRBarVerdictMarker.append(to: body, sha: pr.headSha)
+                    ? PRBarVerdictMarker.append(to: body, sha: pr.headSha, stamp: action.stamp)
                     : body
                 try await reviewExecutor(pr, kind, outgoing, comments)
                 recordSuccess(action)

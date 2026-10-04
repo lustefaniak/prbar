@@ -17,7 +17,8 @@ enum AutoReviewPolicy {
         /// Neither auto side fired, but the review found something the
         /// author can act on. Posts a verdict-less COMMENT review so the
         /// author isn't blocked on the human reviewer getting to it.
-        case share
+        /// `held` is why neither auto side posted a verdict.
+        case share(held: String)
         case skip(reason: String)
     }
 
@@ -30,8 +31,8 @@ enum AutoReviewPolicy {
         let decision = evaluateAutoSides(
             pr: pr, review: review, providerId: providerId, config: config
         )
-        guard case .skip = decision else { return decision }
-        return shareFallback(review: review, config: config) ?? decision
+        guard case .skip(let reason) = decision else { return decision }
+        return shareFallback(review: review, config: config, held: reason) ?? decision
     }
 
     private static func evaluateAutoSides(
@@ -66,7 +67,8 @@ enum AutoReviewPolicy {
     /// it anyway makes PRBar a bot that comments on every PR it looks at.
     private static func shareFallback(
         review: AggregatedReview,
-        config: ResolvedRepoConfig
+        config: ResolvedRepoConfig,
+        held: String
     ) -> Decision? {
         guard let floor = config.shareFindings.minSeverity else { return nil }
         // Severity is the model grading its own finding; confidence is the
@@ -75,10 +77,39 @@ enum AutoReviewPolicy {
         // severity — the severities come from the same run.
         guard review.confidence >= config.shareMinConfidence else { return nil }
         guard review.annotations.contains(where: { $0.severity >= floor }) else { return nil }
-        return .share
+        return .share(held: held)
     }
 
     // MARK: - approve side
+
+    /// An auto-approve gate, named for rules (`below.held`) and the stamp.
+    enum ApproveGate: String, CaseIterable, Sendable {
+        case disabled, verdict, confidence, severity, count, additions, deletions, files
+    }
+
+    /// Every auto-approve gate this review fails, in a fixed order; empty
+    /// when the settings would approve. Unlike `evaluateApprove`, which
+    /// stops at the first one for its message, this checks them all, so a
+    /// rule can tell "held back by size alone" from "held back by size and
+    /// a warning" without reading the message.
+    static func approveGates(
+        pr: InboxPR, review: AggregatedReview, providerId: ProviderID, config: AutoApproveConfig
+    ) -> [ApproveGate] {
+        var gates: [ApproveGate] = []
+        if !config.enabled { gates.append(.disabled) }
+        switch review.verdict {
+        case .approve: break
+        case .comment: if !config.allowApproveWithNotes { gates.append(.verdict) }
+        case .requestChanges, .abstain: gates.append(.verdict)
+        }
+        if review.confidence < config.confidenceFloor(for: providerId) { gates.append(.confidence) }
+        if review.annotations.contains(where: { $0.severity > config.maxAnnotationSeverity }) { gates.append(.severity) }
+        if config.maxAnnotations > 0 && review.annotations.count > config.maxAnnotations { gates.append(.count) }
+        if config.maxAdditions > 0 && pr.totalAdditions > config.maxAdditions { gates.append(.additions) }
+        if config.maxDeletions > 0 && pr.totalDeletions > config.maxDeletions { gates.append(.deletions) }
+        if config.maxChangedFiles > 0 && pr.changedFiles > config.maxChangedFiles { gates.append(.files) }
+        return gates
+    }
 
     static func evaluateApprove(
         pr: InboxPR,

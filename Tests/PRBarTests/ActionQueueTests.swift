@@ -493,6 +493,23 @@ final class ActionQueueTests: XCTestCase {
         XCTAssertEqual(sent, PRBarVerdictMarker.emit(sha: "abc123"))
     }
 
+    func testAutomatedReviewPostCarriesItsStamp() async throws {
+        let pr = makePR(nodeId: "PR_a", number: 7, title: "auto")
+        let rec = AsyncRecorder()
+        let review = AggregatedReview(
+            verdict: .approve, confidence: 0.9, summaryMarkdown: "", annotations: [],
+            costUsd: 0, toolCallCount: 0, toolNamesUsed: [], perSubreview: [], isSubscriptionAuth: false)
+        let stamp = VerdictStamp(action: "approve", decidedBy: "settings", review: review, provider: .claude, inline: 0)
+
+        let q = ActionQueue()
+        q.reviewExecutor = { _, _, body, _ in await rec.record(body) }
+        q.enqueue(pr, kind: .review(kind: .approve, body: "", comments: []), source: .automated, stamp: stamp)
+        try await waitUntil { q.state(for: "PR_a") == nil }
+
+        let sent = await rec.calls.first ?? ""
+        XCTAssertEqual(sent, PRBarVerdictMarker.emit(sha: "abc123", stamp: stamp))
+    }
+
     /// A human verdict deliberately doesn't suppress other reviewers' AI
     /// runs — `skipAIIfReviewedByOthers` owns that policy, separately and
     /// opt-in — so a manual post stays unmarked.

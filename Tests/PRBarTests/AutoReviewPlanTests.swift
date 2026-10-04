@@ -107,4 +107,41 @@ final class AutoReviewPlanTests: XCTestCase {
             allowedMergeMethods: [.squash], autoMergeAllowed: false, deleteBranchOnMerge: false
         )
     }
+
+    // MARK: - stamp
+
+    func testShareStampSaysWhyNoApproval() throws {
+        var rule = RepoConfig.default
+        rule.shareFindings = .warningsAndBlockers
+        rule.autoApprove = AutoApproveConfig(enabled: true, minConfidence: 0.85)
+        let threads = [ReviewThread(
+            id: "T", isResolved: false, isOutdated: true, path: "a.go",
+            comments: [.init(authorLogin: "x", body: "**Old**\n\nb\n\n\(InlineCommentMapper.provenanceMarker)")])]
+        let outcome = AutoReviewPlan.plan(
+            pr: makePR(), review: review(.approve, 0.7, [warning]), config: rule.resolved(), providerId: .claude,
+            diffText: diff, threads: threads, now: Date(timeIntervalSince1970: 0)
+        ).withAgent(model: "sonnet", effort: nil)
+        guard case let .post(staged) = outcome, let stamp = staged.stamp else { return XCTFail("expected a stamped share") }
+        XCTAssertEqual(stamp.action, "share")
+        XCTAssertEqual(stamp.decidedBy, "settings")
+        XCTAssertEqual(stamp.held, "confidence 0.70 below Claude threshold 0.85")
+        XCTAssertEqual(stamp.inline, 1)
+        XCTAssertEqual(stamp.findings, [0, 1, 0, 0])
+        XCTAssertEqual(stamp.model, "sonnet")
+        XCTAssertNil(stamp.effort)
+        XCTAssertEqual(stamp.threads, ThreadFacts(total: 1, outdated: 1))
+    }
+
+    /// No threads read is not the same as no threads.
+    func testStampWithoutThreadsSaysUnknown() throws {
+        var rule = RepoConfig.default
+        rule.autoApprove = AutoApproveConfig(enabled: true, minConfidence: 0.85)
+        guard case let .post(staged) = plan(review(.approve, 0.95), rule), let stamp = staged.stamp else {
+            return XCTFail("expected a stamped approval")
+        }
+        XCTAssertEqual(stamp.action, "approve")
+        XCTAssertNil(stamp.held)
+        XCTAssertNil(stamp.threads)
+        XCTAssertTrue(PRBarVerdictMarker.emit(sha: "s", stamp: stamp).contains("threads=unknown"))
+    }
 }

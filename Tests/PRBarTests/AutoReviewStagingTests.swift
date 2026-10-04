@@ -94,7 +94,7 @@ final class AutoReviewStagingTests: XCTestCase {
             config: config(deny: AutoDenyConfig(action: .flagOnly))
         )
         var posted: [Posted] = []
-        worker.enqueueAutoReview = { pr, kind, body, comments, _, _ in
+        worker.enqueueAutoReview = { pr, kind, body, comments, _, _, _ in
             posted.append(Posted(nodeId: pr.nodeId, kind: kind, body: body, comments: comments))
         }
 
@@ -125,7 +125,7 @@ final class AutoReviewStagingTests: XCTestCase {
             config: config(deny: AutoDenyConfig(action: .requestChanges))
         )
         var posted: [Posted] = []
-        worker.enqueueAutoReview = { pr, kind, body, comments, _, _ in
+        worker.enqueueAutoReview = { pr, kind, body, comments, _, _, _ in
             posted.append(Posted(nodeId: pr.nodeId, kind: kind, body: body, comments: comments))
         }
 
@@ -149,7 +149,7 @@ final class AutoReviewStagingTests: XCTestCase {
             config: config(approve: enabledApprove())
         )
         var posted: [Posted] = []
-        worker.enqueueAutoReview = { pr, kind, body, comments, _, _ in
+        worker.enqueueAutoReview = { pr, kind, body, comments, _, _, _ in
             posted.append(Posted(nodeId: pr.nodeId, kind: kind, body: body, comments: comments))
         }
 

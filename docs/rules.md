@@ -739,6 +739,27 @@ rule:
         action: comment
 ```
 
+Approve a PR too big for the auto-approve caps once the author has dealt with
+every finding PRBar shared on it: each thread replied to, or its code changed,
+and none raised again. `below.held` holding only size gates means every other
+gate passed (verdict, confidence, severity), so the rule doesn't restate them. A
+PR PRBar never commented on still waits for a human.
+
+```yaml
+# rules/decide/50-follow-up.yaml
+name: follow-up
+rule:
+  match:
+    - condition: >-
+        below.held.size() > 0
+        && below.held.all(g, g in ["additions", "deletions", "files"])
+        && review.threads.total > 0
+        && review.threads.unaddressed == 0 && review.threads.raised_again == 0
+      output:
+        rule: follow-up-approve
+        action: approve
+```
+
 Share warnings and blockers with the author, at most ten, for everything else:
 
 ```yaml
@@ -887,6 +908,7 @@ with, without the part that needs commit history.
 | `cost_usd` | double | |
 | `subreviews` | list | per monorepo folder: `path` (empty for the root), `verdict`, `confidence`, `findings` (a count) |
 | `prior` | list | reviews of earlier commits of this PR that were never posted, oldest first: `head_sha`, `verdict`, `confidence`, `findings` (a count), `max_severity` |
+| `threads` | object | PRBar's inline threads already on the PR, posted by anyone's PRBar: `total`, `resolved`, and of the unresolved ones `outdated` (the code changed since), `answered` (the PR author replied), `unaddressed` (neither) and `raised_again` (this review reports the same finding). Null when the threads couldn't be read |
 
 ### `below`
 
@@ -897,9 +919,10 @@ matched.
 | Field | Type | |
 |---|---|---|
 | `action` | string | `select`: `review` or `skip`. `decide`: `approve`, `request_changes`, `comment`, `share`, `flag` or `none` |
-| `reason` | string | why, in words, when there is a reason: why the settings skip, or why they post nothing (for example `confidence 0.72 below Claude threshold 0.85`) |
+| `reason` | string | why, in words, when there is a reason: why the settings skip, why they post nothing, or why they share instead of approving (for example `confidence 0.72 below Claude threshold 0.85`, `PR has +3468 lines, cap is 200`) |
 | `rule` | string | the id of the rule that decided, empty when the settings did |
 | `source` | string | `settings`, or `repo` when the [repository's rules](#repository-rules-one-policy-for-a-team) decided |
+| `held` | list | `decide`: every auto-approve gate in the settings this review fails, whichever layer decided below: `disabled`, `verdict`, `confidence`, `severity`, `count`, `additions`, `deletions`, `files`. Empty when the settings would approve, null in `select`. Use it instead of matching `reason`, whose wording can change |
 
 ### Others
 

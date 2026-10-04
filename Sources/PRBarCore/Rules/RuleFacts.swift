@@ -264,6 +264,36 @@ struct PriorReviewFacts: Codable, Sendable, Hashable, CELNamedType {
     }
 }
 
+/// PRBar's inline threads already on the PR, posted by any reviewer's
+/// PRBar (the `<!-- prbar:finding -->` marker, not the login), so a review
+/// sees the findings a teammate's PRBar shared. Counted before this
+/// review's own post. A rule reads it to approve once the author has dealt
+/// with what was raised: `review.threads.unaddressed == 0 &&
+/// review.threads.raised_again == 0`.
+struct ThreadFacts: Codable, Sendable, Hashable, CELNamedType {
+    static let celTypeName = "prbar.Threads"
+
+    var total: Int
+    var resolved: Int
+    /// Unresolved, and the code they point at has changed since.
+    var outdated: Int
+    /// Unresolved, and the PR author replied.
+    var answered: Int
+    /// Unresolved, the code unchanged and no reply from the author.
+    var unaddressed: Int
+    /// Unresolved, and this review reports the same finding again.
+    var raisedAgain: Int
+
+    init(total: Int = 0, resolved: Int = 0, outdated: Int = 0, answered: Int = 0, unaddressed: Int = 0, raisedAgain: Int = 0) {
+        self.total = total
+        self.resolved = resolved
+        self.outdated = outdated
+        self.answered = answered
+        self.unaddressed = unaddressed
+        self.raisedAgain = raisedAgain
+    }
+}
+
 struct ReviewFacts: Codable, Sendable, Hashable, CELNamedType {
     static let celTypeName = "prbar.Review"
 
@@ -281,8 +311,11 @@ struct ReviewFacts: Codable, Sendable, Hashable, CELNamedType {
     var subreviews: [SubreviewFacts]
     /// Reviews of earlier commits that were never posted, oldest first.
     var prior: [PriorReviewFacts]
+    /// Null when the threads couldn't be read, and in records made before
+    /// the fact existed, so a rule depending on it decides nothing there.
+    var threads: ThreadFacts?
 
-    init(_ review: AggregatedReview, provider: ProviderID, prior: [PriorReview] = []) {
+    init(_ review: AggregatedReview, provider: ProviderID, prior: [PriorReview] = [], threads: ThreadFacts? = nil) {
         verdict = review.verdict.rawValue
         confidence = review.confidence
         self.provider = provider.rawValue
@@ -291,6 +324,7 @@ struct ReviewFacts: Codable, Sendable, Hashable, CELNamedType {
         costUsd = review.costUsd
         subreviews = review.perSubreview.map(SubreviewFacts.init)
         self.prior = prior.map(PriorReviewFacts.init)
+        self.threads = threads
     }
 }
 
@@ -309,6 +343,11 @@ struct BelowFacts: Codable, Sendable, Hashable, CELNamedType {
     var rule: String
     /// `settings`, or `repo` for the reviewed repository's rules.
     var source: String
+    /// decide: every auto-approve gate in the settings this review fails
+    /// (`AutoReviewPolicy.ApproveGate`), whichever layer decided below.
+    /// Empty when the settings would approve; null in select and in
+    /// records made before the fact existed.
+    var held: [String]?
 
     /// A lower layer's matched rule, as the next layer up sees it.
     static func rule(_ id: String, action: String, reason: String?, layer: RuleLayer) -> BelowFacts {
@@ -323,7 +362,7 @@ struct BelowFacts: Codable, Sendable, Hashable, CELNamedType {
     static func settings(_ decision: AutoReviewPolicy.Decision) -> BelowFacts {
         switch decision {
         case .approve: return .settings("approve")
-        case .share: return .settings("share")
+        case .share(let held): return .settings("share", reason: held)
         case .deny(.requestChanges): return .settings("request_changes")
         case .deny(.comment): return .settings("comment")
         case .deny(.flagOnly), .deny(.off): return .settings("flag")
