@@ -343,6 +343,11 @@ struct BelowFacts: Codable, Sendable, Hashable, CELNamedType {
     var rule: String
     /// `settings`, or `repo` for the reviewed repository's rules.
     var source: String
+    /// decide: every auto-approve gate in the settings this review fails
+    /// (`AutoReviewPolicy.ApproveGate`), whichever layer decided below.
+    /// Empty when the settings would approve; null in select and in
+    /// records made before the fact existed.
+    var held: [String]?
 
     /// A lower layer's matched rule, as the next layer up sees it.
     static func rule(_ id: String, action: String, reason: String?, layer: RuleLayer) -> BelowFacts {

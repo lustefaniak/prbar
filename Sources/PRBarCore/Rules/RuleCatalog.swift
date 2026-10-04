@@ -163,6 +163,7 @@ extension RuleCatalog {
         "below.reason": "Why, in words, when there is a reason.",
         "below.rule": "The id of the rule that decided; empty when the settings did.",
         "below.source": "`settings`, or `repo` when the repository's rules decided.",
+        "below.held": "decide: every auto-approve gate in the settings this review fails: `disabled`, `verdict`, `confidence`, `severity`, `count`, `additions`, `deletions`, `files`. Empty when the settings would approve; null in select.",
         "pr": "The pull request.",
         "pr.repo": "`owner/name`.",
         "pr.owner": "The repository's owner.",

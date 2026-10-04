@@ -82,6 +82,35 @@ enum AutoReviewPolicy {
 
     // MARK: - approve side
 
+    /// An auto-approve gate, named for rules (`below.held`) and the stamp.
+    enum ApproveGate: String, CaseIterable, Sendable {
+        case disabled, verdict, confidence, severity, count, additions, deletions, files
+    }
+
+    /// Every auto-approve gate this review fails, in a fixed order; empty
+    /// when the settings would approve. Unlike `evaluateApprove`, which
+    /// stops at the first one for its message, this checks them all, so a
+    /// rule can tell "held back by size alone" from "held back by size and
+    /// a warning" without reading the message.
+    static func approveGates(
+        pr: InboxPR, review: AggregatedReview, providerId: ProviderID, config: AutoApproveConfig
+    ) -> [ApproveGate] {
+        var gates: [ApproveGate] = []
+        if !config.enabled { gates.append(.disabled) }
+        switch review.verdict {
+        case .approve: break
+        case .comment: if !config.allowApproveWithNotes { gates.append(.verdict) }
+        case .requestChanges, .abstain: gates.append(.verdict)
+        }
+        if review.confidence < config.confidenceFloor(for: providerId) { gates.append(.confidence) }
+        if review.annotations.contains(where: { $0.severity > config.maxAnnotationSeverity }) { gates.append(.severity) }
+        if config.maxAnnotations > 0 && review.annotations.count > config.maxAnnotations { gates.append(.count) }
+        if config.maxAdditions > 0 && pr.totalAdditions > config.maxAdditions { gates.append(.additions) }
+        if config.maxDeletions > 0 && pr.totalDeletions > config.maxDeletions { gates.append(.deletions) }
+        if config.maxChangedFiles > 0 && pr.changedFiles > config.maxChangedFiles { gates.append(.files) }
+        return gates
+    }
+
     static func evaluateApprove(
         pr: InboxPR,
         review: AggregatedReview,

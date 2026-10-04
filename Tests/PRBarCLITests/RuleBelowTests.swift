@@ -92,20 +92,6 @@ final class RuleBelowTests: XCTestCase {
         XCTAssertNil(record.select?.below)
         XCTAssertFalse(RuleReplay.replay(record, rules: rules).changed)
     }
-}
-
-private extension InboxPR {
-    init(_ pr: InboxPR, author: String) {
-        self.init(
-            nodeId: pr.nodeId, owner: pr.owner, repo: pr.repo, number: pr.number, title: pr.title, body: pr.body,
-            url: pr.url, author: author, headRef: pr.headRef, baseRef: pr.baseRef, headSha: pr.headSha,
-            isDraft: pr.isDraft, role: pr.role, mergeable: pr.mergeable, mergeStateStatus: pr.mergeStateStatus,
-            reviewDecision: pr.reviewDecision, checkRollupState: pr.checkRollupState,
-            totalAdditions: pr.totalAdditions, totalDeletions: pr.totalDeletions, changedFiles: pr.changedFiles,
-            hasAutoMerge: pr.hasAutoMerge, autoMergeEnabledBy: pr.autoMergeEnabledBy,
-            allCheckSummaries: pr.allCheckSummaries, allowedMergeMethods: pr.allowedMergeMethods,
-            autoMergeAllowed: pr.autoMergeAllowed, deleteBranchOnMerge: pr.deleteBranchOnMerge)
-    }
 
     /// The follow-up a share sets up: the settings hold back an approval
     /// on size alone, and a rule approves once the author has dealt with
@@ -116,7 +102,7 @@ private extension InboxPR {
             rule:
               match:
                 - condition: >
-                    below.reason.contains("cap is") && review.verdict == "approve" && review.confidence >= 0.85
+                    below.held.size() > 0 && below.held.all(g, g in ["additions", "deletions", "files"])
                     && review.threads.total > 0 && review.threads.unaddressed == 0 && review.threads.raised_again == 0
                   output: {rule: addressed, action: approve}
             """)], lists: [:])
@@ -140,7 +126,52 @@ private extension InboxPR {
         XCTAssertEqual(approved.stamp?.decidedBy, "rule personal/addressed")
         XCTAssertEqual(approved.stamp?.held, "PR has +500 lines, cap is 10")
 
+        XCTAssertEqual(approved.stamp?.gates, ["additions"])
+
         guard case .none = plan([thread(replied: false)]) else { return XCTFail("a thread is still unaddressed") }
         guard case .none = plan(nil) else { return XCTFail("unread threads must not approve") }
     }
+
+    /// `below.held` lists every auto-approve gate the review fails, not
+    /// just the first, so "held back by size alone" is an exact check.
+    func testHeldListsEveryFailingApproveGate() throws {
+        var settings = RepoConfig.default
+        settings.autoApprove = AutoApproveConfig(enabled: true, minConfidence: 0.85, maxAnnotationSeverity: .suggestion,
+                                                 maxAdditions: 10)
+        let config = ResolvedRepoConfig(rule: settings, defaults: ReviewDefaults(), rules: .empty)
+        func held(_ review: AggregatedReview, additions: Int = 500) -> [String]? {
+            let pr = RuntimeFixtures.requestedPR(additions: additions)
+            return AutoReviewPlan.decideFacts(
+                pr: pr, review: review, providerId: .claude, diffText: "", prior: [], lazy: LazyFactValues(),
+                rules: .empty, now: Date(), below: AutoReviewPlan.below(pr: pr, review: review, providerId: .claude, config: config)
+            ).below?.held
+        }
+        XCTAssertEqual(held(RulesTests.review(.approve, confidence: 0.95, [])), ["additions"])
+        XCTAssertEqual(held(RulesTests.review(.approve, confidence: 0.5, [RulesTests.finding(.warning)])),
+                       ["confidence", "severity", "additions"])
+        XCTAssertEqual(held(RulesTests.review(.requestChanges, confidence: 0.95, [])), ["verdict", "additions"])
+        XCTAssertEqual(held(RulesTests.review(.approve, confidence: 0.95, []), additions: 1), [])
+
+        settings.autoApprove?.enabled = false
+        let off = ResolvedRepoConfig(rule: settings, defaults: ReviewDefaults(), rules: .empty)
+        let pr = RuntimeFixtures.requestedPR()
+        let review = RulesTests.review(.approve, confidence: 0.95, [])
+        XCTAssertEqual(AutoReviewPlan.below(pr: pr, review: review, providerId: .claude, config: off).held, ["disabled"])
+    }
+
+}
+
+private extension InboxPR {
+    init(_ pr: InboxPR, author: String) {
+        self.init(
+            nodeId: pr.nodeId, owner: pr.owner, repo: pr.repo, number: pr.number, title: pr.title, body: pr.body,
+            url: pr.url, author: author, headRef: pr.headRef, baseRef: pr.baseRef, headSha: pr.headSha,
+            isDraft: pr.isDraft, role: pr.role, mergeable: pr.mergeable, mergeStateStatus: pr.mergeStateStatus,
+            reviewDecision: pr.reviewDecision, checkRollupState: pr.checkRollupState,
+            totalAdditions: pr.totalAdditions, totalDeletions: pr.totalDeletions, changedFiles: pr.changedFiles,
+            hasAutoMerge: pr.hasAutoMerge, autoMergeEnabledBy: pr.autoMergeEnabledBy,
+            allCheckSummaries: pr.allCheckSummaries, allowedMergeMethods: pr.allowedMergeMethods,
+            autoMergeAllowed: pr.autoMergeAllowed, deleteBranchOnMerge: pr.deleteBranchOnMerge)
+    }
+
 }

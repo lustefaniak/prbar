@@ -739,9 +739,11 @@ rule:
         action: comment
 ```
 
-Approve a PR too big for the auto-approve cap once the author has dealt with
+Approve a PR too big for the auto-approve caps once the author has dealt with
 every finding PRBar shared on it: each thread replied to, or its code changed,
-and none raised again. A PR PRBar never commented on still waits for a human.
+and none raised again. `below.held` holding only size gates means every other
+gate passed (verdict, confidence, severity), so the rule doesn't restate them. A
+PR PRBar never commented on still waits for a human.
 
 ```yaml
 # rules/decide/50-follow-up.yaml
@@ -749,8 +751,8 @@ name: follow-up
 rule:
   match:
     - condition: >-
-        below.reason.contains("cap is")
-        && review.verdict == "approve" && review.confidence >= 0.85
+        below.held.size() > 0
+        && below.held.all(g, g in ["additions", "deletions", "files"])
         && review.threads.total > 0
         && review.threads.unaddressed == 0 && review.threads.raised_again == 0
       output:
@@ -920,6 +922,7 @@ matched.
 | `reason` | string | why, in words, when there is a reason: why the settings skip, why they post nothing, or why they share instead of approving (for example `confidence 0.72 below Claude threshold 0.85`, `PR has +3468 lines, cap is 200`) |
 | `rule` | string | the id of the rule that decided, empty when the settings did |
 | `source` | string | `settings`, or `repo` when the [repository's rules](#repository-rules-one-policy-for-a-team) decided |
+| `held` | list | `decide`: every auto-approve gate in the settings this review fails, whichever layer decided below: `disabled`, `verdict`, `confidence`, `severity`, `count`, `additions`, `deletions`, `files`. Empty when the settings would approve, null in `select`. Use it instead of matching `reason`, whose wording can change |
 
 ### Others
 

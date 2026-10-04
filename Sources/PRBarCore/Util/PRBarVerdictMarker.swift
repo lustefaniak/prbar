@@ -108,6 +108,8 @@ struct VerdictStamp: Sendable, Hashable, Codable {
     var effort: String?
     /// Findings per severity, worst first: blocker, warning, suggestion, info.
     var findings: [Int]
+    /// Every auto-approve gate the review failed (`below.held`).
+    var gates: [String] = []
     /// Inline comments this post carries.
     var inline: Int
     /// PRBar's threads on the PR before this review. Nil when they couldn't
@@ -139,6 +141,7 @@ struct VerdictStamp: Sendable, Hashable, Codable {
             "action": action,
             "decided_by": decidedBy,
             "held": held ?? "-",
+            "gates": gates.isEmpty ? "-" : gates.joined(separator: ","),
             "verdict": verdict,
             "confidence": String(format: "%.2f", confidence),
             "provider": provider,

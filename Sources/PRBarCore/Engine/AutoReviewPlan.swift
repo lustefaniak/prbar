@@ -39,14 +39,25 @@ enum AutoReviewPlan {
         let outcome = decide(
             pr: pr, review: review, config: config, providerId: providerId, diffText: diffText,
             prior: prior, threads: threadFacts, lazy: lazy, now: now, onRule: onRule)
+        let gates = AutoReviewPolicy.approveGates(pr: pr, review: review, providerId: providerId, config: config.autoApprove)
         return stamped(outcome.outcome, review: review, providerId: providerId, threads: threadFacts,
-                       decidedBy: outcome.decidedBy, held: outcome.held)
+                       decidedBy: outcome.decidedBy, held: outcome.held, gates: gates.map(\.rawValue))
+    }
+
+    /// What the settings decide, as the lowest layer's `below`.
+    static func below(pr: InboxPR, review: AggregatedReview, providerId: ProviderID, config: ResolvedRepoConfig) -> BelowFacts {
+        var below = BelowFacts.settings(
+            AutoReviewPolicy.evaluate(pr: pr, review: review, providerId: providerId, config: config))
+        below.held = AutoReviewPolicy.approveGates(
+            pr: pr, review: review, providerId: providerId, config: config.autoApprove
+        ).map(\.rawValue)
+        return below
     }
 
     /// Every staged post carries a `VerdictStamp` for the marker.
     private static func stamped(
         _ outcome: Outcome, review: AggregatedReview, providerId: ProviderID, threads: ThreadFacts?,
-        decidedBy: String, held: String?
+        decidedBy: String, held: String?, gates: [String]
     ) -> Outcome {
         func stamp(_ staged: ReviewQueueWorker.StagedAutoReview, flag: Bool) -> ReviewQueueWorker.StagedAutoReview {
             var staged = staged
@@ -56,6 +67,7 @@ enum AutoReviewPlan {
             staged.stamp = VerdictStamp(
                 action: action, decidedBy: decidedBy, held: held, review: review, provider: providerId,
                 inline: staged.comments.count, threads: threads)
+            staged.stamp?.gates = gates
             return staged
         }
         switch outcome {
@@ -73,8 +85,9 @@ enum AutoReviewPlan {
         let settings = AutoReviewPolicy.evaluate(pr: pr, review: review, providerId: providerId, config: config)
         // The layers bottom up, each seeing the one under it as `below`;
         // the highest that matches decides.
-        let settingsReason = BelowFacts.settings(settings).reason
-        var below = BelowFacts.settings(settings)
+        var below = below(pr: pr, review: review, providerId: providerId, config: config)
+        let settingsReason = below.reason
+        let settingsHeld = below.held
         var decided: RuleDecision?
         var decidedLayer: RuleLayer?
         for (layer, rules) in config.ruleLayers where layer == .personal || !rules.decide.isEmpty || rules.failure != nil {
@@ -91,6 +104,7 @@ enum AutoReviewPlan {
                         decided = decision
                         decidedLayer = layer
                         below = .rule(decision.rule, action: decision.action.rawValue, reason: nil, layer: layer)
+                        below.held = settingsHeld
                     }
                 }
             } catch {

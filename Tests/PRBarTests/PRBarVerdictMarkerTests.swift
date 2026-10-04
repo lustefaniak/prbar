@@ -94,6 +94,7 @@ final class PRBarVerdictMarkerTests: XCTestCase {
             action: "share", decidedBy: "settings", held: held, review: review, provider: .claude, inline: 1,
             threads: ThreadFacts(total: 3, resolved: 1, outdated: 1, answered: 1, unaddressed: 1, raisedAgain: 0))
         stamp.model = "sonnet"
+        stamp.gates = ["additions"]
         stamp.app = "1.9.0 (12)"
         return stamp
     }
@@ -106,6 +107,7 @@ final class PRBarVerdictMarkerTests: XCTestCase {
             action=share
             decided_by=settings
             held=PR has +3468 lines, cap is 200
+            gates=additions
             verdict=approve
             confidence=0.92
             provider=claude
