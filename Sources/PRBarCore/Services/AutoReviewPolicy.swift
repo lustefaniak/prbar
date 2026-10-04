@@ -17,7 +17,8 @@ enum AutoReviewPolicy {
         /// Neither auto side fired, but the review found something the
         /// author can act on. Posts a verdict-less COMMENT review so the
         /// author isn't blocked on the human reviewer getting to it.
-        case share
+        /// `held` is why neither auto side posted a verdict.
+        case share(held: String)
         case skip(reason: String)
     }
 
@@ -30,8 +31,8 @@ enum AutoReviewPolicy {
         let decision = evaluateAutoSides(
             pr: pr, review: review, providerId: providerId, config: config
         )
-        guard case .skip = decision else { return decision }
-        return shareFallback(review: review, config: config) ?? decision
+        guard case .skip(let reason) = decision else { return decision }
+        return shareFallback(review: review, config: config, held: reason) ?? decision
     }
 
     private static func evaluateAutoSides(
@@ -66,7 +67,8 @@ enum AutoReviewPolicy {
     /// it anyway makes PRBar a bot that comments on every PR it looks at.
     private static func shareFallback(
         review: AggregatedReview,
-        config: ResolvedRepoConfig
+        config: ResolvedRepoConfig,
+        held: String
     ) -> Decision? {
         guard let floor = config.shareFindings.minSeverity else { return nil }
         // Severity is the model grading its own finding; confidence is the
@@ -75,7 +77,7 @@ enum AutoReviewPolicy {
         // severity — the severities come from the same run.
         guard review.confidence >= config.shareMinConfidence else { return nil }
         guard review.annotations.contains(where: { $0.severity >= floor }) else { return nil }
-        return .share
+        return .share(held: held)
     }
 
     // MARK: - approve side

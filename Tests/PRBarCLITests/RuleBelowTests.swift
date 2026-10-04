@@ -106,4 +106,41 @@ private extension InboxPR {
             allCheckSummaries: pr.allCheckSummaries, allowedMergeMethods: pr.allowedMergeMethods,
             autoMergeAllowed: pr.autoMergeAllowed, deleteBranchOnMerge: pr.deleteBranchOnMerge)
     }
+
+    /// The follow-up a share sets up: the settings hold back an approval
+    /// on size alone, and a rule approves once the author has dealt with
+    /// every thread PRBar opened.
+    func testApproveOnceThePRBarThreadsAreDealtWith() throws {
+        let rules = try Rules.compile(select: [], decide: [.init(path: "d.yaml", text: """
+            name: follow-up
+            rule:
+              match:
+                - condition: >
+                    below.reason.contains("cap is") && review.verdict == "approve" && review.confidence >= 0.85
+                    && review.threads.total > 0 && review.threads.unaddressed == 0 && review.threads.raised_again == 0
+                  output: {rule: addressed, action: approve}
+            """)], lists: [:])
+        var settings = RepoConfig.default
+        settings.autoApprove = AutoApproveConfig(enabled: true, maxAdditions: 10)
+        let config = ResolvedRepoConfig(rule: settings, defaults: ReviewDefaults(), rules: rules)
+        let pr = RuntimeFixtures.requestedPR(additions: 500)
+        let review = RulesTests.review(.approve, confidence: 0.95, [])
+        func thread(replied: Bool) -> ReviewThread {
+            var comments = [ReviewThread.Comment(authorLogin: "x", body: "**Old**\n\nb\n\n\(InlineCommentMapper.provenanceMarker)")]
+            if replied { comments.append(.init(authorLogin: pr.author, body: "done")) }
+            return ReviewThread(id: "T", isResolved: false, isOutdated: false, path: "a", comments: comments)
+        }
+        func plan(_ threads: [ReviewThread]?) -> AutoReviewPlan.Outcome {
+            AutoReviewPlan.plan(pr: pr, review: review, config: config, providerId: .claude, diffText: "",
+                                       threads: threads)
+        }
+
+        guard case .post(let approved) = plan([thread(replied: true)]) else { return XCTFail("the author replied") }
+        XCTAssertEqual(approved.action, .approve)
+        XCTAssertEqual(approved.stamp?.decidedBy, "rule personal/addressed")
+        XCTAssertEqual(approved.stamp?.held, "PR has +500 lines, cap is 10")
+
+        guard case .none = plan([thread(replied: false)]) else { return XCTFail("a thread is still unaddressed") }
+        guard case .none = plan(nil) else { return XCTFail("unread threads must not approve") }
+    }
 }

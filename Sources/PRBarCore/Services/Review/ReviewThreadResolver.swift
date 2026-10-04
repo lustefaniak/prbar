@@ -81,6 +81,35 @@ enum ReviewThreadResolver {
         }
     }
 
+    /// What has happened to the threads PRBar opened, as `ThreadFacts`.
+    ///
+    /// Ownership is the provenance marker alone, not the viewer's login:
+    /// on a PR with several PRBar reviewers the threads a teammate's PRBar
+    /// opened are what this review is following up on. Replies count only
+    /// from the PR author, for the same reason `resolvable` insists on it.
+    static func tally(threads: [ReviewThread], annotations: [DiffAnnotation], prAuthor: String) -> ThreadFacts {
+        let raised = Set(annotations.map(key))
+        var facts = ThreadFacts()
+        for thread in threads {
+            guard let root = thread.comments.first,
+                  root.body.contains(InlineCommentMapper.provenanceMarker) else { continue }
+            facts.total += 1
+            if thread.isResolved {
+                facts.resolved += 1
+                continue
+            }
+            let answered = !prAuthor.isEmpty
+                && thread.comments.dropFirst().contains(where: { $0.authorLogin == prAuthor })
+            if thread.isOutdated { facts.outdated += 1 }
+            if answered { facts.answered += 1 }
+            if !thread.isOutdated && !answered { facts.unaddressed += 1 }
+            if let title = title(ofCommentBody: root.body), raised.contains(key(path: thread.path, title: title)) {
+                facts.raisedAgain += 1
+            }
+        }
+        return facts
+    }
+
     /// `InlineCommentMapper` posts each finding as `**<title>**\n\n<body>`,
     /// so the bolded first line is what maps a thread back to the
     /// annotation that created it. A comment without one can't be

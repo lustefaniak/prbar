@@ -51,7 +51,23 @@ final class AutoReviewPolicyTests: XCTestCase {
             review: makeReview(verdict: .approve, confidence: 0.70, annotations: [warning]),
             config: config(share: .warningsAndBlockers)
         )
-        XCTAssertEqual(result, .share)
+        // The held reason is the approve side's skip, so the post can say
+        // why the author got findings instead of an approval.
+        XCTAssertEqual(result, .share(held: "confidence 0.70 below Claude threshold 0.85"))
+    }
+
+    /// The case behind most shares on large PRs: a review confident enough
+    /// to approve, held back by the size cap alone.
+    func testShareCarriesTheSizeCapAsItsHeldReason() {
+        var approve = onApprove
+        approve.maxAnnotationSeverity = .warning
+        let cfg = config(approve: approve, share: .allFindings)
+        let result = evaluate(
+            pr: makePR(additions: 3468),
+            review: makeReview(verdict: .approve, confidence: 0.95, annotations: [warning]),
+            config: cfg
+        )
+        XCTAssertEqual(result, .share(held: "PR has +3468 lines, cap is 200"))
     }
 
     /// Sharing deliberately sits below the approve floor, so severity is
@@ -80,7 +96,7 @@ final class AutoReviewPolicyTests: XCTestCase {
             review: makeReview(verdict: .comment, confidence: 0.75, annotations: [warning]),
             config: config(share: .warningsAndBlockers)
         )
-        XCTAssertEqual(result, .share)
+        guard case .share = result else { return XCTFail("expected share, got \(result)") }
     }
 
     /// A negative verdict that the deny side declined to act on (deny off)
@@ -95,7 +111,7 @@ final class AutoReviewPolicyTests: XCTestCase {
             review: makeReview(verdict: .requestChanges, confidence: 0.9, annotations: [blocker]),
             config: config(deny: .off, share: .warningsAndBlockers)
         )
-        XCTAssertEqual(result, .share)
+        guard case .share = result else { return XCTFail("expected share, got \(result)") }
     }
 
     func testShareRespectsItsSeverityFloor() {
@@ -105,10 +121,8 @@ final class AutoReviewPolicyTests: XCTestCase {
             config: config(share: .warningsAndBlockers)
         ) else { return XCTFail("an info annotation must not clear the warnings floor") }
 
-        XCTAssertEqual(
-            evaluate(pr: makePR(additions: 10), review: review, config: config(share: .allFindings)),
-            .share
-        )
+        guard case .share = evaluate(pr: makePR(additions: 10), review: review, config: config(share: .allFindings))
+        else { return XCTFail("an info annotation clears the all-findings floor") }
     }
 
     func testShareNeedsSomethingToSay() {

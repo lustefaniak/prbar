@@ -205,4 +205,30 @@ final class ReviewThreadResolverTests: XCTestCase {
             title: title, body: "b"
         )
     }
+
+    // MARK: - tally
+
+    /// Counted by the provenance marker, not the viewer: on a PR with
+    /// several PRBar reviewers, a teammate's shared findings are what this
+    /// review follows up on.
+    func testTallyCountsEveryPRBarThreadByState() {
+        func t(_ id: String, resolved: Bool = false, outdated: Bool = false, reply: String? = nil,
+               by poster: String = "teammate", title: String = "Unchecked nil") -> ReviewThread {
+            var comments = [comment(poster, "**\(title)**\n\nboom\n\n\(marker)")]
+            if let reply { comments.append(comment(reply, "ok")) }
+            return ReviewThread(id: id, isResolved: resolved, isOutdated: outdated, path: "a.swift", comments: comments)
+        }
+        let threads = [
+            t("resolved", resolved: true),
+            t("fixed", outdated: true, title: "Fixed one"),
+            t("answered", reply: author, title: "Answered one"),
+            t("ignored", reply: "bystander", title: "Ignored one"),
+            t("raised", by: me, title: "Unchecked nil"),
+            ReviewThread(id: "human", isResolved: false, isOutdated: false, path: "a.swift",
+                         comments: [comment(me, "**Hand typed**\n\nhm")]),
+        ]
+        let facts = ReviewThreadResolver.tally(
+            threads: threads, annotations: [annotation(path: "a.swift", title: "Unchecked nil")], prAuthor: author)
+        XCTAssertEqual(facts, ThreadFacts(total: 5, resolved: 1, outdated: 1, answered: 1, unaddressed: 2, raisedAgain: 1))
+    }
 }

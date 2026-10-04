@@ -238,5 +238,12 @@ extension RuleCatalog {
         "review.prior[].confidence": "That review's confidence.",
         "review.prior[].findings": "How many findings.",
         "review.prior[].max_severity": "The worst finding's severity.",
+        "review.threads": "PRBar's inline threads already on the PR, from any reviewer's PRBar. Null when they couldn't be read.",
+        "review.threads.total": "How many.",
+        "review.threads.resolved": "Resolved.",
+        "review.threads.outdated": "Unresolved, and the code they point at changed since.",
+        "review.threads.answered": "Unresolved, and the PR author replied.",
+        "review.threads.unaddressed": "Unresolved, the code unchanged and no reply from the PR author.",
+        "review.threads.raised_again": "Unresolved, and this review reports the same finding again.",
     ]
 }

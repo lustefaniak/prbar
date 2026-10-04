@@ -28,46 +28,88 @@ enum AutoReviewPlan {
         providerId: ProviderID,
         diffText: String,
         prior: [PriorReview] = [],
+        threads: [ReviewThread]? = nil,
         lazy: LazyFactValues = LazyFactValues(),
         now: Date = Date(),
         onRule: ((RuleLayer, DecideFacts, RuleDecision?) -> Void)? = nil
     ) -> Outcome {
+        let threadFacts = threads.map {
+            ReviewThreadResolver.tally(threads: $0, annotations: review.annotations, prAuthor: pr.author)
+        }
+        let outcome = decide(
+            pr: pr, review: review, config: config, providerId: providerId, diffText: diffText,
+            prior: prior, threads: threadFacts, lazy: lazy, now: now, onRule: onRule)
+        return stamped(outcome.outcome, review: review, providerId: providerId, threads: threadFacts,
+                       decidedBy: outcome.decidedBy, held: outcome.held)
+    }
+
+    /// Every staged post carries a `VerdictStamp` for the marker.
+    private static func stamped(
+        _ outcome: Outcome, review: AggregatedReview, providerId: ProviderID, threads: ThreadFacts?,
+        decidedBy: String, held: String?
+    ) -> Outcome {
+        func stamp(_ staged: ReviewQueueWorker.StagedAutoReview, flag: Bool) -> ReviewQueueWorker.StagedAutoReview {
+            var staged = staged
+            let action = flag ? "flag"
+                : staged.source == .sharedFindings ? "share"
+                : staged.action?.rawValue ?? "none"
+            staged.stamp = VerdictStamp(
+                action: action, decidedBy: decidedBy, held: held, review: review, provider: providerId,
+                inline: staged.comments.count, threads: threads)
+            return staged
+        }
+        switch outcome {
+        case .post(let staged): return .post(stamp(staged, flag: false))
+        case .flag(let staged): return .flag(stamp(staged, flag: true))
+        case .none, .needs: return outcome
+        }
+    }
+
+    private static func decide(
+        pr: InboxPR, review: AggregatedReview, config: ResolvedRepoConfig, providerId: ProviderID, diffText: String,
+        prior: [PriorReview], threads: ThreadFacts?, lazy: LazyFactValues, now: Date,
+        onRule: ((RuleLayer, DecideFacts, RuleDecision?) -> Void)?
+    ) -> (outcome: Outcome, decidedBy: String, held: String?) {
         let settings = AutoReviewPolicy.evaluate(pr: pr, review: review, providerId: providerId, config: config)
         // The layers bottom up, each seeing the one under it as `below`;
         // the highest that matches decides.
+        let settingsReason = BelowFacts.settings(settings).reason
         var below = BelowFacts.settings(settings)
         var decided: RuleDecision?
+        var decidedLayer: RuleLayer?
         for (layer, rules) in config.ruleLayers where layer == .personal || !rules.decide.isEmpty || rules.failure != nil {
             let facts = decideFacts(pr: pr, review: review, providerId: providerId, diffText: diffText,
-                                    prior: prior, lazy: lazy, rules: rules, now: now, below: below)
+                                    prior: prior, threads: threads, lazy: lazy, rules: rules, now: now, below: below)
             // The diff is in hand, so the files are never pending here.
             do {
                 switch try rules.decide(facts, pending: lazy.pending.subtracting([.files])) {
                 case .needs(let needed):
-                    return .needs(needed)
+                    return (.needs(needed), "", nil)
                 case .decided(let decision):
                     onRule?(layer, facts, decision)
                     if let decision {
                         decided = decision
+                        decidedLayer = layer
                         below = .rule(decision.rule, action: decision.action.rawValue, reason: nil, layer: layer)
                     }
                 }
             } catch {
                 // Posting nothing is the side that can't go wrong in public.
                 PRBarLog.triage.error("decide rule failed layer=\(layer.rawValue, privacy: .public) pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public): \(String(describing: error), privacy: .public)")
-                return .none(reason: "a decide rule failed, nothing posted: \(error)")
+                return (.none(reason: "a decide rule failed, nothing posted: \(error)"), "", nil)
             }
         }
-        if let decided {
-            return plan(decided, pr: pr, review: review, diffText: diffText, now: now)
+        if let decided, let decidedLayer {
+            return (plan(decided, pr: pr, review: review, diffText: diffText, now: now),
+                    "rule \(decidedLayer.rawValue)/\(decided.rule)", settingsReason.isEmpty ? nil : settingsReason)
         }
         switch settings {
         case .skip(let reason):
-            return .none(reason: reason)
+            return (.none(reason: reason), "settings", reason)
 
         case .approve:
             let cfg = config.autoApprove
-            return .post(.init(
+            return (.post(.init(
                 pr: pr,
                 review: review,
                 action: .approve,
@@ -79,9 +121,9 @@ enum AutoReviewPlan {
                     ? inlineComments(review.annotations, diffText: diffText)
                     : [],
                 stagedAt: now
-            ))
+            )), "settings", nil)
 
-        case .share:
+        case .share(let held):
             // Only the annotations the policy actually asked for — sharing
             // "warnings and blockers" while posting every nitpick inline
             // would contradict the setting the user chose.
@@ -98,7 +140,7 @@ enum AutoReviewPlan {
                 shared = Array(shared.prefix(cap))
             }
             let comments = inlineComments(shared, diffText: diffText)
-            return .post(.init(
+            return (.post(.init(
                 pr: pr,
                 review: review,
                 action: .comment,
@@ -112,7 +154,7 @@ enum AutoReviewPlan {
                 comments: comments,
                 stagedAt: now,
                 source: .sharedFindings
-            ))
+            )), "settings", held)
 
         case .deny(let denyAction):
             let cfg = config.autoDeny
@@ -131,18 +173,19 @@ enum AutoReviewPlan {
                     : [],
                 stagedAt: now
             )
-            return denyAction == .flagOnly ? .flag(staged) : .post(staged)
+            return (denyAction == .flagOnly ? .flag(staged) : .post(staged), "settings", nil)
         }
     }
 
     static func decideFacts(
         pr: InboxPR, review: AggregatedReview, providerId: ProviderID, diffText: String,
-        prior: [PriorReview], lazy: LazyFactValues, rules: Rules, now: Date, below: BelowFacts? = nil
+        prior: [PriorReview], threads: ThreadFacts? = nil, lazy: LazyFactValues, rules: Rules, now: Date,
+        below: BelowFacts? = nil
     ) -> DecideFacts {
         DecideFacts(
             pr: ChangeFacts(pr, now: now, files: FileFacts.list(diff: diffText), committers: lazy.committers,
                 codeowners: lazy.codeowners),
-            review: ReviewFacts(review, provider: providerId, prior: prior),
+            review: ReviewFacts(review, provider: providerId, prior: prior, threads: threads),
             viewer: pr.viewerLogin, lists: rules.lists, now: now, below: below)
     }
 
@@ -223,5 +266,22 @@ enum AutoReviewPlan {
 
     private static func formatConfidence(_ c: Double) -> String {
         String(format: "%.0f%%", c * 100)
+    }
+}
+
+extension AutoReviewPlan.Outcome {
+    /// The model and effort the run used, which only the worker knows.
+    func withAgent(model: String?, effort: String?) -> Self {
+        func with(_ staged: ReviewQueueWorker.StagedAutoReview) -> ReviewQueueWorker.StagedAutoReview {
+            var staged = staged
+            staged.stamp?.model = model
+            staged.stamp?.effort = effort
+            return staged
+        }
+        switch self {
+        case .post(let staged): return .post(with(staged))
+        case .flag(let staged): return .flag(with(staged))
+        case .none, .needs: return self
+        }
     }
 }

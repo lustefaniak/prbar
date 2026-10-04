@@ -467,7 +467,7 @@ final class ReviewQueueWorker {
     var enqueueAutoReview: (@MainActor (
         _ pr: InboxPR, _ kind: ReviewActionKind, _ body: String,
         _ comments: [GHClient.InlineComment], _ costUsd: Double,
-        _ source: ActionSource
+        _ source: ActionSource, _ stamp: VerdictStamp?
     ) -> Void)?
 
     @ObservationIgnored
@@ -515,6 +515,8 @@ final class ReviewQueueWorker {
         /// the same COMMENT event with the same body shape, so the source
         /// is the only thing that tells them apart downstream.
         var source: ActionSource = .automated
+        /// Why it is being posted, for the verdict marker.
+        var stamp: VerdictStamp? = nil
     }
 
     init(
@@ -1281,7 +1283,9 @@ final class ReviewQueueWorker {
             // run and filtered per subdiff below. A failure here degrades
             // the prompt, so it must never fail the review — the same
             // reason `resolveAddressedThreads` swallows its own.
-            var priorThreads: [ReviewThread] = []
+            // Nil when the read failed, so the thread facts read as unknown
+            // rather than as a PR with no threads.
+            var priorThreads: [ReviewThread]?
             if let fetcher = reviewThreadFetcher, pr.local == nil {
                 do {
                     priorThreads = try await fetcher(pr.owner, pr.repo, pr.number).threads
@@ -1322,7 +1326,7 @@ final class ReviewQueueWorker {
                     pr: pr,
                     subdiff: subdiff,
                     diffText: diffText,
-                    priorThreads: threads(priorThreads, for: subdiff),
+                    priorThreads: threads(priorThreads ?? [], for: subdiff),
                     ciFailures: ciFailures,
                     toolMode: effectiveToolMode,
                     workdir: workdir,
@@ -1394,7 +1398,10 @@ final class ReviewQueueWorker {
             // waiting for "complete and nothing staged" can't mistake a
             // rule still fetching its facts for "nothing to post".
             let autoPlan = pr.local == nil
-                ? await planAutoReview(pr: pr, review: aggregated, config: config, providerId: chosenProviderId, diffText: diffText)
+                ? await planAutoReview(
+                    pr: pr, review: aggregated, config: config, providerId: chosenProviderId, diffText: diffText,
+                    threads: reviewThreadFetcher == nil ? nil : priorThreads
+                ).withAgent(model: resolvedModel, effort: resolvedEffort)
                 : nil
             let runElapsedMs = Int(Date().timeIntervalSince(runStart) * 1000)
             PRBarLog.triage.notice("run done pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) sha=\(self.short(pr.headSha), privacy: .public) verdict=\(aggregated.verdict.rawValue, privacy: .public) confidence=\(self.fmt(aggregated.confidence), privacy: .public) cost=\(self.fmt(aggregated.costUsd), privacy: .public) annotations=\(aggregated.annotations.count, privacy: .public) elapsedMs=\(runElapsedMs, privacy: .public)")
@@ -1540,7 +1547,8 @@ final class ReviewQueueWorker {
     /// correlated against the diff now — `fireBatch` runs after the undo
     /// window and no longer has one.
     private func planAutoReview(
-        pr: InboxPR, review: AggregatedReview, config: ResolvedRepoConfig, providerId: ProviderID, diffText: String
+        pr: InboxPR, review: AggregatedReview, config: ResolvedRepoConfig, providerId: ProviderID, diffText: String,
+        threads: [ReviewThread]?
     ) async -> AutoReviewPlan.Outcome {
         let config = await layeredConfig(config, for: pr)
         let prior = reviews[pr.nodeId]?.priorReviews ?? []
@@ -1549,7 +1557,7 @@ final class ReviewQueueWorker {
             let fetched = lazy.fetched.union([.files])
             let outcome = AutoReviewPlan.plan(
                 pr: pr, review: review, config: config, providerId: providerId, diffText: diffText,
-                prior: prior, lazy: lazy
+                prior: prior, threads: threads, lazy: lazy
             ) { [weak self] layer, facts, decision in
                 guard let self, let rules = config.rules(layer) else { return }
                 self.recordRuleEvaluation(
@@ -1650,7 +1658,7 @@ final class ReviewQueueWorker {
             if let enqueueAutoReview {
                 enqueueAutoReview(
                     entry.pr, action, entry.body, entry.comments,
-                    entry.review.costUsd, entry.source
+                    entry.review.costUsd, entry.source, entry.stamp
                 )
                 continue
             }

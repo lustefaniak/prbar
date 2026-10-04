@@ -42,7 +42,7 @@ enum RuntimeFixtures {
 
     static func requestedPR(
         nodeId: String = "PR_1", number: Int = 1, headSha: String = "abc123", isDraft: Bool = false,
-        role: PRRole = .reviewRequested
+        role: PRRole = .reviewRequested, additions: Int = 1
     ) -> InboxPR {
         InboxPR(
             nodeId: nodeId, owner: "o", repo: "r", number: number,
@@ -52,7 +52,7 @@ enum RuntimeFixtures {
             role: role,
             mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", reviewDecision: nil,
             checkRollupState: "PENDING",
-            totalAdditions: 1, totalDeletions: 0, changedFiles: 1,
+            totalAdditions: additions, totalDeletions: 0, changedFiles: 1,
             hasAutoMerge: false, autoMergeEnabledBy: nil, allCheckSummaries: [],
             allowedMergeMethods: [.squash], autoMergeAllowed: true, deleteBranchOnMerge: true
         )
