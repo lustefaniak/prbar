@@ -40,6 +40,10 @@ final class RuleCodeEditorTests: XCTestCase {
         coordinator.load(textView, path: "lists.yaml", text: lines(6))
         settle(window)
         XCTAssertGreaterThanOrEqual(textView.frame.height, scroll.contentView.bounds.height)
+
+        scroll.setFrameSize(NSSize(width: 500, height: 600))
+        settle(window)
+        XCTAssertGreaterThanOrEqual(textView.frame.height, scroll.contentView.bounds.height)
     }
 
     func testSwitchingFilesScrollsBackToTheTop() async {
