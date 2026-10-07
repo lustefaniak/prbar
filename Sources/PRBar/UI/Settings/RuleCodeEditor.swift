@@ -43,6 +43,14 @@ struct RuleCodeEditor: NSViewRepresentable {
     let onChange: (String) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
+        let scroll = Self.makeScrollView(delegate: context.coordinator)
+        let textView = scroll.documentView as! RuleTextView
+        controller.textView = textView
+        context.coordinator.load(textView, path: path, text: text)
+        return scroll
+    }
+
+    static func makeScrollView(delegate: NSTextViewDelegate) -> NSScrollView {
         let textView = RuleTextView()
         textView.isRichText = false
         textView.allowsUndo = true
@@ -61,7 +69,7 @@ struct RuleCodeEditor: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = false
         textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.delegate = context.coordinator
+        textView.delegate = delegate
 
         let scroll = NSScrollView()
         scroll.documentView = textView
@@ -72,9 +80,6 @@ struct RuleCodeEditor: NSViewRepresentable {
         scroll.verticalRulerView = ruler
         scroll.hasVerticalRuler = true
         scroll.rulersVisible = true
-
-        controller.textView = textView
-        context.coordinator.load(textView, path: path, text: text)
         return scroll
     }
 
