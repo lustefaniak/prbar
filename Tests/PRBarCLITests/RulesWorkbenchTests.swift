@@ -204,6 +204,58 @@ final class RulesWorkbenchTests: XCTestCase {
         }
     }
 
+    /// A proposal that deletes a file is tried without it: the preview runs
+    /// the rules accepting it would leave, and saving that file deletes it.
+    func testTryingAProposalLeavesOutTheFilesItDeletes() async throws {
+        try write("lists.yaml", "bots: [a]\ncore: [a]\n")
+        try write("select/10-old.yaml", Self.skipBots.replacingOccurrences(of: "lists.bots", with: "lists.core"))
+        _ = try startServer()
+        let client = try await connect()
+        let workbench = RulesWorkbench(call: RulesWorkbench.Caller(
+            files: { try await client.call(.ruleFiles, APIEmpty(), as: RuleFilesResult.self) },
+            records: { _ in [] },
+            explain: { pr, draft in
+                try await client.call(.explainRules, ExplainRulesParams(pr: pr, draft: draft), as: RulesExplanation.self)
+            },
+            replay: { _, _ in throw RPCError(code: 0, message: "unused") },
+            impact: { _, _ in RuleImpact(examined: 0, changes: []) },
+            save: { params in _ = try await client.call(.saveRuleFile, params, as: APIEmpty.self) }))
+        workbench.debounce = .zero
+        await workbench.load()
+
+        let draft = RuleDraft(
+            files: ["lists.yaml": "bots: [a]\n", "select/10-new.yaml": Self.skipBots],
+            removed: ["select/10-old.yaml"])
+        let proposal = RuleProposal(id: UUID(), at: Date(), by: "mcp", title: "t", why: "", draft: draft, base: [:])
+        workbench.open(proposal)
+        XCTAssertEqual(workbench.draft, draft)
+        XCTAssertTrue(workbench.isRemoved("select/10-old.yaml"))
+        XCTAssertTrue(workbench.isEdited("select/10-old.yaml"))
+
+        workbench.choose(.pr(RuntimeFixtures.requestedPR()))
+        for _ in 0..<100 where workbench.explanation == nil { try await Task.sleep(for: .milliseconds(20)) }
+        let explanation = try XCTUnwrap(workbench.explanation, workbench.error ?? "")
+        XCTAssertNil(explanation.draftProblem)
+        XCTAssertEqual(explanation.layers?.last?.select?.policies.map(\.path), [dir.path + "/rules/select/10-new.yaml"])
+        XCTAssertEqual(explanation.selectOutcome, "skipped. The rule `small-bot-changes` skips it: a small bot change.")
+
+        await workbench.save("select/10-old.yaml")
+        XCTAssertNil(workbench.error)
+        XCTAssertNil(read("select/10-old.yaml"), "saving a deleted file deletes it")
+        XCTAssertFalse(workbench.paths.contains("select/10-old.yaml"))
+
+        let saved = workbench.saved["lists.yaml"]
+        workbench.edit("lists.yaml", "x")
+        workbench.open(RuleProposal(
+            id: UUID(), at: Date(), by: "mcp", title: "t", why: "", draft: RuleDraft(removed: ["lists.yaml"]), base: [:]))
+        XCTAssertEqual(workbench.text("lists.yaml"), saved, "a deleted file shows what is deleted")
+        XCTAssertEqual(workbench.draft?.removed, ["lists.yaml"])
+        XCTAssertNil(workbench.draft?.files["lists.yaml"])
+        workbench.revert("lists.yaml")
+        XCTAssertFalse(workbench.isRemoved("lists.yaml"), "revert brings a deleted file back")
+        XCTAssertEqual(workbench.text("lists.yaml"), saved)
+    }
+
     func testTheModelSendsOnlyChangedFilesAndKeepsTheNewestAnswer() async throws {
         let calls = Calls()
         let workbench = RulesWorkbench(call: RulesWorkbench.Caller(

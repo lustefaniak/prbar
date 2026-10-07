@@ -224,9 +224,10 @@ private struct RulesWorkbenchView: View {
                     HStack(spacing: 4) {
                         Text(URL(fileURLWithPath: path).lastPathComponent)
                             .lineLimit(1)
+                            .strikethrough(workbench.isRemoved(path))
                         if workbench.isEdited(path) {
                             Circle().fill(.orange).frame(width: 6, height: 6)
-                                .help("Not saved")
+                                .help(workbench.isRemoved(path) ? "Deleted, not saved" : "Not saved")
                         }
                     }
                     .tag(path)
@@ -319,13 +320,21 @@ private struct RulesWorkbenchView: View {
                     }
                     if workbench.isEdited(path) {
                         Button("Revert") { workbench.revert(path) }
-                        Button("Save") { Task { await workbench.save(path) } }
+                        Button(workbench.isRemoved(path) ? "Delete" : "Save") { Task { await workbench.save(path) } }
                             .keyboardShortcut("s", modifiers: .command)
                             .disabled(workbench.draftProblem != nil)
-                            .help(workbench.draftProblem == nil ? "Write the file; the rules load at once" : "Fix the problem below first")
+                            .help(workbench.draftProblem != nil ? "Fix the problem below first"
+                                : workbench.isRemoved(path) ? "Delete the file; the rules load at once"
+                                : "Write the file; the rules load at once")
                     }
                 }
                 .padding(8)
+                if workbench.isRemoved(path) {
+                    Label("Deleted in the edits, so it isn't tried. Delete removes the file, Revert or an edit keeps it.", systemImage: "trash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding([.horizontal, .bottom], 8)
+                }
                 Divider()
                 RuleCodeEditor(
                     path: path, text: workbench.text(path), lists: workbench.listNames,
