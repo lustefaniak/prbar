@@ -43,6 +43,14 @@ struct RuleCodeEditor: NSViewRepresentable {
     let onChange: (String) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
+        let scroll = Self.makeScrollView(delegate: context.coordinator)
+        let textView = scroll.documentView as! RuleTextView
+        controller.textView = textView
+        context.coordinator.load(textView, path: path, text: text)
+        return scroll
+    }
+
+    static func makeScrollView(delegate: NSTextViewDelegate) -> NSScrollView {
         let textView = RuleTextView()
         textView.isRichText = false
         textView.allowsUndo = true
@@ -61,7 +69,7 @@ struct RuleCodeEditor: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = false
         textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.delegate = context.coordinator
+        textView.delegate = delegate
 
         let scroll = NSScrollView()
         scroll.documentView = textView
@@ -72,9 +80,6 @@ struct RuleCodeEditor: NSViewRepresentable {
         scroll.verticalRulerView = ruler
         scroll.hasVerticalRuler = true
         scroll.rulersVisible = true
-
-        controller.textView = textView
-        context.coordinator.load(textView, path: path, text: text)
         return scroll
     }
 
@@ -107,13 +112,21 @@ struct RuleCodeEditor: NSViewRepresentable {
         }
 
         func load(_ textView: RuleTextView, path: String, text: String) {
+            let switched = self.path != path
             self.path = path
             textView.stage = RuleCatalog.Stage(path: path)
             textView.lists = parent.lists
             textView.problemLines = parent.problemLines
             textView.string = text
             textView.highlight()
-            textView.enclosingScrollView?.verticalRulerView?.needsDisplay = true
+            guard let scroll = textView.enclosingScrollView else { return }
+            if switched {
+                textView.setSelectedRange(NSRange(location: 0, length: 0))
+                textView.scroll(.zero)
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+            scroll.contentView.needsDisplay = true
+            scroll.verticalRulerView?.needsDisplay = true
         }
 
         func textDidChange(_ notification: Notification) {
@@ -141,6 +154,16 @@ final class RuleTextView: NSTextView {
     var problemLines: Set<Int> = []
 
     private let popup = CompletionPopup()
+
+    /// Never smaller than the clip view: a strip of clip view outside the
+    /// document view keeps the previous file's pixels after switching to a
+    /// shorter one.
+    override func setFrameSize(_ newSize: NSSize) {
+        guard let clip = superview as? NSClipView else { return super.setFrameSize(newSize) }
+        super.setFrameSize(NSSize(
+            width: max(newSize.width, clip.bounds.width),
+            height: max(newSize.height, clip.bounds.height)))
+    }
     private var completion: RuleCompletion.Result?
     private var selected = 0
 
