@@ -229,6 +229,7 @@ final class RulesWorkbenchTests: XCTestCase {
         let proposal = RuleProposal(id: UUID(), at: Date(), by: "mcp", title: "t", why: "", draft: draft, base: [:])
         workbench.open(proposal)
         XCTAssertEqual(workbench.draft, draft)
+        XCTAssertTrue(workbench.isRemoved("select/10-old.yaml"))
         XCTAssertTrue(workbench.isEdited("select/10-old.yaml"))
 
         workbench.choose(.pr(RuntimeFixtures.requestedPR()))
@@ -243,15 +244,16 @@ final class RulesWorkbenchTests: XCTestCase {
         XCTAssertNil(read("select/10-old.yaml"), "saving a deleted file deletes it")
         XCTAssertFalse(workbench.paths.contains("select/10-old.yaml"))
 
+        let saved = workbench.saved["lists.yaml"]
+        workbench.edit("lists.yaml", "x")
         workbench.open(RuleProposal(
             id: UUID(), at: Date(), by: "mcp", title: "t", why: "", draft: RuleDraft(removed: ["lists.yaml"]), base: [:]))
+        XCTAssertEqual(workbench.text("lists.yaml"), saved, "a deleted file shows what is deleted")
+        XCTAssertEqual(workbench.draft?.removed, ["lists.yaml"])
+        XCTAssertNil(workbench.draft?.files["lists.yaml"])
         workbench.revert("lists.yaml")
-        workbench.edit("select/10-new.yaml", "x")
-        workbench.open(RuleProposal(
-            id: UUID(), at: Date(), by: "mcp", title: "t", why: "", draft: RuleDraft(removed: ["select/10-new.yaml"]), base: [:]))
-        XCTAssertEqual(workbench.text("select/10-new.yaml"), Self.skipBots, "a deleted file shows what is deleted")
-        XCTAssertEqual(workbench.draft?.removed, ["select/10-new.yaml"])
-        XCTAssertNil(workbench.draft?.files["select/10-new.yaml"])
+        XCTAssertFalse(workbench.isRemoved("lists.yaml"), "revert brings a deleted file back")
+        XCTAssertEqual(workbench.text("lists.yaml"), saved)
     }
 
     func testTheModelSendsOnlyChangedFilesAndKeepsTheNewestAnswer() async throws {

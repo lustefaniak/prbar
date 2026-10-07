@@ -27,6 +27,9 @@ final class RulesWorkbench {
     private(set) var saved: [String: String] = [:]
     /// Edited text, by path; a path absent from `saved` is a new file.
     private(set) var edits: [String: String] = [:]
+    /// Saved files deleted in the edits; the editor still shows their
+    /// saved text.
+    private(set) var removed: Set<String> = []
     private(set) var issue: String?
     var selectedPath: String?
 
@@ -122,12 +125,15 @@ final class RulesWorkbench {
     }
 
     func text(_ path: String) -> String {
-        edits[path] ?? saved[path] ?? ""
+        if isRemoved(path) { return saved[path] ?? "" }
+        return edits[path] ?? saved[path] ?? ""
     }
 
     func isEdited(_ path: String) -> Bool {
-        edits[path] != nil && edits[path] != saved[path]
+        isRemoved(path) || (edits[path] != nil && edits[path] != saved[path])
     }
+
+    func isRemoved(_ path: String) -> Bool { removed.contains(path) }
 
     var hasEdits: Bool { paths.contains(where: isEdited) }
 
@@ -203,8 +209,8 @@ final class RulesWorkbench {
 
     /// The unsaved edits, as the server evaluates them.
     var draft: RuleDraft? {
-        let files = edits.filter { saved[$0.key] != $0.value }
-        return files.isEmpty ? nil : RuleDraft(files: files)
+        let files = edits.filter { saved[$0.key] != $0.value && !removed.contains($0.key) }
+        return files.isEmpty && removed.isEmpty ? nil : RuleDraft(files: files, removed: removed.sorted())
     }
 
     func load() async {
@@ -214,6 +220,7 @@ final class RulesWorkbench {
             saved = result.files
             issue = result.issue
             edits = edits.filter { saved[$0.key] != $0.value }
+            removed = removed.filter { saved[$0] != nil }
             if selectedPath.map({ !paths.contains($0) }) ?? true { selectedPath = paths.first }
             records = try await call.records(200)
             error = nil
@@ -225,12 +232,14 @@ final class RulesWorkbench {
 
     func edit(_ path: String, _ text: String) {
         guard text != self.text(path) else { return }
+        removed.remove(path)
         edits[path] = text
         evaluateSoon()
     }
 
     func revert(_ path: String) {
         edits.removeValue(forKey: path)
+        removed.remove(path)
         if saved[path] == nil, selectedPath == path { selectedPath = paths.first }
         evaluateSoon(after: .zero)
     }
@@ -244,11 +253,13 @@ final class RulesWorkbench {
     }
 
     func save(_ path: String) async {
-        guard let text = edits[path] else { return }
+        let text = isRemoved(path) ? nil : edits[path]
+        guard text != nil || isRemoved(path) else { return }
         do {
             try await call.save(SaveRuleFileParams(path: path, text: text, base: saved[path]))
             saved[path] = text
             edits.removeValue(forKey: path)
+            removed.remove(path)
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -322,12 +333,19 @@ final class RulesWorkbench {
     // MARK: - proposals
 
     /// Opens a proposal's files as unsaved edits, so it is tried on PRs
-    /// and on the record like any edit before it is accepted.
+    /// and on the record like any edit before it is accepted. The files it
+    /// deletes are deleted in the edits too, or the preview would run
+    /// rules that accepting it never leaves on disk.
     func open(_ proposal: RuleProposal) {
         for (path, text) in proposal.draft.files where RuleDirectory.isRuleFile(path) {
             edits[path] = text
+            removed.remove(path)
         }
-        selectedPath = proposal.draft.files.keys.sorted().first ?? selectedPath
+        for path in proposal.draft.removed where saved[path] != nil {
+            edits.removeValue(forKey: path)
+            removed.insert(path)
+        }
+        selectedPath = (Array(proposal.draft.files.keys) + proposal.draft.removed).sorted().first ?? selectedPath
         evaluateSoon(after: .zero)
     }
 
@@ -337,6 +355,7 @@ final class RulesWorkbench {
             for path in proposal.draft.files.keys where edits[path] == proposal.draft.files[path] {
                 edits.removeValue(forKey: path)
             }
+            removed.subtract(proposal.draft.removed)
             error = nil
         } catch {
             self.error = error.localizedDescription
