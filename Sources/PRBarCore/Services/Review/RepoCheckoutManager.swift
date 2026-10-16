@@ -321,7 +321,47 @@ actor RepoCheckoutManager {
         guard let gitPath = ExecutableResolver.find("git") else {
             throw CheckoutError.toolNotFound("git")
         }
-        return try await ProcessRunner.run(executable: gitPath, args: args)
+        return try await ProcessRunner.run(
+            executable: gitPath,
+            args: args,
+            environment: try await gitEnvironment(gitPath: gitPath)
+        )
+    }
+
+    /// ssh has no read timeout: a connection that dies mid-fetch leaves
+    /// `git fetch` (and the review waiting on it) blocked forever, with no
+    /// error to surface. Keepalives make ssh give up after ~2 minutes of
+    /// silence, so the fetch fails and the review reports it.
+    static let sshKeepaliveCommand = "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4"
+
+    /// Overrides to pass to git, or nil to inherit the environment as is.
+    /// A user-chosen ssh command (`GIT_SSH_COMMAND`, `GIT_SSH` or
+    /// `core.sshCommand`) wins: `GIT_SSH_COMMAND` would override all three.
+    static func gitEnvironment(
+        inherited: [String: String],
+        configuredSSHCommand: String?
+    ) -> [String: String]? {
+        let userChoseSSH = inherited["GIT_SSH_COMMAND"] != nil
+            || inherited["GIT_SSH"] != nil
+            || !(configuredSSHCommand ?? "").isEmpty
+        guard !userChoseSSH else { return nil }
+        return ProcessRunner.inheritedEnvironment(overrides: ["GIT_SSH_COMMAND": sshKeepaliveCommand])
+    }
+
+    private var cachedGitEnvironment: [String: String]??
+
+    private func gitEnvironment(gitPath: String) async throws -> [String: String]? {
+        if let cached = cachedGitEnvironment { return cached }
+        let configured = try await ProcessRunner.run(
+            executable: gitPath,
+            args: ["config", "--get", "core.sshCommand"]
+        )
+        let env = Self.gitEnvironment(
+            inherited: ProcessInfo.processInfo.environment,
+            configuredSSHCommand: configured.succeeded ? configured.stdoutString : nil
+        )
+        cachedGitEnvironment = .some(env)
+        return env
     }
 
     /// Handle returned from `provision`. Pass to `release` to tear down
