@@ -208,6 +208,21 @@ final class RepoCheckoutManagerTests: XCTestCase {
         await manager.release(handle)
     }
 
+    func testGitEnvironmentAddsSSHKeepalives() {
+        let env = RepoCheckoutManager.gitEnvironment(inherited: [:], configuredSSHCommand: nil)
+        XCTAssertEqual(env?["GIT_SSH_COMMAND"], RepoCheckoutManager.sshKeepaliveCommand)
+        XCTAssertNotNil(env?["PATH"], "overrides must layer on the inherited environment, not replace it")
+    }
+
+    func testGitEnvironmentLeavesAUserChosenSSHCommandAlone() {
+        XCTAssertNil(RepoCheckoutManager.gitEnvironment(
+            inherited: ["GIT_SSH_COMMAND": "ssh -i key"], configuredSSHCommand: nil))
+        XCTAssertNil(RepoCheckoutManager.gitEnvironment(
+            inherited: ["GIT_SSH": "/usr/local/bin/myssh"], configuredSSHCommand: nil))
+        XCTAssertNil(RepoCheckoutManager.gitEnvironment(
+            inherited: [:], configuredSSHCommand: "ssh -o IdentityAgent=x\n"))
+    }
+
     // MARK: - helpers
 
     private func runGit(in cwd: URL, _ args: [String]) async throws {
