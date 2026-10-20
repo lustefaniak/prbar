@@ -8,6 +8,15 @@ struct ClaudeProvider: ReviewProvider {
     var id: String { "claude" }
     var displayName: String { "Claude" }
 
+    /// Test seam: the `claude` to run instead of the one on the search path.
+    var executablePath: String? = nil
+
+    /// A review concluded on budget covered only part of the change, so it
+    /// must not clear any gate that acts on its own: this sits under the
+    /// auto-approve and auto-deny floors, and at share-findings' floor so
+    /// what it found still reaches the author.
+    static let wrapUpConfidenceCeiling = 0.5
+
     enum ClaudeError: Error, LocalizedError, Sendable {
         case notInstalled
         case execFailed(stderr: String, exitCode: Int32)
@@ -56,7 +65,7 @@ struct ClaudeProvider: ReviewProvider {
         options: ProviderOptions,
         onProgress: (@Sendable (ReviewProgress) -> Void)? = nil
     ) async throws -> ProviderResult {
-        guard let claudePath = ExecutableResolver.find("claude") else {
+        guard let claudePath = executablePath ?? ExecutableResolver.find("claude") else {
             throw ClaudeError.notInstalled
         }
 
