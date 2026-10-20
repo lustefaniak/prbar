@@ -8,26 +8,13 @@ import XCTest
 /// for a day because the popover's close was never reported.
 @MainActor
 final class PopoverVisibilityTests: XCTestCase {
-    private final class Flags {
-        var appeared = 0
-        var disappeared = 0
-    }
-
-    private struct Probe: View {
-        let flags: Flags
-        var body: some View {
-            Text("probe")
-                .frame(width: 100, height: 40)
-                .onAppear { flags.appeared += 1 }
-                .onDisappear { flags.disappeared += 1 }
-        }
-    }
-
-    func testClosingThePopoverIsReported() async throws {
-        let flags = Flags()
+    func testEveryOpenAndCloseIsReported() async throws {
+        var reported: [Bool] = []
+        let relay = PopoverVisibilityRelay { reported.append($0) }
         let popover = NSPopover()
         popover.animates = false
-        popover.contentViewController = NSHostingController(rootView: Probe(flags: flags))
+        popover.delegate = relay
+        popover.contentViewController = NSHostingController(rootView: Text("probe").frame(width: 100, height: 40))
         let window = NSWindow(
             contentRect: NSRect(x: 200, y: 200, width: 200, height: 100),
             styleMask: [.borderless], backing: .buffered, defer: false
@@ -42,7 +29,6 @@ final class PopoverVisibilityTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(300))
         }
 
-        XCTAssertGreaterThanOrEqual(flags.appeared, 1)
-        XCTAssertEqual(flags.disappeared, flags.appeared, "every open must be matched by a reported close")
+        XCTAssertEqual(reported, [true, false, true, false])
     }
 }
