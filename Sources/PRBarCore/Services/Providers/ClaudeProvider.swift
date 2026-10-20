@@ -17,6 +17,59 @@ struct ClaudeProvider: ReviewProvider {
     /// what it found still reaches the author.
     static let wrapUpConfidenceCeiling = 0.5
 
+    /// The result `subtype` claude ends with when `--max-budget-usd` stops it.
+    static let budgetStopSubtype = "error_max_budget_usd"
+
+    static let wrapUpPrompt = """
+        You have reached your review budget. Do not run any more tools. \
+        Based only on what you have already read, return your final review \
+        now via StructuredOutput. Report the findings you verified, and say \
+        in the summary which parts of the change you did not get to. Do not \
+        approve a change you did not finish reading.
+        """
+
+    /// What the conclusion round may spend on top of the cap. It is one
+    /// answer from a cached prefix, so a few cents in practice; the margin
+    /// only keeps a long transcript from being cut off.
+    static func wrapUpAllowance(cap: Double) -> Double {
+        max(0.25, cap * 0.1)
+    }
+
+    enum Session: Sendable, Hashable {
+        case start(String)
+        case resume(String)
+    }
+
+    private struct Run {
+        let result: ProcessResult
+        let state: ClaudeStreamState
+        let stream: String
+    }
+
+    private func run(
+        _ claudePath: String,
+        args: [String],
+        cwd: URL?,
+        stdin: String,
+        options: ProviderOptions,
+        onProgress: (@Sendable (ReviewProgress) -> Void)?
+    ) async throws -> Run {
+        let live = LiveState()
+        let result = try await ProcessRunner.runStreaming(
+            executable: claudePath,
+            args: args,
+            cwd: cwd,
+            environment: ProcessRunner.inheritedEnvironment(overrides: options.environment),
+            stdin: Data(stdin.utf8),
+            timeout: options.timeout
+        ) { line in
+            onProgress?(live.consume(line: line))
+            return .keepRunning
+        }
+        let stream = result.stdoutString ?? ""
+        return Run(result: result, state: ClaudeStreamParser.parseFull(stream), stream: stream)
+    }
+
     enum ClaudeError: Error, LocalizedError, Sendable {
         case notInstalled
         case execFailed(stderr: String, exitCode: Int32)
@@ -69,74 +122,71 @@ struct ClaudeProvider: ReviewProvider {
             throw ClaudeError.notInstalled
         }
 
-        let args = Self.buildArgs(bundle: bundle, options: options)
         let cwd = Self.resolveCwd(bundle: bundle, options: options)
         defer { Self.cleanupCwd(cwd, options: options) }
 
+        // Our own session id, so a run stopped by its budget can be resumed.
+        let sessionID = UUID().uuidString.lowercased()
         // The user prompt goes via stdin (it's typically 5–20 KB and we
         // don't want to hit argv size limits).
-        let stdin = Data(bundle.userPrompt.utf8)
-
-        // Per-line state — updated from the readability handler thread,
-        // so guard with a lock. Cost cap is checked after every event
-        // and triggers an in-band SIGTERM when exceeded.
-        let live = LiveState(maxCostUsd: options.maxCostUsd)
-        let result = try await ProcessRunner.runStreaming(
-            executable: claudePath,
-            args: args,
-            cwd: cwd,
-            environment: ProcessRunner.inheritedEnvironment(overrides: options.environment),
-            stdin: stdin,
-            timeout: options.timeout
-        ) { line in
-            let progress = live.consume(line: line)
-            onProgress?(progress)
-            return live.shouldKill ? .kill : .keepRunning
-        }
-
-        // Even if we sent SIGTERM the child still produces a partial
-        // stream — parse what we got and surface budget-exceeded as the
-        // primary error. This keeps the user-visible message accurate
-        // ("budget exceeded") rather than the secondary exec failure.
-        let stream = result.stdoutString ?? ""
-        let state = ClaudeStreamParser.parseFull(stream)
-
-        if let detail = live.budgetExceededDetail {
-            throw ClaudeError.budgetExceeded(detail)
-        }
-
-        guard result.succeeded else {
-            // claude reports API and login errors as a result event on
-            // stdout and exits 1 with stderr empty.
-            let stderr = result.stderrString ?? ""
-            let reported = state.isError == true ? (state.apiErrorStatus ?? state.resultText) : nil
-            throw ClaudeError.execFailed(
-                stderr: stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? reported ?? "" : stderr,
-                exitCode: result.exitCode
-            )
-        }
-
-        guard state.receivedResult else {
-            throw ClaudeError.noResultEvent
-        }
-        if state.isError == true {
-            let reason = state.apiErrorStatus ?? state.resultText ?? "unknown"
-            throw ClaudeError.isError(reason: reason)
-        }
-
-        // Tool-call cap is informational only — claude in plan mode
-        // fires ambient tools we don't enumerate (Skill, Monitor, MCP).
-        // Cost cap is enforced live above; this is the post-hoc safety
-        // net for any race where the SIGTERM didn't land in time.
-        let budget = ClaudeStreamParser.budgetVerdict(
-            state: state,
-            maxToolCalls: options.maxToolCalls,
-            maxCostUsd: options.maxCostUsd
+        let first = try await run(
+            claudePath, args: Self.buildArgs(bundle: bundle, options: options, session: .start(sessionID)),
+            cwd: cwd, stdin: bundle.userPrompt, options: options, onProgress: onProgress
         )
-        if case .costExceeded(let cost, let max) = budget {
-            throw ClaudeError.budgetExceeded(String(format: "$%.4f spent (cap $%.2f)", cost, max))
+        var state = first.state
+        var stream = first.stream
+        var concludedOnBudget = false
+
+        if state.subtype == Self.budgetStopSubtype {
+            // `--max-budget-usd` is checked between turns, so the run can
+            // overshoot by one turn, and that turn's tool results are lost.
+            // Everything before it is in the session: resume it for one
+            // answer with the same flags, so the cached prefix is reused and
+            // the round costs cents. `total_cost_usd` stays cumulative.
+            var wrapUp = options
+            wrapUp.maxCostUsd = options.maxCostUsd + Self.wrapUpAllowance(cap: options.maxCostUsd)
+            let second = try await run(
+                claudePath, args: Self.buildArgs(bundle: bundle, options: wrapUp, session: .resume(sessionID)),
+                cwd: cwd, stdin: Self.wrapUpPrompt, options: options, onProgress: onProgress
+            )
+            let spent = second.state.costUsd ?? state.costUsd ?? 0
+            guard second.state.receivedResult, second.state.isError != true,
+                  second.state.structuredOutput != nil || !second.state.structuredOutputAttempts.isEmpty
+            else {
+                throw ClaudeError.budgetExceeded(String(
+                    format: "$%.4f spent (cap $%.2f), and the review could not be concluded from what it had read",
+                    spent, options.maxCostUsd
+                ))
+            }
+            var merged = second.state
+            merged.toolCallCount += state.toolCallCount
+            merged.toolNamesUsed = state.toolNamesUsed + merged.toolNamesUsed
+            merged.apiKeySource = merged.apiKeySource ?? state.apiKeySource
+            state = merged
+            stream += second.stream
+            concludedOnBudget = true
+        } else {
+            guard first.result.succeeded else {
+                // claude reports API and login errors as a result event on
+                // stdout and exits 1 with stderr empty.
+                let stderr = first.result.stderrString ?? ""
+                let reported = state.isError == true ? (state.apiErrorStatus ?? state.resultText) : nil
+                throw ClaudeError.execFailed(
+                    stderr: stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? reported ?? "" : stderr,
+                    exitCode: first.result.exitCode
+                )
+            }
+            guard state.receivedResult else {
+                throw ClaudeError.noResultEvent
+            }
+            if state.isError == true {
+                let reason = state.apiErrorStatus ?? state.resultText ?? "unknown"
+                throw ClaudeError.isError(reason: reason)
+            }
         }
 
+        // No cost check here: claude enforces the cap itself, and a review
+        // that finished one turn over it is paid for and worth keeping.
         if state.structuredOutput == nil && state.structuredOutputAttempts.isEmpty {
             throw ClaudeError.missingStructuredOutput
         }
@@ -154,7 +204,7 @@ struct ClaudeProvider: ReviewProvider {
 
         return ProviderResult(
             verdict: decoded.verdict,
-            confidence: decoded.confidence,
+            confidence: concludedOnBudget ? min(decoded.confidence, Self.wrapUpConfidenceCeiling) : decoded.confidence,
             summaryMarkdown: decoded.summary,
             annotations: decoded.annotations,
             costUsd: state.costUsd,
@@ -167,14 +217,21 @@ struct ClaudeProvider: ReviewProvider {
 
     // MARK: - argv assembly (extracted for testing)
 
-    static func buildArgs(bundle: PromptBundle, options: ProviderOptions) -> [String] {
+    static func buildArgs(bundle: PromptBundle, options: ProviderOptions, session: Session? = nil) -> [String] {
         var args: [String] = [
             "-p",
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", "plan",
             "--append-system-prompt", bundle.systemPrompt,
+            "--max-budget-usd", String(format: "%.2f", options.maxCostUsd),
         ]
+
+        switch session {
+        case .start(let id): args.append(contentsOf: ["--session-id", id])
+        case .resume(let id): args.append(contentsOf: ["--resume", id])
+        case nil: break
+        }
 
         if !bundle.sessionLabel.isEmpty {
             args.append(contentsOf: ["--name", bundle.sessionLabel])
@@ -285,27 +342,11 @@ struct ClaudeProvider: ReviewProvider {
     private final class LiveState: @unchecked Sendable {
         private let lock = NSLock()
         private var state = ClaudeStreamState()
-        private let maxCostUsd: Double
-        private(set) var shouldKill: Bool = false
-        private(set) var budgetExceededDetail: String? = nil
-
-        init(maxCostUsd: Double) {
-            self.maxCostUsd = maxCostUsd
-        }
 
         func consume(line: String) -> ReviewProgress {
             lock.lock()
             defer { lock.unlock() }
             ClaudeStreamParser.parseEvent(line: line, into: &state)
-            // Cost cap is the only fatal mid-stream check. Tool-call cap
-            // is informational (ambient plan-mode tools we can't filter).
-            if let cost = state.costUsd, cost > maxCostUsd, !shouldKill {
-                shouldKill = true
-                budgetExceededDetail = String(
-                    format: "$%.4f spent (cap $%.2f) — terminated mid-stream",
-                    cost, maxCostUsd
-                )
-            }
             return ReviewProgress(
                 toolCallCount: state.toolCallCount,
                 toolNamesUsed: state.toolNamesUsed,

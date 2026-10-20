@@ -23,6 +23,9 @@ struct ClaudeStreamState: Sendable {
     var isError: Bool?
     var apiErrorStatus: String?
     var resultText: String?
+    /// The result event's `subtype`: `success`, or why the run stopped
+    /// (`error_max_budget_usd`, `error_max_turns`, ...).
+    var subtype: String?
     var structuredOutput: Data?
     var terminalReason: String?
 
@@ -105,6 +108,7 @@ enum ClaudeStreamParser {
         case "result":
             state.receivedResult = true
             state.isError = obj["is_error"] as? Bool
+            state.subtype = obj["subtype"] as? String
             state.apiErrorStatus = obj["api_error_status"] as? String
             state.costUsd = obj["total_cost_usd"] as? Double
             state.resultText = obj["result"] as? String
