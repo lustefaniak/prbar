@@ -484,7 +484,7 @@ private final class ProviderCallRecorder: @unchecked Sendable {
 
 /// Like `StubProvider` but retains the most recent `bundle.userPrompt` so
 /// tests can assert what the assembler actually sent to the model.
-private final class BundleCapturingStubProvider: ReviewProvider, @unchecked Sendable {
+final class BundleCapturingStubProvider: ReviewProvider, @unchecked Sendable {
     var id: String { "capture-stub" }
     var displayName: String { "CaptureStub" }
 
