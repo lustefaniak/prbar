@@ -120,6 +120,14 @@ final class RepoConfigStore {
         get { config.defaultCodexEffort }
         set { mutate { $0.defaultCodexEffort = newValue } }
     }
+    var defaultClaudeLargeChangeEffort: String? {
+        get { config.defaultClaudeLargeChangeEffort }
+        set { mutate { $0.defaultClaudeLargeChangeEffort = newValue } }
+    }
+    var defaultCodexLargeChangeEffort: String? {
+        get { config.defaultCodexLargeChangeEffort }
+        set { mutate { $0.defaultCodexLargeChangeEffort = newValue } }
+    }
 
     /// Every provider a per-repo override currently points at. Single
     /// source for the `ProviderRelevance` call sites (General Settings

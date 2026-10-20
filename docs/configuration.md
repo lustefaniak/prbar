@@ -175,6 +175,7 @@ Settings → Review defaults edits them, one pattern per line.
 | `defaultProvider` | `auto`, `claude` or `codex`. `auto` picks claude when it's installed, else codex. Missing means `auto`. A configure rule's `provider` wins. |
 | `defaultClaudeModel`, `defaultCodexModel` | Passed as `--model`. Missing means PRBar's default (`sonnet` for claude; none for codex). `""` passes no flag, so the CLI's own configured default applies. A configure rule's `claude_model` / `codex_model` wins. |
 | `defaultClaudeEffort`, `defaultCodexEffort` | Same, for effort. Missing or `""` passes no flag. |
+| `defaultClaudeLargeChangeEffort`, `defaultCodexLargeChangeEffort` | The effort a large subreview (over ~30 KB of changed lines) is raised to. Never lowers: an effort already at or above it, from the line above or a configure rule, is kept. Missing means PRBar's default (`high` for claude, none for codex); `""` turns the raise off. |
 | `defaults` | Review settings for every repository (see above). |
 | `repositories` | Which repositories PRBar triages, hides, and reads rules from (see above). |
 | `agents` | What coding agents may do through `prbar-review mcp` (see below). |

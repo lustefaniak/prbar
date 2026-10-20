@@ -95,6 +95,11 @@ struct PRBarConfig: Sendable, Hashable, Codable {
     var defaultClaudeEffort: String?
     var defaultCodexModel: String?
     var defaultCodexEffort: String?
+    /// The effort a large change is raised to (`ContextAssembler.largeDiffThresholdBytes`).
+    /// Nil means PRBar's default (`high` for claude, none for codex); an
+    /// empty string turns the raise off.
+    var defaultClaudeLargeChangeEffort: String?
+    var defaultCodexLargeChangeEffort: String?
 
     var defaults = ReviewDefaults()
     var repositories = RepositoryScope()
@@ -116,6 +121,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         case version, defaultProvider
         case defaultClaudeModel, defaultClaudeEffort
         case defaultCodexModel, defaultCodexEffort
+        case defaultClaudeLargeChangeEffort, defaultCodexLargeChangeEffort
         case defaults, repositories, agents
     }
 
@@ -127,6 +133,8 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         defaultClaudeEffort = try c.decodeIfPresent(String.self, forKey: .defaultClaudeEffort)
         defaultCodexModel = try c.decodeIfPresent(String.self, forKey: .defaultCodexModel)
         defaultCodexEffort = try c.decodeIfPresent(String.self, forKey: .defaultCodexEffort)
+        defaultClaudeLargeChangeEffort = try c.decodeIfPresent(String.self, forKey: .defaultClaudeLargeChangeEffort)
+        defaultCodexLargeChangeEffort = try c.decodeIfPresent(String.self, forKey: .defaultCodexLargeChangeEffort)
         defaults = try c.decodeIfPresent(ReviewDefaults.self, forKey: .defaults) ?? ReviewDefaults()
         repositories = try c.decodeIfPresent(RepositoryScope.self, forKey: .repositories) ?? RepositoryScope()
         agents = try c.decodeIfPresent(AgentPolicy.self, forKey: .agents) ?? AgentPolicy()
@@ -140,6 +148,8 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         try c.encodeIfPresent(defaultClaudeEffort, forKey: .defaultClaudeEffort)
         try c.encodeIfPresent(defaultCodexModel, forKey: .defaultCodexModel)
         try c.encodeIfPresent(defaultCodexEffort, forKey: .defaultCodexEffort)
+        try c.encodeIfPresent(defaultClaudeLargeChangeEffort, forKey: .defaultClaudeLargeChangeEffort)
+        try c.encodeIfPresent(defaultCodexLargeChangeEffort, forKey: .defaultCodexLargeChangeEffort)
         if defaults != ReviewDefaults() { try c.encode(defaults, forKey: .defaults) }
         if repositories != RepositoryScope() { try c.encode(repositories, forKey: .repositories) }
         if agents != AgentPolicy() { try c.encode(agents, forKey: .agents) }
@@ -190,6 +200,9 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         worker.defaultClaudeEffort = defaultClaudeEffort ?? ""
         worker.defaultCodexModel = defaultCodexModel ?? ""
         worker.defaultCodexEffort = defaultCodexEffort ?? ""
+        worker.defaultClaudeLargeChangeEffort = defaultClaudeLargeChangeEffort
+            ?? ReviewQueueWorker.compiledDefaultClaudeLargeChangeEffort
+        worker.defaultCodexLargeChangeEffort = defaultCodexLargeChangeEffort ?? ""
     }
 }
 

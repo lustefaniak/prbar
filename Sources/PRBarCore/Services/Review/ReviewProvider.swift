@@ -29,6 +29,10 @@ struct PromptBundle: Sendable {
     /// tell the agent the range to explore (`git diff <baseSha> HEAD`).
     /// Empty when not applicable.
     var baseSha: String = ""
+
+    /// Over `ContextAssembler.largeDiffThresholdBytes`: a review that
+    /// answers early here is asked to go on (`ClaudeProvider.continueRounds`).
+    var isLargeChange: Bool = false
 }
 
 struct ProviderOptions: Sendable {

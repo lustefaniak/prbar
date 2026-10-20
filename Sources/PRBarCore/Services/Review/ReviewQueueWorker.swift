@@ -312,13 +312,39 @@ final class ReviewQueueWorker {
         }
     }
 
+    /// The effort a large change is raised to; empty = no raise. On a
+    /// 672-file PR claude's default effort read 7 commands' worth and
+    /// stopped at an eighth of its budget, while `high` read the change
+    /// in 30 for about a third of it.
+    var defaultClaudeLargeChangeEffort: String = ReviewQueueWorker.compiledDefaultClaudeLargeChangeEffort
+    nonisolated static let compiledDefaultClaudeLargeChangeEffort = "high"
+    /// Codex's large-change effort, off until it's been measured there.
+    var defaultCodexLargeChangeEffort: String = ""
+
+    /// Each CLI's effort levels, lowest first.
+    nonisolated static let claudeEffortLevels = ["low", "medium", "high", "xhigh", "max"]
+    nonisolated static let codexEffortLevels = ["none", "minimal", "low", "medium", "high", "xhigh"]
+
     /// Resolve the reasoning-effort override to pass for a run. Same
-    /// repo-override-wins-over-app-default precedence as `resolveModel`.
-    func resolveEffort(providerId: ProviderID, config: ResolvedRepoConfig) -> String? {
+    /// repo-override-wins-over-app-default precedence as `resolveModel`;
+    /// a large change is then raised to the large-change effort, never
+    /// lowered, and a value outside the CLI's known levels is left alone.
+    func resolveEffort(providerId: ProviderID, config: ResolvedRepoConfig, largeChange: Bool = false) -> String? {
+        let base: String?, raise: String?, levels: [String]
         switch providerId {
-        case .claude: return Self.nonEmpty(config.claudeEffortOverride) ?? Self.nonEmpty(defaultClaudeEffort)
-        case .codex:  return Self.nonEmpty(config.codexEffortOverride) ?? Self.nonEmpty(defaultCodexEffort)
+        case .claude:
+            base = Self.nonEmpty(config.claudeEffortOverride) ?? Self.nonEmpty(defaultClaudeEffort)
+            raise = Self.nonEmpty(defaultClaudeLargeChangeEffort)
+            levels = Self.claudeEffortLevels
+        case .codex:
+            base = Self.nonEmpty(config.codexEffortOverride) ?? Self.nonEmpty(defaultCodexEffort)
+            raise = Self.nonEmpty(defaultCodexLargeChangeEffort)
+            levels = Self.codexEffortLevels
         }
+        guard largeChange, let raise else { return base }
+        guard let base else { return raise }
+        guard let b = levels.firstIndex(of: base), let r = levels.firstIndex(of: raise) else { return base }
+        return b >= r ? base : raise
     }
 
     private static func nonEmpty(_ s: String?) -> String? {
@@ -1220,7 +1246,8 @@ final class ReviewQueueWorker {
                 ?? config.providerOverride
                 ?? defaultProviderId
             let resolvedModel = resolveModel(providerId: chosenProviderId, config: config)
-            let resolvedEffort = resolveEffort(providerId: chosenProviderId, config: config)
+            // Per subreview below; this is what the verdict stamp reports.
+            var resolvedEffort = resolveEffort(providerId: chosenProviderId, config: config)
             var effectiveToolMode = config.toolMode
             // `.sandboxed` works for both providers: claude via its
             // `--settings` Seatbelt sandbox, codex via `exec --sandbox
@@ -1365,11 +1392,15 @@ final class ReviewQueueWorker {
                             churn: churn,
                             markedGenerated: markedGenerated
                         )
-                        : nil
+                        : nil,
+                    budgetUsd: config.maxCostUsdPerSubreview
                 )
+                let subEffort = resolveEffort(
+                    providerId: chosenProviderId, config: config, largeChange: bundle.isLargeChange)
+                if bundle.isLargeChange { resolvedEffort = subEffort }
                 let options = ProviderOptions(
                     model: resolvedModel,
-                    effort: resolvedEffort,
+                    effort: subEffort,
                     toolMode: effectiveToolMode,
                     additionalAddDirs: [],
                     repoBarePath: sharedHandle?.barePath,

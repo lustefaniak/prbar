@@ -247,6 +247,32 @@ final class ContextAssemblerTests: XCTestCase {
         XCTAssertTrue(bundle.userPrompt.contains("Files changed"))
     }
 
+    func testBudgetIsStatedInDollarsAndScaledToTheChange() throws {
+        let small = try ContextAssembler.assemble(
+            pr: makePR(), subdiff: subdiff(), diffText: "", toolMode: .sandboxed,
+            workdir: URL(fileURLWithPath: "/tmp"), baseSha: "abc", budgetUsd: 3
+        ).userPrompt
+        XCTAssertTrue(small.contains("You have $3.00 of model usage for this review."))
+        XCTAssertTrue(small.contains("AGENTS.md"))
+        XCTAssertFalse(small.contains("expect to use most of the budget"))
+
+        let bigLine = String(repeating: "x", count: 200)
+        let big = Subdiff(subpath: "", hunks: (0..<200).map {
+            Hunk(filePath: "pkg/file\($0).go", oldStart: 1, oldCount: 0, newStart: 1, newCount: 1, lines: [.added(bigLine)])
+        })
+        let large = try ContextAssembler.assemble(
+            pr: makePR(), subdiff: big, diffText: "", toolMode: .sandboxed,
+            workdir: URL(fileURLWithPath: "/tmp"), baseSha: "abc", budgetUsd: 3
+        ).userPrompt
+        XCTAssertTrue(large.contains("large change (200 files), so expect to use most of the budget"))
+
+        let noTools = try ContextAssembler.assemble(
+            pr: makePR(), subdiff: subdiff(), diffText: "", toolMode: .none,
+            workdir: URL(fileURLWithPath: "/tmp"), budgetUsd: 3
+        ).userPrompt
+        XCTAssertFalse(noTools.contains("## Budget"))
+    }
+
     func testSandboxedLargeChangeLeadsWithFileListNotFullDiff() throws {
         // Build a subdiff whose changed-line content exceeds the large-diff
         // threshold so the explore prompt switches to file-list-first.

@@ -94,6 +94,7 @@ final class RepoConfigStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.defaultClaudeModel, "", "empty means pass no flag, distinct from unset")
         XCTAssertNil(reloaded.defaultCodexModel)
         XCTAssertEqual(reloaded.defaultCodexEffort, "high")
+        XCTAssertNil(reloaded.defaultClaudeLargeChangeEffort)
     }
 
     // MARK: - review defaults

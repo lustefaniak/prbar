@@ -27,7 +27,8 @@ enum ContextAssembler {
         customSystemPrompt: String? = nil,
         replaceBaseSystemPrompt: Bool = false,
         priorReviews: [PriorReview] = [],
-        riskBrief: RiskBrief? = nil
+        riskBrief: RiskBrief? = nil,
+        budgetUsd: Double? = nil
     ) throws -> PromptBundle {
         let language = subdiff.dominantLanguage
         let basePrompt = try PromptLibrary.systemPrompt(for: language)
@@ -50,7 +51,8 @@ enum ContextAssembler {
             toolMode: toolMode,
             baseSha: baseSha,
             priorReviews: priorReviews,
-            riskBrief: riskBrief
+            riskBrief: riskBrief,
+            budgetUsd: budgetUsd
         )
         let subpathTag = subdiff.subpath.isEmpty ? "root" : subdiff.subpath
         return PromptBundle(
@@ -61,7 +63,8 @@ enum ContextAssembler {
             subpath: subdiff.subpath,
             sessionLabel: pr.local.map { "prbar: \(pr.nameWithOwner) local \($0.branch) (\(subpathTag))" }
                 ?? "prbar: \(pr.nameWithOwner)#\(pr.number) (\(subpathTag))",
-            baseSha: baseSha
+            baseSha: baseSha,
+            isLargeChange: subdiffContentBytes(subdiff) > largeDiffThresholdBytes
         )
     }
 
@@ -76,7 +79,8 @@ enum ContextAssembler {
         toolMode: ToolMode,
         baseSha: String = "",
         priorReviews: [PriorReview] = [],
-        riskBrief: RiskBrief? = nil
+        riskBrief: RiskBrief? = nil,
+        budgetUsd: Double? = nil
     ) -> String {
         var out = ""
         out += "# Pull Request Review\n\n"
@@ -119,12 +123,32 @@ enum ContextAssembler {
             out += ciFailuresSection(ciFailures)
             out += "\n"
         }
+        if let budgetUsd, toolMode != .none {
+            out += budgetSection(budgetUsd: budgetUsd, subdiff: subdiff)
+            out += "\n"
+        }
         if toolMode == .sandboxed {
             out += exploreSection(baseSha: baseSha, subdiff: subdiff, hasRiskBrief: brief != nil)
         } else {
             out += diffSection(diffText)
         }
         return out
+    }
+
+    /// The review's spend in dollars, the one limit that ends a run. Told
+    /// up front because the model otherwise treats a large change like a
+    /// small one: on a 672-file PR it read two files of a $3 budget and
+    /// stopped. What to read stays the model's call, guided by the reading
+    /// order and the repository's own instructions.
+    static func budgetSection(budgetUsd: Double, subdiff: Subdiff) -> String {
+        var s = "## Budget\n\n"
+        s += String(format: "You have $%.2f of model usage for this review. ", budgetUsd)
+        s += "Spend it on reading the change, most important parts first, as the reading order and the repository's own guidance (AGENTS.md, CLAUDE.md) suggest; skipping what that guidance says to ignore is fine.\n"
+        if subdiffContentBytes(subdiff) > largeDiffThresholdBytes {
+            s += "This is a large change (\(subdiff.filePaths.count) files), so expect to use most of the budget before you can judge it. "
+            s += "If it runs out, you will be asked to conclude from what you have read.\n"
+        }
+        return s
     }
 
     /// Above this many bytes of changed-line content in a single subreview,

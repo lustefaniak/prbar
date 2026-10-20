@@ -117,10 +117,17 @@ struct GeneralSettings: View {
                     Text("XHigh").tag("xhigh")
                     Text("Max").tag("max")
                 }
+                Picker("Large changes", selection: claudeLargeChangeEffortBinding) {
+                    Text("Same as above").tag("")
+                    Text("Medium").tag("medium")
+                    Text("High").tag("high")
+                    Text("XHigh").tag("xhigh")
+                    Text("Max").tag("max")
+                }
             } header: {
                 Text("Claude model & effort")
             } footer: {
-                Text("Applies to reviews that run on the claude provider. Defaults to \"sonnet\" so PRBar never inherits whatever model you last picked in an interactive claude session — that's what silently burns extra quota. A configure rule's `claude_model` (Settings → Rules) wins over this for its repositories.")
+                Text("Applies to reviews that run on the claude provider. Defaults to \"sonnet\" so PRBar never inherits whatever model you last picked in an interactive claude session — that's what silently burns extra quota. A configure rule's `claude_model` (Settings → Rules) wins over this for its repositories. A large change is raised to the \"Large changes\" effort, never lowered: at claude's default effort a big PR gets a few files read and an approve.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -135,6 +142,12 @@ struct GeneralSettings: View {
                     Text("None").tag("none")
                     Text("Minimal").tag("minimal")
                     Text("Low").tag("low")
+                    Text("Medium").tag("medium")
+                    Text("High").tag("high")
+                    Text("XHigh").tag("xhigh")
+                }
+                Picker("Large changes", selection: codexLargeChangeEffortBinding) {
+                    Text("Same as above").tag("")
                     Text("Medium").tag("medium")
                     Text("High").tag("high")
                     Text("XHigh").tag("xhigh")
@@ -344,6 +357,20 @@ struct GeneralSettings: View {
         Binding(
             get: { repoConfigs.defaultClaudeEffort ?? "" },
             set: { repoConfigs.defaultClaudeEffort = $0 }
+        )
+    }
+
+    private var claudeLargeChangeEffortBinding: Binding<String> {
+        Binding(
+            get: { repoConfigs.defaultClaudeLargeChangeEffort ?? ReviewQueueWorker.compiledDefaultClaudeLargeChangeEffort },
+            set: { repoConfigs.defaultClaudeLargeChangeEffort = $0 }
+        )
+    }
+
+    private var codexLargeChangeEffortBinding: Binding<String> {
+        Binding(
+            get: { repoConfigs.defaultCodexLargeChangeEffort ?? "" },
+            set: { repoConfigs.defaultCodexLargeChangeEffort = $0 }
         )
     }
 
