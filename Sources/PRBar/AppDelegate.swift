@@ -288,7 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notifier: n,
             queue: q,
             actionQueue: ActionQueue(),
-            diffStore: DiffStore(diffFetcher: q.diffFetcher),
+            diffStore: DiffStore(diffFetcher: { _ in "" }),
             failureLogs: FailureLogStore(logFetcher: { _, _, _ in "" }),
             repoConfigs: RepoConfigStore(fileURL: scratch.appendingPathComponent("prbar.yaml"), lastGoodURL: nil),
             readiness: ReadinessCoordinator(notifier: n, store: FileNotifiedSHAStore(stateDirectory: scratch)),

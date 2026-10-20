@@ -34,13 +34,13 @@ final class DiffStore {
     private var invalidatedKeys: Set<String> = []
 
     @ObservationIgnored
-    var diffFetcher: @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String
+    var diffFetcher: @Sendable (InboxPR) async throws -> String
 
     @ObservationIgnored
     private let cache: FileCache?
 
     init(
-        diffFetcher: @escaping @Sendable (_ owner: String, _ repo: String, _ number: Int) async throws -> String,
+        diffFetcher: @escaping @Sendable (InboxPR) async throws -> String,
         cache: FileCache? = nil
     ) {
         self.diffFetcher = diffFetcher
@@ -83,7 +83,7 @@ final class DiffStore {
                 return
             }
             do {
-                let raw = try await fetcher(pr.owner, pr.repo, pr.number)
+                let raw = try await fetcher(pr)
                 let hunks = await Task.detached(operation: { DiffParser.parse(raw) }).value
                 self?.statuses[k] = .loaded(hunks)
                 Task.detached { Self.writePersisted(cache, cacheKey: k, hunks: hunks) }
