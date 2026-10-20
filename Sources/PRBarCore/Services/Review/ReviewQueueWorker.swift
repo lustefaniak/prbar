@@ -1071,14 +1071,39 @@ final class ReviewQueueWorker {
     /// them so the same diff isn't downloaded twice.
     private var fetchedDiffs: [String: (headSha: String, text: String)] = [:]
 
-    /// The PR's diff: a local checkout's, the one a select rule already
-    /// fetched for this head, or GitHub's.
+    /// The PR's diff for a review: the one a select rule already fetched
+    /// for this head, else `diff(for:)`.
     private func diffText(for pr: InboxPR) async throws -> String {
-        if let local = pr.local { return try await LocalChanges.diff(local) }
-        if let kept = fetchedDiffs[pr.nodeId], kept.headSha == pr.headSha { return kept.text }
-        let text = try await diffFetcher(pr.owner, pr.repo, pr.number)
-        fetchedDiffs[pr.nodeId] = (pr.headSha, text)
+        if pr.local == nil, let kept = fetchedDiffs[pr.nodeId], kept.headSha == pr.headSha { return kept.text }
+        let text = try await diff(for: pr)
+        if pr.local == nil { fetchedDiffs[pr.nodeId] = (pr.headSha, text) }
         return text
+    }
+
+    /// The one place a PR's diff comes from, for reviews and the diff view
+    /// alike: a local checkout's, GitHub's, or, when GitHub refuses it as
+    /// too large (over 300 files), the one computed in the bare clone.
+    func diff(for pr: InboxPR) async throws -> String {
+        if let local = pr.local { return try await LocalChanges.diff(local) }
+        do {
+            return try await diffFetcher(pr.owner, pr.repo, pr.number)
+        } catch let error as GHClient.GHError where error.isDiffTooLarge {
+            guard let mgr = checkoutManager else { throw error }
+            return try await cloneDiff(for: pr, in: mgr)
+        }
+    }
+
+    /// At the depth the review's own checkout uses, since a shallower fetch
+    /// would undo a deeper one.
+    private func cloneDiff(for pr: InboxPR, in mgr: RepoCheckoutManager) async throws -> String {
+        PRBarLog.triage.notice("diff too large for GitHub, computing it from the clone pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+        let config = configResolver(pr.owner, pr.repo)
+        return try await mgr.localDiff(
+            owner: pr.owner, repo: pr.repo, headSha: pr.headSha, baseRef: pr.baseRef,
+            historyDepth: config.riskBriefEnabled && config.churnWindowDays > 0
+                ? config.churnHistoryDepth
+                : RepoCheckoutManager.defaultHistoryDepth
+        )
     }
 
     private static func logTag(_ reason: ReviewState.SkipReason) -> String {

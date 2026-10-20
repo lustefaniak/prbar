@@ -296,15 +296,19 @@ extension PRBarRuntime {
             },
             cache: SnapshotCache(stateDirectory: environment.stateDirectory, fallback: environment.legacyInbox)
         )
+        let diffStore = DiffStore(
+            diffFetcher: { [weak queue] pr in
+                guard let queue else { throw CancellationError() }
+                return try await queue.diff(for: pr)
+            },
+            cache: FileCache(directory: environment.cacheDirectory.appendingPathComponent("diffs"))
+        )
         let runtime = PRBarRuntime(
             poller: poller,
             notifier: notifier,
             queue: queue,
             actionQueue: ActionQueue.live(),
-            diffStore: DiffStore(
-                diffFetcher: queue.diffFetcher,
-                cache: FileCache(directory: environment.cacheDirectory.appendingPathComponent("diffs"))
-            ),
+            diffStore: diffStore,
             failureLogs: failureLogs,
             repoConfigs: RepoConfigStore(
                 fileURL: environment.configFile,

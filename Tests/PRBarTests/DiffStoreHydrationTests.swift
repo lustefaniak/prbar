@@ -37,7 +37,7 @@ final class DiffStoreHydrationTests: XCTestCase {
         let pr = makePR()
 
         // First session: fetch once so the parsed diff is written through.
-        let warm = DiffStore(diffFetcher: { _, _, _ in hydrationFixtureDiff }, cache: container)
+        let warm = DiffStore(diffFetcher: { _ in hydrationFixtureDiff }, cache: container)
         warm.ensureLoaded(for: pr)
         try await waitUntil { if case .loaded = warm.status(for: pr) { return true }; return false }
 
@@ -51,7 +51,7 @@ final class DiffStoreHydrationTests: XCTestCase {
 
         // Second session over the same store: the row is on disk, but a
         // fresh instance has nothing in memory until `ensureLoaded` lands.
-        let cold = DiffStore(diffFetcher: { _, _, _ in
+        let cold = DiffStore(diffFetcher: { _ in
             XCTFail("hydration should come off disk, not a refetch")
             return ""
         }, cache: container)
@@ -121,7 +121,7 @@ final class DiffStoreInvalidationTests: XCTestCase {
         let pr = makeInvalidationPR()
         let fetches = FetchCounter()
 
-        let store = DiffStore(diffFetcher: { _, _, _ in
+        let store = DiffStore(diffFetcher: { _ in
             await fetches.bump()
             return hydrationFixtureDiff
         }, cache: container)
@@ -146,11 +146,11 @@ final class DiffStoreInvalidationTests: XCTestCase {
         let container = FileCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-diffs-\(UUID().uuidString)"))
         let pr = makeInvalidationPR()
 
-        let warm = DiffStore(diffFetcher: { _, _, _ in hydrationFixtureDiff }, cache: container)
+        let warm = DiffStore(diffFetcher: { _ in hydrationFixtureDiff }, cache: container)
         warm.ensureLoaded(for: pr)
         try await waitForLoaded(warm, pr)
 
-        let cold = DiffStore(diffFetcher: { _, _, _ in
+        let cold = DiffStore(diffFetcher: { _ in
             XCTFail("should have hydrated from disk")
             return ""
         }, cache: container)

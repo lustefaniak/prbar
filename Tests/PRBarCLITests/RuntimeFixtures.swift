@@ -30,7 +30,7 @@ enum RuntimeFixtures {
             notifier: notifier,
             queue: queue,
             actionQueue: ActionQueue(),
-            diffStore: DiffStore(diffFetcher: prDiff),
+            diffStore: DiffStore(diffFetcher: { pr in try await prDiff(pr.owner, pr.repo, pr.number) }),
             failureLogs: FailureLogStore(logFetcher: { _, _, _ in "" }),
             repoConfigs: RepoConfigStore(fileURL: dir.appendingPathComponent("prbar.yaml"), lastGoodURL: nil),
             readiness: ReadinessCoordinator(notifier: notifier, store: FileNotifiedSHAStore(stateDirectory: dir)),
