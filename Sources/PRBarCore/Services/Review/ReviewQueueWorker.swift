@@ -1076,7 +1076,20 @@ final class ReviewQueueWorker {
     private func diffText(for pr: InboxPR) async throws -> String {
         if let local = pr.local { return try await LocalChanges.diff(local) }
         if let kept = fetchedDiffs[pr.nodeId], kept.headSha == pr.headSha { return kept.text }
-        let text = try await diffFetcher(pr.owner, pr.repo, pr.number)
+        let text: String
+        do {
+            text = try await diffFetcher(pr.owner, pr.repo, pr.number)
+        } catch let error as GHClient.GHError where error.isDiffTooLarge {
+            guard let mgr = checkoutManager else { throw error }
+            PRBarLog.triage.notice("diff too large for GitHub, computing it from the clone pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public)")
+            let config = configResolver(pr.owner, pr.repo)
+            text = try await mgr.localDiff(
+                owner: pr.owner, repo: pr.repo, headSha: pr.headSha, baseRef: pr.baseRef,
+                historyDepth: config.riskBriefEnabled && config.churnWindowDays > 0
+                    ? config.churnHistoryDepth
+                    : RepoCheckoutManager.defaultHistoryDepth
+            )
+        }
         fetchedDiffs[pr.nodeId] = (pr.headSha, text)
         return text
     }

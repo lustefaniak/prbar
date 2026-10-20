@@ -143,6 +143,46 @@ actor RepoCheckoutManager {
         )
     }
 
+    /// The PR's diff computed in the bare clone, for PRs whose diff GitHub
+    /// refuses to serve (`gh pr diff` stops at 300 files). Against the merge
+    /// base, as GitHub shows it, so annotations line up with the PR's hunks.
+    /// A merge base below the shallow boundary gets one deeper fetch; that is
+    /// cheap here because the clone carries no blobs.
+    func localDiff(
+        owner: String,
+        repo: String,
+        headSha: String,
+        baseRef: String,
+        historyDepth: Int = RepoCheckoutManager.defaultHistoryDepth
+    ) async throws -> String {
+        let bare = barePath(owner: owner, repo: repo)
+        var depth = max(historyDepth, Self.defaultHistoryDepth)
+        try await ensureBareClone(owner: owner, repo: repo)
+        for attempt in 0..<2 {
+            if attempt > 0 { depth = max(depth, Self.deepMergeBaseDepth) }
+            try await fetchSha(owner: owner, repo: repo, headSha: headSha, depth: depth)
+            let baseSha = await fetchBaseRef(
+                owner: owner, repo: repo, baseRef: baseRef, headSha: headSha, depth: depth)
+            guard !baseSha.isEmpty else {
+                throw CheckoutError.execFailed(command: "git fetch \(baseRef)", stderr: "base branch not found", exitCode: 1)
+            }
+            let mergeBase = try await runGit(args: ["--git-dir", bare.path, "merge-base", baseSha, headSha])
+            guard mergeBase.succeeded else { continue }
+            let base = (mergeBase.stdoutString ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let diff = try await runGit(args: ["--git-dir", bare.path, "diff", "--no-color", "--no-ext-diff", base, headSha])
+            guard diff.succeeded else {
+                throw CheckoutError.execFailed(command: "git diff", stderr: diff.stderrString ?? "", exitCode: diff.exitCode)
+            }
+            return diff.stdoutString ?? ""
+        }
+        throw CheckoutError.execFailed(
+            command: "git merge-base",
+            stderr: "no merge base between \(baseRef) and \(headSha.prefix(12)) within \(depth) commits",
+            exitCode: 1)
+    }
+
+    static let deepMergeBaseDepth = 5_000
+
     /// Remove the worktree associated with a handle. Idempotent — repeat
     /// calls and missing worktrees are silent. The bare clone is left
     /// alone (reused next time).

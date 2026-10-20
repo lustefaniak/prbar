@@ -6,6 +6,13 @@ actor GHClient {
         case execFailed(stderr: String, exitCode: Int32)
         case decodingFailed(String)
 
+        /// `gh pr diff` on a PR GitHub won't render a diff for (over 300
+        /// files, HTTP 406 `too_large`).
+        var isDiffTooLarge: Bool {
+            guard case .execFailed(let stderr, _) = self else { return false }
+            return stderr.contains("too_large") || stderr.contains("HTTP 406")
+        }
+
         var errorDescription: String? {
             switch self {
             case .ghNotFound:
