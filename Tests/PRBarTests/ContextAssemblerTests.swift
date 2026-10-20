@@ -12,7 +12,7 @@ final class ContextAssemblerTests: XCTestCase {
             workdir: URL(fileURLWithPath: "/tmp/wd")
         )
         XCTAssertTrue(bundle.userPrompt.contains("read-only access"))
-        XCTAssertTrue(bundle.userPrompt.contains("Hard cap"))
+        XCTAssertTrue(bundle.userPrompt.contains("spending budget"))
         XCTAssertTrue(bundle.userPrompt.contains("cwd is set here"))
         XCTAssertEqual(bundle.workdir, URL(fileURLWithPath: "/tmp/wd"))
         XCTAssertEqual(bundle.subpath, "kernel-billing")

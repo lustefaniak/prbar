@@ -73,7 +73,7 @@ You may have read-only file access to a single subfolder, plus `WebFetch`/`WebSe
 - The diff and brief in the user message should be enough for most reviews.
 - Reach for tools only when (a) you need to see how a changed identifier is used elsewhere in this subfolder, or (b) you want to confirm an external claim referenced in the PR.
 - Spend lookups on *verifying findings you intend to publish*, not on breadth. An unverified guess is worse than silence: if you can't confirm the failure, drop the annotation.
-- You are budgeted for at most ~10 tool calls per review. Going over kills the run.
+- Your run has a spending budget. Pace yourself to cover the change within it. If it runs out, you will be asked to conclude from what you have already read.
 - **Never attempt to fix the PR.** No edits, no shell commands.
 - If after a couple of targeted lookups the diff is still too opaque, return `verdict: "abstain"` rather than guessing.
 

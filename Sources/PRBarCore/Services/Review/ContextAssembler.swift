@@ -180,13 +180,13 @@ enum ContextAssembler {
             s += "This is a **large change** (\(subdiff.filePaths.count) files). "
             s += "**Do not** run a single `git diff` over everything — that floods your context and burns the budget. Instead:\n\n"
             if hasRiskBrief {
-                s += "- Work down the **reading order** above. Diff the top entries, skim or skip what it marks generated or docs, and stop once you can judge the change.\n"
+                s += "- Work down the **reading order** above. Diff the top entries first, skim or skip what it marks generated or docs, and keep going down the list while your budget allows.\n"
             } else {
                 s += "- Start from the **Files changed** list above. Pick the highest-risk files first (logic, security, concurrency, data handling) and skim trivial ones (generated code, lockfiles, docs).\n"
             }
             s += "- Diff one file at a time: `git diff \(baseSha) HEAD -- <path>`. Base version of a file: `git show \(baseSha):<path>`.\n"
             s += "- Read or grep only the surrounding code you need to judge a specific change.\n"
-            s += "- Emit your verdict as soon as you can judge the change — you do not need to open every file. If the important files are clean, that is an approve.\n"
+            s += "- A file you did not read is unreviewed, not clean. Approve only when you read enough of the change to stand behind it; otherwise report what you found and say in the summary which parts you did not get to.\n"
         } else {
             s += "- Full change: `git diff \(baseSha) HEAD\(scope)`\n"
             s += "- One file: `git diff \(baseSha) HEAD -- <path>`; the base version of a file is `git show \(baseSha):<path>`\n"
@@ -262,7 +262,7 @@ enum ContextAssembler {
             You have read-only access to files under `./` (the subfolder \
             named below), plus WebFetch/WebSearch for verifying external \
             claims. Use tools sparingly — the diff and brief below should \
-            be enough for most reviews. Hard cap: ~10 tool calls per review. \
+            be enough for most reviews. Your run has a spending budget. \
             **Never attempt to fix the PR.** If after a couple of targeted \
             lookups the diff is still too opaque, return verdict "abstain".
             """
