@@ -14,6 +14,8 @@ defaultProvider: claude
 # Omit to use PRBar's default (sonnet); "" passes no --model at all.
 defaultClaudeModel: sonnet
 defaultClaudeEffort: ""
+# A large change is raised to this effort, never lowered; "" turns it off.
+defaultClaudeLargeChangeEffort: high
 
 # App-level review settings. A missing key means PRBar's shipped default.
 defaults:

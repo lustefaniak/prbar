@@ -165,6 +165,34 @@ final class ReviewQueueWorkerTests: XCTestCase {
         XCTAssertEqual(worker.reviews["P3"]?.providerId, .claude)
     }
 
+    func testLargeChangeRaisesEffortButNeverLowersIt() {
+        let worker = makeWorker(provider: StubProvider(verdict: .approve, summary: "s", cost: 0), diffText: "")
+        let plain = RepoConfig.default.resolved()
+        worker.defaultClaudeEffort = ""
+        XCTAssertEqual(worker.defaultClaudeLargeChangeEffort, "high")
+        XCTAssertNil(worker.resolveEffort(providerId: .claude, config: plain))
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: plain, largeChange: true), "high")
+
+        worker.defaultClaudeEffort = "low"
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: plain, largeChange: true), "high")
+        worker.defaultClaudeEffort = "max"
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: plain, largeChange: true), "max")
+
+        var rule = RepoConfig.default
+        rule.claudeEffortOverride = "xhigh"
+        worker.defaultClaudeEffort = ""
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: rule.resolved(), largeChange: true), "xhigh")
+
+        worker.defaultClaudeEffort = "something-new"
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: plain, largeChange: true), "something-new")
+
+        worker.defaultClaudeEffort = "medium"
+        worker.defaultClaudeLargeChangeEffort = ""
+        XCTAssertEqual(worker.resolveEffort(providerId: .claude, config: plain, largeChange: true), "medium")
+
+        XCTAssertNil(worker.resolveEffort(providerId: .codex, config: plain, largeChange: true), "codex has no raise by default")
+    }
+
     func testResolveModelAndEffortPrecedence() {
         let worker = makeWorker(provider: StubProvider(verdict: .approve, summary: "s", cost: 0), diffText: "")
         worker.defaultClaudeModel = "sonnet"

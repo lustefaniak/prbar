@@ -28,7 +28,41 @@ struct ClaudeProvider: ReviewProvider {
         approve a change you did not finish reading.
         """
 
-    /// What the conclusion round may spend on top of the cap. It is one
+    /// How many times a large change that answered early is asked to go
+    /// on, and below what share of the cap it counts as early.
+    static let continueRounds = 2
+    static let continueBelowSpentShare = 0.5
+
+    /// The models stop a large review after a few files whatever the
+    /// prompt says: on a 672-file PR, three prompt variants all answered
+    /// at about a tenth of a $3 budget with "~650 files not reviewed". This
+    /// asks once more in the same session, and leaves what to read, and
+    /// whether to stop, to the model: a repository's own guidance on what
+    /// to skip still wins.
+    static func continuePrompt(bundle: PromptBundle, options: ProviderOptions, spent: Double, round: Int) -> String? {
+        guard bundle.isLargeChange, options.toolMode != .none, round < continueRounds,
+              spent < options.maxCostUsd * continueBelowSpentShare
+        else { return nil }
+        return String(
+            format: """
+                You have used $%.2f of your $%.2f budget, and this is a large change. \
+                If parts of it that matter are still unread, keep reviewing them now, \
+                then return your full review again via StructuredOutput, including \
+                the findings from before. If what is left is what the repository's \
+                guidance says to skip, or is mechanical (moves, deletions, generated \
+                code), say so in the summary and return your final review as it is.
+                """,
+            spent, options.maxCostUsd
+        )
+    }
+
+    /// A run that ended normally with an answer.
+    private static func answeredGood(_ state: ClaudeStreamState) -> Bool {
+        state.receivedResult && state.isError != true
+            && (state.structuredOutput != nil || !state.structuredOutputAttempts.isEmpty)
+    }
+
+    /// What the conclusion round may spend. It is one
     /// answer from a cached prefix, so a few cents in practice; the margin
     /// only keeps a long transcript from being cut off.
     static func wrapUpAllowance(cap: Double) -> Double {
@@ -133,56 +167,74 @@ struct ClaudeProvider: ReviewProvider {
             claudePath, args: Self.buildArgs(bundle: bundle, options: options, session: .start(sessionID)),
             cwd: cwd, stdin: bundle.userPrompt, options: options, onProgress: onProgress
         )
+        guard first.state.subtype == Self.budgetStopSubtype || first.result.succeeded else {
+            // claude reports API and login errors as a result event on
+            // stdout and exits 1 with stderr empty.
+            let stderr = first.result.stderrString ?? ""
+            let reported = first.state.isError == true ? (first.state.apiErrorStatus ?? first.state.resultText) : nil
+            throw ClaudeError.execFailed(
+                stderr: stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? reported ?? "" : stderr,
+                exitCode: first.result.exitCode
+            )
+        }
         var state = first.state
         var stream = first.stream
         var concludedOnBudget = false
 
-        if state.subtype == Self.budgetStopSubtype {
-            // `--max-budget-usd` is checked between turns, so the run can
-            // overshoot by one turn, and that turn's tool results are lost.
-            // Everything before it is in the session: resume it for one
-            // answer with the same flags, so the cached prefix is reused and
-            // the round costs cents. `total_cost_usd` stays cumulative.
-            var wrapUp = options
-            wrapUp.maxCostUsd = options.maxCostUsd + Self.wrapUpAllowance(cap: options.maxCostUsd)
-            let second = try await run(
-                claudePath, args: Self.buildArgs(bundle: bundle, options: wrapUp, session: .resume(sessionID)),
-                cwd: cwd, stdin: Self.wrapUpPrompt, options: options, onProgress: onProgress
+        // `--max-budget-usd` counts only the call it is passed to, while
+        // `total_cost_usd` is the session's running total, so every resumed
+        // round is given what is left of the cap. Resumes keep the flags
+        // identical apart from that, so the cached prefix is reused.
+        func resume(_ prompt: String, budget: Double) async throws -> Run {
+            var resumed = options
+            resumed.maxCostUsd = budget
+            return try await run(
+                claudePath, args: Self.buildArgs(bundle: bundle, options: resumed, session: .resume(sessionID)),
+                cwd: cwd, stdin: prompt, options: options, onProgress: onProgress
             )
-            let spent = second.state.costUsd ?? state.costUsd ?? 0
-            guard second.state.receivedResult, second.state.isError != true,
-                  second.state.structuredOutput != nil || !second.state.structuredOutputAttempts.isEmpty
-            else {
-                throw ClaudeError.budgetExceeded(String(
-                    format: "$%.4f spent (cap $%.2f), and the review could not be concluded from what it had read",
-                    spent, options.maxCostUsd
-                ))
-            }
-            var merged = second.state
+        }
+        func absorb(_ next: Run) {
+            var merged = next.state
             merged.toolCallCount += state.toolCallCount
             merged.toolNamesUsed = state.toolNamesUsed + merged.toolNamesUsed
             merged.apiKeySource = merged.apiKeySource ?? state.apiKeySource
+            merged.costUsd = merged.costUsd ?? state.costUsd
             state = merged
-            stream += second.stream
+            stream += next.stream
+        }
+
+        var rounds = 0
+        while state.subtype != Self.budgetStopSubtype,
+              Self.answeredGood(state),
+              let prompt = Self.continuePrompt(bundle: bundle, options: options, spent: state.costUsd ?? 0, round: rounds) {
+            rounds += 1
+            let next = try await resume(prompt, budget: options.maxCostUsd - (state.costUsd ?? 0))
+            // A round that broke keeps the answer already in hand.
+            guard next.state.subtype == Self.budgetStopSubtype || Self.answeredGood(next.state) else { break }
+            absorb(next)
+        }
+
+        if state.subtype == Self.budgetStopSubtype {
+            // The budget is checked between turns, so the run can overshoot
+            // by one turn, and that turn's tool results are lost. Everything
+            // before it is in the session: one answer from it costs cents.
+            let next = try await resume(Self.wrapUpPrompt, budget: Self.wrapUpAllowance(cap: options.maxCostUsd))
+            guard Self.answeredGood(next.state) else {
+                throw ClaudeError.budgetExceeded(String(
+                    format: "$%.4f spent (cap $%.2f), and the review could not be concluded from what it had read",
+                    next.state.costUsd ?? state.costUsd ?? 0, options.maxCostUsd
+                ))
+            }
+            absorb(next)
             concludedOnBudget = true
-        } else {
-            guard first.result.succeeded else {
-                // claude reports API and login errors as a result event on
-                // stdout and exits 1 with stderr empty.
-                let stderr = first.result.stderrString ?? ""
-                let reported = state.isError == true ? (state.apiErrorStatus ?? state.resultText) : nil
-                throw ClaudeError.execFailed(
-                    stderr: stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? reported ?? "" : stderr,
-                    exitCode: first.result.exitCode
-                )
-            }
-            guard state.receivedResult else {
-                throw ClaudeError.noResultEvent
-            }
-            if state.isError == true {
-                let reason = state.apiErrorStatus ?? state.resultText ?? "unknown"
-                throw ClaudeError.isError(reason: reason)
-            }
+        }
+
+        guard state.receivedResult else {
+            throw ClaudeError.noResultEvent
+        }
+        if state.isError == true {
+            let reason = state.apiErrorStatus ?? state.resultText ?? "unknown"
+            throw ClaudeError.isError(reason: reason)
         }
 
         // No cost check here: claude enforces the cap itself, and a review

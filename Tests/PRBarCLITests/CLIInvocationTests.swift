@@ -209,6 +209,7 @@ final class ExampleConfigTests: XCTestCase {
         XCTAssertEqual(cfg.defaultProvider, .claude)
         XCTAssertEqual(cfg.defaultClaudeModel, "sonnet")
         XCTAssertEqual(cfg.defaultClaudeEffort, "")
+        XCTAssertEqual(cfg.defaultClaudeLargeChangeEffort, "high")
 
         let base = cfg.resolver()("acme", "repo")
         XCTAssertEqual(base.toolMode, .sandboxed)

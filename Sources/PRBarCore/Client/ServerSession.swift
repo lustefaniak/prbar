@@ -570,6 +570,14 @@ final class ConfigModel {
         get { config.defaultCodexEffort }
         set { mutate { $0.defaultCodexEffort = newValue } }
     }
+    var defaultClaudeLargeChangeEffort: String? {
+        get { config.defaultClaudeLargeChangeEffort }
+        set { mutate { $0.defaultClaudeLargeChangeEffort = newValue } }
+    }
+    var defaultCodexLargeChangeEffort: String? {
+        get { config.defaultCodexLargeChangeEffort }
+        set { mutate { $0.defaultCodexLargeChangeEffort = newValue } }
+    }
 
     func resolve(owner: String, repo: String) -> ResolvedRepoConfig {
         ResolvedRepoConfig(rule: rule(owner: owner, repo: repo), defaults: config.defaults)
