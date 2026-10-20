@@ -147,11 +147,7 @@ struct PopoverView: View {
             // seeding and could emit spurious delta-driven notifications.
             if !ScreenshotMode.isActive { poller.pollNow() }
         }
-        .onAppear {
-            session.setPopoverVisible(true)
-            seedScreenshotStateOnce()
-        }
-        .onDisappear { session.setPopoverVisible(false) }
+        .onAppear { seedScreenshotStateOnce() }
         .onChange(of: poller.prs) { _, newPRs in
             // Keep the open detail view in sync with fresh poll / single-PR
             // refresh data (review decision, merge state, and especially the

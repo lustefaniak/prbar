@@ -90,6 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
+    /// Held here because NSPopover keeps its delegate weakly.
+    private var popoverVisibility: PopoverVisibilityRelay?
     private var rightClickMenu: NSMenu!
 
     /// Sparkle updater. `startingUpdater: true` arms the scheduled
@@ -666,6 +668,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installPopover() {
         popover = NSPopover()
         popover.behavior = .transient
+        popoverVisibility = PopoverVisibilityRelay { [weak self] visible in
+            self?.session?.setPopoverVisible(visible)
+        }
+        popover.delegate = popoverVisibility
         popover.animates = true
         // NSPopover hosts its own window, so NSApp.appearance doesn't
         // cascade to it — set the forced preview appearance directly.
