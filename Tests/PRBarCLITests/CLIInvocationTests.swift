@@ -210,6 +210,7 @@ final class ExampleConfigTests: XCTestCase {
         XCTAssertEqual(cfg.defaultClaudeModel, "sonnet")
         XCTAssertEqual(cfg.defaultClaudeEffort, "")
         XCTAssertEqual(cfg.defaultClaudeLargeChangeEffort, "high")
+        XCTAssertEqual(cfg.pollSchedule?.entries.map(\.cron.text), ["*/5 8-17 * * 1-5", "*/30 * * * *"])
 
         let base = cfg.resolver()("acme", "repo")
         XCTAssertEqual(base.toolMode, .sandboxed)

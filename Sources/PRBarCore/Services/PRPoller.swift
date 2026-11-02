@@ -17,6 +17,19 @@ final class PRPoller {
     /// up the new value on its next iteration (no need to restart).
     var pollInterval: TimeInterval = 60
 
+    /// `pollSchedule:` from prbar.yaml. When set, polls happen at its times
+    /// instead of every `pollInterval`. A change re-arms the wait at once,
+    /// so a schedule that sleeps for half an hour doesn't keep the old one
+    /// until it wakes.
+    @ObservationIgnored
+    var schedule: PollSchedule? {
+        didSet {
+            guard schedule != oldValue, pollingTask != nil else { return }
+            stop()
+            start(pollFirst: false)
+        }
+    }
+
     @ObservationIgnored
     private var pollingTask: Task<Void, Never>?
 
@@ -85,16 +98,25 @@ final class PRPoller {
     }
 
     /// Start the polling loop. Idempotent — second call is a no-op.
-    func start() {
+    /// `pollFirst: false` waits for the first scheduled time instead of
+    /// polling straight away.
+    func start(pollFirst: Bool = true) {
         guard pollingTask == nil else { return }
         pollingTask = Task { [weak self] in
+            if pollFirst { await self?.poll() }
             while !Task.isCancelled {
-                guard let self else { return }
+                guard let delay = self?.delayUntilNextPoll() else { return }
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
                 await self.poll()
-                let interval = self.pollInterval
-                try? await Task.sleep(for: .seconds(interval))
             }
         }
+    }
+
+    /// Seconds until the schedule's next time, or `pollInterval` without one.
+    func delayUntilNextPoll(now: Date = Date()) -> TimeInterval {
+        guard let next = schedule?.next(after: now) else { return pollInterval }
+        return max(0, next.timeIntervalSince(now))
     }
 
     /// Stop the polling loop. Idempotent.

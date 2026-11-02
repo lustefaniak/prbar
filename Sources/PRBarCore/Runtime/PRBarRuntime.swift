@@ -156,12 +156,14 @@ final class PRBarRuntime {
         // Provider / model / effort defaults come from prbar.yaml. "auto"
         // resolves to whichever CLI is installed (claude wins ties).
         rc.config.applyAgentDefaults(to: q)
+        p.schedule = rc.config.pollSchedule
         rc.onChange = { [weak self, weak q, weak rc, weak p] in
             guard let q, let rc else { return }
             self?.emit(.configChanged)
             q.configResolver = rc.makeResolver()
             p?.configResolver = rc.makeResolver()
             rc.config.applyAgentDefaults(to: q)
+            p?.schedule = rc.config.pollSchedule
             // Re-poll so the title-exclude filter applies to anything in
             // the inbox right now, not just future fetches.
             p?.pollNow()
