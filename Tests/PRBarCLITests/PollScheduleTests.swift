@@ -99,6 +99,13 @@ final class PollScheduleTests: XCTestCase {
         XCTAssertNotNil(try next("0 0 30 2 1", after: "2026-11-02 13:07"))
     }
 
+    func testRareDatesDecadesApartAreFound() throws {
+        // A leap day that is a Sunday (`*/7` is 0 and 7, starred so both
+        // day fields must match): 2032, then 2060.
+        XCTAssertEqual(try next("0 0 29 2 */7", after: "2026-11-02 13:07"), local("2032-02-29 00:00"))
+        XCTAssertEqual(try next("0 0 29 2 */7", after: "2032-03-01 00:00"), local("2060-02-29 00:00"))
+    }
+
     func testEarliestEntryWins() throws {
         let schedule = PollSchedule([try entry("*/5 8-17 * * 1-5"), try entry("*/30 * * * *")])
         XCTAssertEqual(schedule.next(after: local("2026-11-02 13:07")), local("2026-11-02 13:10"))
@@ -139,7 +146,7 @@ final class PollScheduleTests: XCTestCase {
         """)
         XCTAssertEqual(loaded.config.pollSchedule?.entries.count, 2)
         XCTAssertNil(loaded.config.pollSchedule?.entries[1].timezone)
-        XCTAssertEqual(loaded.config.pollSchedule?.entries[1].zone, .current)
+        XCTAssertEqual(loaded.config.pollSchedule?.entries[1].zone, .autoupdatingCurrent)
         XCTAssertEqual(loaded.warnings, [])
     }
 

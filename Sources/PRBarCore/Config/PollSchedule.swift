@@ -23,7 +23,8 @@ struct PollSchedule: Sendable, Hashable, Codable {
         }
 
         init(cron: CronExpression, timezone: String? = nil) throws {
-            guard let zone = timezone.map(TimeZone.init(identifier:)) ?? TimeZone.current else {
+            // Without a name, follow the machine as it moves between zones.
+            guard let zone = timezone.map(TimeZone.init(identifier:)) ?? TimeZone.autoupdatingCurrent else {
                 throw UnknownTimeZone(name: timezone ?? "")
             }
             self.cron = cron
@@ -55,6 +56,7 @@ struct PollSchedule: Sendable, Hashable, Codable {
     let entries: [Entry]
 
     init(_ entries: [Entry]) {
+        precondition(!entries.isEmpty, "a poll schedule needs at least one entry")
         self.entries = entries
     }
 
@@ -121,11 +123,9 @@ struct CronExpression: Sendable, Hashable, Codable, CustomStringConvertible {
         daysOfWeek = Set(try Self.field(fields[4], name: "day of week", 0...7).map { $0 % 7 })
         dayOfMonthRestricted = !fields[2].hasPrefix("*")
         dayOfWeekRestricted = !fields[4].hasPrefix("*")
-        // Every month has every weekday, so only a day of month alone can
-        // rule out every date (`0 0 30 2 *`). February counts its 29th.
-        let longest = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        if dayOfMonthRestricted, !dayOfWeekRestricted,
-           !months.contains(where: { month in daysOfMonth.contains { $0 <= longest[month - 1] } }) {
+        // Dates and weekdays repeat every 28 years, which `next` searches,
+        // so a miss from any start means it never matches (`0 0 30 2 *`).
+        if next(after: Date(timeIntervalSinceReferenceDate: 0), in: TimeZone(identifier: "UTC")!) == nil {
             throw ParseError(description: "`\(text)` never matches a date")
         }
     }
@@ -166,7 +166,7 @@ struct CronExpression: Sendable, Hashable, Codable, CustomStringConvertible {
             } else {
                 guard let value = Int(base) else { throw ParseError(description: "\(name) `\(base)` is not a number, range or `*`") }
                 // `a/n` runs from a to the end of the field, as in cron.
-                (low, high) = (value, pieces.count == 2 ? max(value, bounds.upperBound) : value)
+                (low, high) = (value, pieces.count == 2 ? bounds.upperBound : value)
             }
             guard bounds.contains(low), bounds.contains(high) else {
                 throw ParseError(description: "\(name) `\(part)` is outside \(bounds.lowerBound)-\(bounds.upperBound)")
@@ -185,14 +185,15 @@ struct CronExpression: Sendable, Hashable, Codable, CustomStringConvertible {
     }
 
     /// The first whole minute strictly after `date` that matches, read in
-    /// `timeZone`. Nil only if nothing matches within eight years, which
-    /// `init` already rules out.
+    /// `timeZone`. The search spans 29 years, longer than the 28-year cycle
+    /// of dates and weekdays, so nil means it never matches, which `init`
+    /// already rules out.
     func next(after date: Date, in timeZone: TimeZone) -> Date? {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let start = date.timeIntervalSinceReferenceDate
         var t = Date(timeIntervalSinceReferenceDate: (start / 60).rounded(.down) * 60 + 60)
-        let limit = date.addingTimeInterval(8 * 366 * 86400)
+        let limit = date.addingTimeInterval(29 * 366 * 86400)
         // Skips a whole month, day or hour at a time, so even a yearly
         // schedule takes a few hundred steps.
         while t < limit {
