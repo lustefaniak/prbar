@@ -231,6 +231,21 @@ final class PollScheduleTests: XCTestCase {
     }
 
     @MainActor
+    func testStoppingMidFetchIsNotAPollError() async throws {
+        let started = Counter()
+        let poller = PRPoller(fetcher: {
+            await started.increment()
+            try await Task.sleep(for: .seconds(30))
+            return []
+        })
+        poller.start()
+        try await waitFor { await started.value == 1 }
+        poller.stop()
+        try await waitFor { @MainActor in !poller.isFetching }
+        XCTAssertNil(poller.lastError)
+    }
+
+    @MainActor
     func testScheduleChangeRearmsTheRunningLoop() async throws {
         let counter = Counter()
         let poller = PRPoller(fetcher: { await counter.increment(); return [] })
