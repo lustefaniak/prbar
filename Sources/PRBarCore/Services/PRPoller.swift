@@ -237,6 +237,8 @@ final class PRPoller {
             if let cache {
                 Task.detached { await cache.save(fetched) }
             }
+        } catch is CancellationError {
+            // Stopped or re-armed mid-fetch: not a failure of the inbox.
         } catch {
             self.lastError = error.localizedDescription
             PRBarLog.poller.error("poll failed error=\(error.localizedDescription, privacy: .public)")
