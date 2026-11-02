@@ -259,8 +259,9 @@ pollSchedule:
   both 0 and 7 Sunday). Each takes `*`, a number, a range `a-b`, a step (`*/5`,
   `8-17/2`, `10/15`) or a comma-separated list of those. Names (`MON`, `JAN`) and
   the `@daily` shorthands aren't supported.
-- As in cron, when both the day of month and the day of week are restricted, a
-  day matching either one matches.
+- As in cron, a day must match both the day of month and the day of week, except
+  when neither field starts with `*`: then a day matching either one matches
+  (`0 9 15 * 1` is the 15th and every Monday; `0 9 */2 * 1` is odd-numbered Mondays).
 - PRBar still fetches straight away when it starts and when the config changes,
   and a change to `pollSchedule:` takes effect without a restart.
 - A mistake (a sixth field, an unknown time zone, `0 0 30 2 *` that never comes)
