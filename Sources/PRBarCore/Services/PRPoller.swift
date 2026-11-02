@@ -104,19 +104,26 @@ final class PRPoller {
         guard pollingTask == nil else { return }
         pollingTask = Task { [weak self] in
             if pollFirst { await self?.poll() }
+            var target: Date?
             while !Task.isCancelled {
-                guard let delay = self?.delayUntilNextPoll() else { return }
-                try? await Task.sleep(for: .seconds(delay))
+                guard let wait = self?.nextWait(after: target) else { return }
+                target = wait.at
+                try? await Task.sleep(for: .seconds(wait.delay))
                 guard !Task.isCancelled, let self else { return }
                 await self.poll()
             }
         }
     }
 
-    /// Seconds until the schedule's next time, or `pollInterval` without one.
-    func delayUntilNextPoll(now: Date = Date()) -> TimeInterval {
-        guard let next = schedule?.next(after: now) else { return pollInterval }
-        return max(0, next.timeIntervalSince(now))
+    /// How long to sleep before the next poll, and the scheduled time it is
+    /// for (nil without a schedule: `pollInterval`). `previous` is the time
+    /// the last sleep was for: the sleep runs on a monotonic clock, so it can
+    /// end a moment before that time by the wall clock, and a quick poll
+    /// must not then be scheduled for the same time again.
+    func nextWait(now: Date = Date(), after previous: Date? = nil) -> (delay: TimeInterval, at: Date?) {
+        let from = max(now, previous ?? now)
+        guard let next = schedule?.next(after: from) else { return (pollInterval, nil) }
+        return (max(0, next.timeIntervalSince(now)), next)
     }
 
     /// Stop the polling loop. Idempotent.
