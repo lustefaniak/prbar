@@ -179,6 +179,7 @@ Settings → Review defaults edits them, one pattern per line.
 | `defaults` | Review settings for every repository (see above). |
 | `repositories` | Which repositories PRBar triages, hides, and reads rules from (see above). |
 | `agents` | What coding agents may do through `prbar-review mcp` (see below). |
+| `pollSchedule` | When the inbox is fetched (see below). Missing means once a minute. |
 
 The review settings in `defaults:` are the fields of
 [`ReviewDefaults`](../Sources/PRBarCore/Models/ReviewDefaults.swift), each with a
@@ -231,6 +232,39 @@ Those are the shipped values, so a missing `agents:` means exactly this.
   you wrote.
 - Your own use of PRBar (the app, `prbar-review status` and the other CLI commands)
   is never limited by it.
+
+## When the inbox is fetched: `pollSchedule:`
+
+PRBar fetches your inbox once a minute. `pollSchedule:` replaces that with cron
+times: one entry, or a list whose times are combined. Each entry has a `cron`
+expression and an optional `timezone` (an IANA name; missing means the machine's).
+
+```yaml
+# Every 30 minutes.
+pollSchedule:
+  cron: "*/30 * * * *"
+```
+
+```yaml
+# Every 5 minutes on weekdays from 08:00 to 17:55 in Copenhagen, every 30
+# minutes the rest of the time.
+pollSchedule:
+  - cron: "*/5 8-17 * * 1-5"
+    timezone: Europe/Copenhagen
+  - cron: "*/30 * * * *"
+    timezone: Europe/Copenhagen
+```
+
+- The five fields are minute, hour, day of month, month and day of week (0-7,
+  both 0 and 7 Sunday). Each takes `*`, a number, a range `a-b`, a step (`*/5`,
+  `8-17/2`, `10/15`) or a comma-separated list of those. Names (`MON`, `JAN`) and
+  the `@daily` shorthands aren't supported.
+- As in cron, when both the day of month and the day of week are restricted, a
+  day matching either one matches.
+- PRBar still fetches straight away when it starts and when the config changes,
+  and a change to `pollSchedule:` takes effect without a restart.
+- A mistake (a sixth field, an unknown time zone, `0 0 30 2 *` that never comes)
+  makes the file invalid rather than polling at some other rate.
 
 ## Not in this file
 
