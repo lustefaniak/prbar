@@ -27,19 +27,44 @@ actor GHClient {
     }
 
     private let executablePath: String
+    /// Waits between tries of a read that GitHub failed transiently; there
+    /// is one more try than there are waits.
+    private let readRetryDelays: [Duration]
 
     init() throws {
         guard let path = ExecutableResolver.find("gh") else {
             throw GHError.ghNotFound
         }
-        self.executablePath = path
+        self.init(executablePath: path)
+    }
+
+    init(executablePath: String, readRetryDelays: [Duration] = [.seconds(2), .seconds(5)]) {
+        self.executablePath = executablePath
+        self.readRetryDelays = readRetryDelays
+    }
+
+    /// A read-only `gh` call, tried again when GitHub fails in a way that
+    /// passes: the inbox query is large enough that GitHub sometimes answers
+    /// it with a 502 or cuts the response short. Writes never go through
+    /// here, since repeating one could post or merge twice.
+    private func runRead(_ args: [String]) async throws -> ProcessResult {
+        var result = try await ProcessRunner.run(executable: executablePath, args: args)
+        for delay in readRetryDelays {
+            guard !result.succeeded, Self.isTransient(stderr: result.stderrString ?? "") else { break }
+            try await Task.sleep(for: delay)
+            result = try await ProcessRunner.run(executable: executablePath, args: args)
+        }
+        return result
+    }
+
+    /// GitHub's gateway errors, and gh failing to parse a response cut short.
+    nonisolated static func isTransient(stderr: String) -> Bool {
+        let markers = ["HTTP 502", "HTTP 503", "HTTP 504", "unexpected end of JSON input", "stream error", "connection reset"]
+        return markers.contains { stderr.localizedCaseInsensitiveContains($0) }
     }
 
     func fetchInbox() async throws -> [InboxPR] {
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: ["api", "graphql", "-f", "query=\(GraphQLQueries.inbox)"]
-        )
+        let result = try await runRead(["api", "graphql", "-f", "query=\(GraphQLQueries.inbox)"])
 
         guard result.succeeded else {
             throw GHError.execFailed(
@@ -63,16 +88,13 @@ actor GHClient {
 
     /// Refresh a single PR. Costs ~1 GraphQL point vs ~25 for fetchInbox.
     func fetchPR(owner: String, repo: String, number: Int) async throws -> InboxPR {
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: [
-                "api", "graphql",
-                "-F", "owner=\(owner)",
-                "-F", "name=\(repo)",
-                "-F", "number=\(number)",
-                "-f", "query=\(GraphQLQueries.singlePR)",
-            ]
-        )
+        let result = try await runRead([
+            "api", "graphql",
+            "-F", "owner=\(owner)",
+            "-F", "name=\(repo)",
+            "-F", "number=\(number)",
+            "-f", "query=\(GraphQLQueries.singlePR)",
+        ])
 
         guard result.succeeded else {
             throw GHError.execFailed(
@@ -262,7 +284,7 @@ actor GHClient {
             ]
             if let cursor { args += ["-F", "after=\(cursor)"] }
             args += ["-f", "query=\(GraphQLQueries.reviewThreads)"]
-            let result = try await ProcessRunner.run(executable: executablePath, args: args)
+            let result = try await runRead(args)
             guard result.succeeded else {
                 throw GHError.execFailed(
                     stderr: result.stderrString ?? "",
