@@ -79,6 +79,31 @@ final class DiffParserTests: XCTestCase {
         XCTAssertEqual(hunks[0].filePath, "new/path.go")
     }
 
+    func testPureRenameKeepsTheFile() {
+        let diff = """
+        diff --git a/old/a.go b/new/a.go
+        similarity index 100%
+        rename from old/a.go
+        rename to new/a.go
+        diff --git a/old/b.go b/new/b.go
+        similarity index 100%
+        rename from old/b.go
+        rename to new/b.go
+        """
+        let hunks = DiffParser.parse(diff)
+        XCTAssertEqual(hunks.map(\.filePath), ["new/a.go", "new/b.go"])
+        XCTAssertTrue(hunks.allSatisfy { $0.lines.isEmpty })
+    }
+
+    func testModeChangeKeepsTheFile() {
+        let diff = """
+        diff --git a/run.sh b/run.sh
+        old mode 100644
+        new mode 100755
+        """
+        XCTAssertEqual(DiffParser.parse(diff).map(\.filePath), ["run.sh"])
+    }
+
     func testBinaryFilesAreSkipped() {
         let diff = """
         diff --git a/icon.png b/icon.png
