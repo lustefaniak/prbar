@@ -104,7 +104,7 @@ final class DiffParserTests: XCTestCase {
         XCTAssertEqual(DiffParser.parse(diff).map(\.filePath), ["run.sh"])
     }
 
-    func testBinaryFilesAreSkipped() {
+    func testBinaryFilesHaveNoLines() {
         let diff = """
         diff --git a/icon.png b/icon.png
         index abc..def 100644
@@ -117,8 +117,8 @@ final class DiffParserTests: XCTestCase {
         +new
         """
         let hunks = DiffParser.parse(diff)
-        XCTAssertEqual(hunks.count, 1, "binary file should be skipped")
-        XCTAssertEqual(hunks[0].filePath, "foo.go")
+        XCTAssertEqual(hunks.map(\.filePath), ["icon.png", "foo.go"])
+        XCTAssertTrue(hunks[0].lines.isEmpty)
     }
 
     func testNoNewlineMarkerSkipped() {
