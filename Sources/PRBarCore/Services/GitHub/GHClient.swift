@@ -5,6 +5,8 @@ actor GHClient {
         case ghNotFound
         case execFailed(stderr: String, exitCode: Int32)
         case decodingFailed(String)
+        /// GitHub said to wait; no `gh` call is made until `until`.
+        case rateLimited(until: Date)
 
         /// `gh pr diff` on a PR GitHub won't render a diff for (over 300
         /// files, HTTP 406 `too_large`).
@@ -22,6 +24,9 @@ actor GHClient {
                 return "gh exited \(code): \(snippet.prefix(400))"
             case .decodingFailed(let msg):
                 return "decode error: \(msg.prefix(400))"
+            case .rateLimited(let until):
+                let minutes = max(1, Int((until.timeIntervalSinceNow / 60).rounded(.up)))
+                return "GitHub rate limit: PRBar holds off GitHub for \(minutes) min, until \(ISO8601DateFormatter().string(from: until))"
             }
         }
     }
@@ -38,9 +43,34 @@ actor GHClient {
         self.init(executablePath: path)
     }
 
-    init(executablePath: String, readRetryDelays: [Duration] = [.seconds(2), .seconds(5)]) {
+    private let gate: RateLimitGate
+
+    init(
+        executablePath: String,
+        readRetryDelays: [Duration] = [.seconds(2), .seconds(5)],
+        gate: RateLimitGate = .shared
+    ) {
         self.executablePath = executablePath
         self.readRetryDelays = readRetryDelays
+        self.gate = gate
+    }
+
+    /// Every `gh` call goes through here, so a rate limit holds all of them
+    /// back. `gh api` calls run with `-i` to read GitHub's rate-limit
+    /// headers; the result handed back carries the body alone, as without
+    /// `-i`. Other subcommands print no headers, so for them only gh's
+    /// error text can say a limit was hit.
+    private func run(_ args: [String], headers: Bool = true) async throws -> ProcessResult {
+        try await gate.check()
+        let withHeaders = headers && args.first == "api"
+        let raw = try await ProcessRunner.run(
+            executable: executablePath, args: withHeaders ? ["api", "-i"] + args.dropFirst() : args)
+        let response = withHeaders ? GitHubResponse(includeOutput: raw.stdout) : GitHubResponse(body: raw.stdout)
+        let message = (raw.stderrString ?? "") + (raw.succeeded ? "" : String(decoding: response.body, as: UTF8.self))
+        if let until = await gate.record(response, failed: !raw.succeeded, message: message), !raw.succeeded {
+            throw GHError.rateLimited(until: until)
+        }
+        return ProcessResult(stdout: response.body, stderr: raw.stderr, exitCode: raw.exitCode)
     }
 
     /// `readRetries:` from prbar.yaml, in seconds.
@@ -53,11 +83,11 @@ actor GHClient {
     /// it with a 502 or cuts the response short. Writes never go through
     /// here, since repeating one could post or merge twice.
     private func runRead(_ args: [String]) async throws -> ProcessResult {
-        var result = try await ProcessRunner.run(executable: executablePath, args: args)
+        var result = try await run(args)
         for delay in readRetryDelays {
             guard !result.succeeded, Self.isTransient(stderr: result.stderrString ?? "") else { break }
             try await Task.sleep(for: delay)
-            result = try await ProcessRunner.run(executable: executablePath, args: args)
+            result = try await run(args)
         }
         return result
     }
@@ -125,9 +155,7 @@ actor GHClient {
     /// diff text; caller is responsible for parsing. Cache key should be
     /// (owner, repo, number, headSha).
     func fetchDiff(owner: String, repo: String, number: Int) async throws -> String {
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: ["pr", "diff", "\(number)", "--repo", "\(owner)/\(repo)"]
+        let result = try await run(["pr", "diff", "\(number)", "--repo", "\(owner)/\(repo)"]
         )
         guard result.succeeded else {
             throw GHError.execFailed(
@@ -141,7 +169,7 @@ actor GHClient {
     /// The repository's `.prbar/rules/` on its default branch, nil when it
     /// has none.
     func fetchRepoRules(owner: String, repo: String) async throws -> RepoRuleFiles? {
-        let result = try await ProcessRunner.run(executable: executablePath, args: [
+        let result = try await run([
             "api", "graphql", "-F", "owner=\(owner)", "-F", "name=\(repo)", "-f", "query=\(GraphQLQueries.repoRules)",
         ])
         guard result.succeeded else {
@@ -161,7 +189,7 @@ actor GHClient {
         for (key, path) in zip(["a", "b", "c"], CodeOwners.locations) {
             args += ["-f", "\(key)=\(ref):\(path)"]
         }
-        let result = try await ProcessRunner.run(executable: executablePath, args: args)
+        let result = try await run(args)
         guard result.succeeded else {
             throw GHError.execFailed(stderr: result.stderrString ?? "", exitCode: result.exitCode)
         }
@@ -200,8 +228,7 @@ actor GHClient {
     }
 
     private func tsv(_ path: String, jq: String) async throws -> [[String]] {
-        let result = try await ProcessRunner.run(
-            executable: executablePath, args: ["api", "--paginate", path, "--jq", jq])
+        let result = try await run(["api", "--paginate", path, "--jq", jq])
         guard result.succeeded else {
             throw GHError.execFailed(stderr: result.stderrString ?? "", exitCode: result.exitCode)
         }
@@ -216,13 +243,10 @@ actor GHClient {
     /// redirect and returns the log body on stdout. Caller should tail
     /// the result; full logs can be megabytes.
     func fetchJobLog(owner: String, repo: String, jobId: Int64) async throws -> String {
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: [
-                "api",
-                "repos/\(owner)/\(repo)/actions/jobs/\(jobId)/logs",
-            ]
-        )
+        // No headers: the log is served from a redirect to storage outside
+        // the API, and a log line can itself start with `HTTP/`.
+        let result = try await run(
+            ["api", "repos/\(owner)/\(repo)/actions/jobs/\(jobId)/logs"], headers: false)
         guard result.succeeded else {
             throw GHError.execFailed(
                 stderr: result.stderrString ?? "",
@@ -251,9 +275,7 @@ actor GHClient {
             args.append(contentsOf: ["--body", body])
         }
 
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: args
+        let result = try await run(args
         )
         guard result.succeeded else {
             throw GHError.execFailed(
@@ -332,9 +354,7 @@ actor GHClient {
           resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
         }
         """
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: ["api", "graphql", "-F", "id=\(threadId)", "-f", "query=\(mutation)"]
+        let result = try await run(["api", "graphql", "-F", "id=\(threadId)", "-f", "query=\(mutation)"]
         )
         guard result.succeeded else {
             throw GHError.execFailed(
@@ -400,9 +420,7 @@ actor GHClient {
         login: String
     ) async throws {
         guard !login.isEmpty else { return }
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: [
+        let result = try await run([
                 "api", "--method", "POST",
                 "repos/\(owner)/\(repo)/pulls/\(number)/requested_reviewers",
                 "-f", "reviewers[]=\(login)",
@@ -509,9 +527,7 @@ actor GHClient {
         try data.write(to: tmp)
         defer { try? FileManager.default.removeItem(at: tmp) }
 
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: [
+        let result = try await run([
                 "api",
                 "--method", "POST",
                 "repos/\(owner)/\(repo)/pulls/\(number)/reviews",
@@ -553,9 +569,7 @@ actor GHClient {
             args.append("--delete-branch")
         }
 
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: args
+        let result = try await run(args
         )
         guard result.succeeded else {
             throw GHError.execFailed(
@@ -572,9 +586,7 @@ actor GHClient {
         repo: String,
         number: Int
     ) async throws {
-        let result = try await ProcessRunner.run(
-            executable: executablePath,
-            args: [
+        let result = try await run([
                 "pr", "merge", "\(number)",
                 "--repo", "\(owner)/\(repo)",
                 "--disable-auto",
