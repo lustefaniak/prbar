@@ -283,6 +283,12 @@ retried.
 readRetries: [2, 5, 15]   # three retries; [] turns retries off
 ```
 
+A rate limit is not retried. When GitHub says PRBar is rate limited, every GitHub
+call (reads and writes) is held back for as long as GitHub asks: its `retry-after`,
+else the reset of the rate-limit window, else a minute, doubling while it keeps
+happening, up to an hour. Polls and posts in that time fail at once with a message
+saying until when, and reviews cut short by the limit run again once it lifts.
+
 ## Not in this file
 
 Machine-local preferences stay in the app's own settings: launch at login, the

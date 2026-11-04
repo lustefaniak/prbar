@@ -1479,7 +1479,14 @@ final class ReviewQueueWorker {
             }
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
-            reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
+            if case GHClient.GHError.rateLimited = error {
+                // Not a failure of this commit: a failed state would keep
+                // auto-enqueue off it (`failedAtCurrentSha`) until the next
+                // push, so clear it for the first poll after the hold.
+                reviews[pr.nodeId] = nil
+            } else {
+                reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
+            }
             liveProgress[pr.nodeId] = nil
             persist()
             // Cost from any subreviews that completed before the throw
