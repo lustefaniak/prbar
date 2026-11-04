@@ -29,7 +29,7 @@ actor GHClient {
     private let executablePath: String
     /// Waits between tries of a read that GitHub failed transiently; there
     /// is one more try than there are waits.
-    private let readRetryDelays: [Duration]
+    private var readRetryDelays: [Duration]
 
     init() throws {
         guard let path = ExecutableResolver.find("gh") else {
@@ -41,6 +41,11 @@ actor GHClient {
     init(executablePath: String, readRetryDelays: [Duration] = [.seconds(2), .seconds(5)]) {
         self.executablePath = executablePath
         self.readRetryDelays = readRetryDelays
+    }
+
+    /// `readRetries:` from prbar.yaml, in seconds.
+    func setReadRetries(_ seconds: [Double]) {
+        readRetryDelays = seconds.map { .milliseconds(Int64($0 * 1000)) }
     }
 
     /// A read-only `gh` call, tried again when GitHub fails in a way that

@@ -328,6 +328,16 @@ extension PRBarRuntime {
         )
         runtime.repoConfigs.proposals = RuleProposals(
             file: JSONStateFile(url: environment.stateDirectory.appendingPathComponent("rule-proposals.json")))
+        if let client {
+            let applyReadRetries = { [weak runtime] in
+                guard let seconds = runtime?.repoConfigs.config.readRetries else { return }
+                Task { await client.setReadRetries(seconds) }
+            }
+            applyReadRetries()
+            _ = runtime.observe { event in
+                if case .configChanged = event { applyReadRetries() }
+            }
+        }
         poller.loadCached()
         poller.start()
         return runtime
