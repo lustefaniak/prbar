@@ -62,6 +62,10 @@ pollSchedule:
     timezone: Europe/Copenhagen
   - cron: "*/30 * * * *"
 
+# Seconds to wait before each retry of a GitHub read that failed transiently
+# (a 502, a cut-off response). Missing: [2, 5]. [] turns retries off.
+readRetries: [2, 5, 15]
+
 # What coding agents may do through `prbar-review mcp`: off, allow or ask.
 # Anything else turns the capability off.
 agents:
