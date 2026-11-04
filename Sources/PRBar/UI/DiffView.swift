@@ -177,7 +177,9 @@ struct DiffView: View {
 
             if !collapsed {
                 ForEach(Array(hunks.enumerated()), id: \.offset) { idx, hunk in
-                    hunkBlock(hunk, hunkIndexInFile: idx, fileHits: correlatedHits[path] ?? [])
+                    if !hunk.lines.isEmpty {
+                        hunkBlock(hunk, hunkIndexInFile: idx, fileHits: correlatedHits[path] ?? [])
+                    }
                 }
             }
         }

@@ -267,6 +267,28 @@ final class ReviewQueueWorkerTests: XCTestCase {
         }
     }
 
+    func testRenameOnlyDiffIsReviewed() async throws {
+        let pr = makePR(nodeId: "PR_1", number: 1)
+        let stubProvider = StubProvider(verdict: .approve, summary: "ok", cost: 0.01)
+        let diff = """
+        diff --git a/old/name.go b/new/name.go
+        similarity index 100%
+        rename from old/name.go
+        rename to new/name.go
+        """
+        let worker = makeWorker(provider: stubProvider, diffText: diff)
+
+        worker.enqueue(pr)
+        try await waitUntil {
+            self.isCompleted(worker.reviews["PR_1"]?.status) || self.isFailed(worker.reviews["PR_1"]?.status)
+        }
+
+        guard case .completed = worker.reviews["PR_1"]?.status else {
+            return XCTFail("expected .completed, got \(String(describing: worker.reviews["PR_1"]?.status))")
+        }
+        XCTAssertEqual(stubProvider.callCount, 1)
+    }
+
     func testEnqueueNewReviewRequestsOnlyEnqueuesReviewerRoles() async throws {
         let prs = [
             makePR(nodeId: "A", number: 1, role: .authored),

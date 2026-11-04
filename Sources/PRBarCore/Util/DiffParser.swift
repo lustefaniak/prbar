@@ -4,7 +4,11 @@ import Foundation
 /// into a flat list of hunks tagged with their file path. Tolerant of:
 ///   - rename headers (`rename from` / `rename to`) — picks the new name.
 ///   - mode changes / index lines — ignored.
-///   - binary files (`Binary files X and Y differ`) — skipped silently.
+///   - binary files (`Binary files X and Y differ`) — no lines parsed.
+/// A file block without any `@@` hunk (pure rename, mode change, binary)
+/// yields one hunk with no lines, so the file still counts as changed: a
+/// PR made only of renames would otherwise parse to nothing and fail its
+/// review as an empty diff.
 ///   - missing trailing newlines (`\ No newline at end of file`) — skipped.
 /// Lines starting with `\` (no-newline marker) and any prelude that doesn't
 /// belong to a hunk are dropped.
@@ -14,6 +18,7 @@ enum DiffParser {
 
         var currentFile: String?
         var currentHunk: HunkInProgress?
+        var currentFileHasHunk = false
 
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
@@ -29,10 +34,19 @@ enum DiffParser {
             currentHunk = nil
         }
 
+        func flushFile() {
+            flushHunk()
+            if let f = currentFile, !currentFileHasHunk {
+                hunks.append(Hunk(filePath: f, oldStart: 0, oldCount: 0, newStart: 0, newCount: 0, lines: []))
+            }
+            currentFile = nil
+            currentFileHasHunk = false
+        }
+
         for line in lines {
             // File header — diff --git a/<path> b/<path>
             if line.hasPrefix("diff --git ") {
-                flushHunk()
+                flushFile()
                 currentFile = parseGitDiffPath(line)
                 continue
             }
@@ -60,6 +74,7 @@ enum DiffParser {
             if line.hasPrefix("@@") {
                 flushHunk()
                 if let parsed = parseHunkHeader(line) {
+                    currentFileHasHunk = true
                     currentHunk = HunkInProgress(
                         oldStart: parsed.oldStart,
                         oldCount: parsed.oldCount,
@@ -98,7 +113,7 @@ enum DiffParser {
             }
         }
 
-        flushHunk()
+        flushFile()
         return hunks
     }
 
