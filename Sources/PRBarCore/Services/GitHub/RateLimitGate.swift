@@ -75,18 +75,26 @@ struct GitHubResponse: Sendable, Equatable {
     /// A header block starts with a status line at the very start or right
     /// after a blank line, and ends at the next blank line. Output without
     /// one is all body.
+    /// Works on bytes and copies body lines verbatim: splitting a String
+    /// would also break on U+2028, U+0085 and the like, which JSON allows
+    /// unescaped inside a PR title or body.
     init(includeOutput output: Data) {
-        let text = String(decoding: output, as: UTF8.self)
-        guard text.hasPrefix("HTTP/") else {
+        let bytes = [UInt8](output)
+        guard bytes.starts(with: Array("HTTP/".utf8)) else {
             body = output
             return
         }
-        var bodyLines: [Substring] = []
+        var kept = Data()
         var inHeaders = false
         var previousBlank = true
-        // `\r\n` is one Character in Swift, so splitting on "\n" alone would
-        // never split a CRLF header line.
-        for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+        var start = 0
+        while start < bytes.count {
+            let end = bytes[start...].firstIndex(of: 0x0A).map { $0 + 1 } ?? bytes.count
+            var contentEnd = end
+            if contentEnd > start, bytes[contentEnd - 1] == 0x0A { contentEnd -= 1 }
+            if contentEnd > start, bytes[contentEnd - 1] == 0x0D { contentEnd -= 1 }
+            let line = String(decoding: bytes[start..<contentEnd], as: UTF8.self)[...]
+            defer { start = end }
             if inHeaders {
                 if line.isEmpty {
                     inHeaders = false
@@ -104,10 +112,10 @@ struct GitHubResponse: Sendable, Equatable {
                 previousBlank = false
                 continue
             }
-            bodyLines.append(line)
+            kept.append(contentsOf: bytes[start..<end])
             previousBlank = line.isEmpty
         }
-        body = Data(bodyLines.joined(separator: "\n").utf8)
+        body = kept
     }
 
     private static func statusCode(_ line: Substring) -> Int? {

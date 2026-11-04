@@ -66,8 +66,10 @@ actor GHClient {
         let raw = try await ProcessRunner.run(
             executable: executablePath, args: withHeaders ? ["api", "-i"] + args.dropFirst() : args)
         let response = withHeaders ? GitHubResponse(includeOutput: raw.stdout) : GitHubResponse(body: raw.stdout)
-        let message = (raw.stderrString ?? "") + (raw.succeeded ? "" : String(decoding: response.body, as: UTF8.self))
-        if let until = await gate.record(response, failed: !raw.succeeded, message: message), !raw.succeeded {
+        // stderr only: gh prints GitHub's error message there, while a failed
+        // GraphQL call's body can be PR data that happens to say "rate limit".
+        if let until = await gate.record(response, failed: !raw.succeeded, message: raw.stderrString ?? ""),
+           !raw.succeeded {
             throw GHError.rateLimited(until: until)
         }
         return ProcessResult(stdout: response.body, stderr: raw.stderr, exitCode: raw.exitCode)
