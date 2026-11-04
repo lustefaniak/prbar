@@ -269,7 +269,7 @@ final class PollScheduleTests: XCTestCase {
 
 @MainActor
 final class PollScheduleRuntimeTests: XCTestCase {
-    func testTheRuntimeFollowsTheScheduleInTheConfigFile() throws {
+    func testTheRuntimeFollowsTheScheduleInTheConfigFile() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
