@@ -180,6 +180,7 @@ Settings → Review defaults edits them, one pattern per line.
 | `repositories` | Which repositories PRBar triages, hides, and reads rules from (see above). |
 | `agents` | What coding agents may do through `prbar-review mcp` (see below). |
 | `pollSchedule` | When the inbox is fetched (see below). Missing means once a minute. |
+| `readRetries` | Seconds to wait before each retry of a GitHub read that failed transiently (see below). Missing means `[2, 5]`. |
 
 The review settings in `defaults:` are the fields of
 [`ReviewDefaults`](../Sources/PRBarCore/Models/ReviewDefaults.swift), each with a
@@ -266,6 +267,17 @@ pollSchedule:
   and a change to `pollSchedule:` takes effect without a restart.
 - A mistake (a sixth field, an unknown time zone, `0 0 30 2 *` that never comes)
   makes the file invalid rather than polling at some other rate.
+
+## Retrying GitHub reads: `readRetries:`
+
+GitHub sometimes answers the inbox query with a 502 or cuts the response short.
+PRBar then tries the read-only `gh` calls (inbox, single PR, review threads)
+again, waiting the listed number of seconds before each try. Writes are never
+retried.
+
+```yaml
+readRetries: [2, 5, 15]   # three retries; [] turns retries off
+```
 
 ## Not in this file
 

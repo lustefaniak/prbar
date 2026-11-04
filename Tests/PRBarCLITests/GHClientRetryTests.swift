@@ -53,6 +53,25 @@ final class GHClientRetryTests: XCTestCase {
         XCTAssertEqual(gh.calls(), 3)
     }
 
+    func testConfiguredRetriesReplaceTheDefault() async throws {
+        let gh = try fakeGH(failures: 5, stderr: "gh: HTTP 502")
+        await gh.client.setReadRetries([0])
+        _ = try? await gh.client.fetchInbox()
+        XCTAssertEqual(gh.calls(), 2)
+
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("calls"))
+        await gh.client.setReadRetries([])
+        _ = try? await gh.client.fetchInbox()
+        XCTAssertEqual(gh.calls(), 1)
+    }
+
+    func testReadRetriesConfig() throws {
+        XCTAssertEqual(try ConfigFile.decode("version: 1\n").config.readRetries, [2, 5])
+        XCTAssertEqual(try ConfigFile.decode("readRetries: [1, 3, 10]\n").config.readRetries, [1, 3, 10])
+        XCTAssertEqual(try ConfigFile.decode("readRetries: []\n").config.readRetries, [])
+        XCTAssertThrowsError(try ConfigFile.decode("readRetries: [-1]\n"))
+    }
+
     func testOtherFailuresAreNotRetried() async throws {
         let gh = try fakeGH(failures: 1, stderr: "gh: HTTP 401: Bad credentials")
         do {
