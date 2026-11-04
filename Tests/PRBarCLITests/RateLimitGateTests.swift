@@ -31,6 +31,13 @@ final class GitHubResponseTests: XCTestCase {
         XCTAssertEqual(rows, ["alice", "bob", "carol"])
     }
 
+    func testBodyBytesSurviveVerbatim() {
+        let body = "{\"title\":\"a\u{2028}b\u{85}c\"}\r\n"
+        let r = GitHubResponse(includeOutput: Data(("HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 1\r\n\r\n" + body).utf8))
+        XCTAssertEqual(r.remaining, 1)
+        XCTAssertEqual(String(decoding: r.body, as: UTF8.self), body)
+    }
+
     func testOutputWithoutHeadersIsAllBody() {
         let out = Data("{\"data\":{}}\n".utf8)
         let r = GitHubResponse(includeOutput: out)
@@ -123,5 +130,27 @@ final class GHClientRateLimitTests: XCTestCase {
         } catch GHClient.GHError.rateLimited {}
         let calls = Int((try String(contentsOf: count, encoding: .utf8)).trimmingCharacters(in: .whitespacesAndNewlines))
         XCTAssertEqual(calls, 1, "nothing reaches GitHub while the hold lasts")
+    }
+
+    func testAFailedBodyMentioningRateLimitsDoesntHold() async throws {
+        let script = dir.appendingPathComponent("gh")
+        try """
+        #!/bin/sh
+        printf 'HTTP/2.0 200 OK\\r\\nX-Ratelimit-Remaining: 4000\\r\\n\\r\\n{"data":{"title":"Handle rate limit headers"},"errors":[{}]}\\n'
+        echo 'gh: Could not resolve to a node' >&2
+        exit 1
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let gate = RateLimitGate()
+        let client = GHClient(executablePath: script.path, readRetryDelays: [], gate: gate)
+
+        do {
+            _ = try await client.fetchInbox()
+            XCTFail("expected the call to fail")
+        } catch GHClient.GHError.rateLimited {
+            XCTFail("a PR title is not a rate limit")
+        } catch {}
+        let held = await gate.heldUntil
+        XCTAssertNil(held)
     }
 }
