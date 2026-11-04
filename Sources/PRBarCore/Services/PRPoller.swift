@@ -17,6 +17,19 @@ final class PRPoller {
     /// up the new value on its next iteration (no need to restart).
     var pollInterval: TimeInterval = 60
 
+    /// `pollSchedule:` from prbar.yaml. When set, polls happen at its times
+    /// instead of every `pollInterval`. A change re-arms the wait at once,
+    /// so a schedule that sleeps for half an hour doesn't keep the old one
+    /// until it wakes.
+    @ObservationIgnored
+    var schedule: PollSchedule? {
+        didSet {
+            guard schedule != oldValue, pollingTask != nil else { return }
+            stop()
+            start(pollFirst: false)
+        }
+    }
+
     @ObservationIgnored
     private var pollingTask: Task<Void, Never>?
 
@@ -85,16 +98,32 @@ final class PRPoller {
     }
 
     /// Start the polling loop. Idempotent — second call is a no-op.
-    func start() {
+    /// `pollFirst: false` waits for the first scheduled time instead of
+    /// polling straight away.
+    func start(pollFirst: Bool = true) {
         guard pollingTask == nil else { return }
         pollingTask = Task { [weak self] in
+            if pollFirst { await self?.poll() }
+            var target: Date?
             while !Task.isCancelled {
-                guard let self else { return }
+                guard let wait = self?.nextWait(after: target) else { return }
+                target = wait.at
+                try? await Task.sleep(for: .seconds(wait.delay))
+                guard !Task.isCancelled, let self else { return }
                 await self.poll()
-                let interval = self.pollInterval
-                try? await Task.sleep(for: .seconds(interval))
             }
         }
+    }
+
+    /// How long to sleep before the next poll, and the scheduled time it is
+    /// for (nil without a schedule: `pollInterval`). `previous` is the time
+    /// the last sleep was for: the sleep runs on a monotonic clock, so it can
+    /// end a moment before that time by the wall clock, and a quick poll
+    /// must not then be scheduled for the same time again.
+    func nextWait(now: Date = Date(), after previous: Date? = nil) -> (delay: TimeInterval, at: Date?) {
+        let from = max(now, previous ?? now)
+        guard let next = schedule?.next(after: from) else { return (pollInterval, nil) }
+        return (max(0, next.timeIntervalSince(now)), next)
     }
 
     /// Stop the polling loop. Idempotent.
@@ -208,6 +237,8 @@ final class PRPoller {
             if let cache {
                 Task.detached { await cache.save(fetched) }
             }
+        } catch is CancellationError {
+            // Stopped or re-armed mid-fetch: not a failure of the inbox.
         } catch {
             self.lastError = error.localizedDescription
             PRBarLog.poller.error("poll failed error=\(error.localizedDescription, privacy: .public)")
