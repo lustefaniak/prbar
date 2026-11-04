@@ -265,6 +265,10 @@ pollSchedule:
   (`0 9 15 * 1` is the 15th and every Monday; `0 9 */2 * 1` is odd-numbered Mondays).
 - PRBar still fetches straight away when it starts and when the config changes,
   and a change to `pollSchedule:` takes effect without a restart.
+- Everything that waits for a poll waits longer on a sparse schedule: a new review
+  request is picked up at the next poll, retries of facts a rule needs happen at
+  polls, and two teammates' PRBars that both finish a review of the same commit
+  before either sees the other's post both post it.
 - A mistake (a sixth field, an unknown time zone, `0 0 30 2 *` that never comes)
   makes the file invalid rather than polling at some other rate.
 
