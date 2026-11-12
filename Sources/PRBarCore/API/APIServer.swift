@@ -409,7 +409,9 @@ final class APIServer {
             return await reply(line, id, APIEmpty.self) { _ in self.runtime.poller.prs }
         case .refreshPR:
             return await reply(line, id, RefreshParams.self) { params in
-                guard let params, let pr = self.findPR(params.pr) else {
+                // Inbox only: a refresh updates an inbox entry in place, so a PR
+                // fetched outside the inbox would be re-read and then dropped.
+                guard let params, let pr = self.findPR(params.pr, inboxOnly: true) else {
                     throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
                 }
                 self.runtime.poller.refreshPR(pr, force: params.force ?? false)
@@ -1076,8 +1078,8 @@ final class APIServer {
             && number == refNumber
     }
 
-    private func findPR(_ ref: PRReference) -> InboxPR? {
-        let prs = runtime.poller.prs + fetched.values
+    private func findPR(_ ref: PRReference, inboxOnly: Bool = false) -> InboxPR? {
+        let prs = inboxOnly ? runtime.poller.prs : runtime.poller.prs + fetched.values
         if let nodeId = ref.nodeId { return prs.first { $0.nodeId == nodeId } }
         return prs.first { Self.matches($0.owner, $0.repo, $0.number, ref) }
     }

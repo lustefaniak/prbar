@@ -76,6 +76,50 @@ final class PRPollerTests: XCTestCase {
         XCTAssertTrue(poller.refreshingPRs.isEmpty, "should clear after refresh")
     }
 
+    private func tempCache() -> SnapshotCache {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return SnapshotCache(stateDirectory: dir)
+    }
+
+    func testRefreshPRPersistsSnapshot() async throws {
+        let original = makePR(nodeId: "PR_a", number: 1, title: "before")
+        let updated  = makePR(nodeId: "PR_a", number: 1, title: "after")
+        let cache = tempCache()
+
+        let poller = PRPoller(
+            fetcher: { [original] },
+            prRefresher: { _, _, _ in updated },
+            cache: cache
+        )
+        poller.pollNow()
+        try await waitUntil { cache.load().first?.title == "before" }
+
+        poller.refreshPR(original)
+        try await waitUntil { cache.load().first?.title == "after" }
+    }
+
+    func testRefreshOfPRNoLongerInInboxSavesNothing() async throws {
+        let kept = makePR(nodeId: "PR_a", number: 1, title: "kept")
+        let gone = makePR(nodeId: "PR_b", number: 2, title: "gone")
+        let cache = tempCache()
+
+        let poller = PRPoller(
+            fetcher: { [kept] },
+            prRefresher: { _, _, _ in gone },
+            cache: cache
+        )
+        poller.pollNow()
+        try await waitUntil { cache.load().map(\.nodeId) == ["PR_a"] }
+        // A file that differs from `prs`, so any save shows up.
+        await cache.save([])
+
+        poller.refreshPR(gone)
+        try await waitUntil { poller.refreshingPRs.isEmpty }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(cache.load().map(\.nodeId), [])
+    }
+
     func testRefreshPRSurfacesErrorWithoutRemovingEntry() async throws {
         struct StubError: Error, LocalizedError {
             var errorDescription: String? { "rate limited" }
