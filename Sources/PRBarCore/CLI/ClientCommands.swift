@@ -12,7 +12,7 @@ enum ClientCommand: Equatable {
     case inbox(json: Bool)
     case history(kind: HistoryKind, limit: Int?, json: Bool)
     case events
-    case refresh(PRReference)
+    case refresh(Invocation.Target)
 
     enum HistoryKind: String, Equatable {
         case actions, reviews
@@ -52,7 +52,7 @@ enum ClientCommand: Equatable {
             self = .events
         case "refresh" where positional.count == 1 && limit == nil && !json:
             guard let target = Invocation.parseTarget(positional[0]) else { return nil }
-            self = .refresh(PRReference(owner: target.owner, repo: target.repo, number: target.number))
+            self = .refresh(target)
         default:
             return nil
         }
@@ -73,12 +73,12 @@ enum ClientCommand: Equatable {
                 (20 unless --limit; all of them with --json)
       events    follow changes as they happen, one JSON object per line
       refresh   re-read one tracked PR from GitHub now, e.g. after acting
-                on it, instead of waiting for the next poll. Returns once
-                asked; the inbox changes when GitHub answers
+                on it, instead of waiting for the next poll; and once more
+                about a second later, since GitHub's reads lag its writes
 
     """
 
-    func run(socketURL: URL = ServerLocation.socketURL()) async -> Int32 {
+    func run(socketURL: URL = ServerLocation.socketURL(), refreshSettle: Duration = .milliseconds(1200)) async -> Int32 {
         let connected: ServerConnection.Connected
         do {
             connected = try await ServerConnection.connect(socketURL: socketURL, client: "prbar-review")
@@ -126,13 +126,19 @@ enum ClientCommand: Equatable {
                 }
                 Self.fail("the server went away")
                 return 1
-            case .refresh(let pr):
+            case .refresh(let target):
+                let params = RefreshParams(pr: PRReference(owner: target.owner, repo: target.repo, number: target.number), force: true)
                 do {
-                    _ = try await client.call(.refreshPR, RefreshParams(pr: pr, force: true), as: APIEmpty.self)
+                    _ = try await client.call(.refreshPR, params, as: APIEmpty.self)
                 } catch let error as RPCError where error.code == RPCError.notFound {
-                    Self.fail("\(pr.owner ?? "")/\(pr.repo ?? "")#\(pr.number.map(String.init) ?? "") isn't in PRBar's inbox")
+                    Self.fail("\(target.owner)/\(target.repo)#\(target.number) isn't in PRBar's inbox")
                     return 1
                 }
+                // GitHub's GraphQL reads lag its REST writes, so a read right
+                // after acting can miss the action. Read once more after it
+                // settles, as the app does after its own writes.
+                try await Task.sleep(for: refreshSettle)
+                _ = try await client.call(.refreshPR, params, as: APIEmpty.self)
             }
             return 0
         } catch {
