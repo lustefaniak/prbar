@@ -2,6 +2,8 @@ import Foundation
 
 /// The most recent inbox, so the popover shows known state on launch
 /// instead of "Fetching…" until the first poll lands: `<state>/inbox.json`.
+/// Rewritten whenever the inbox changes, so clients outside the app can
+/// watch it as a cue to re-read the inbox.
 actor SnapshotCache {
     private let file: JSONStateFile<[InboxPR]>
 

@@ -65,12 +65,30 @@ final class ClientCommandTests: XCTestCase {
         XCTAssertEqual(healthy, 0)
         let history = await ClientCommand.history(kind: .reviews, limit: 1, json: true).run(socketURL: socketURL)
         XCTAssertEqual(history, 0)
-        let untracked = await ClientCommand.refresh(PRReference(owner: "o", repo: "r", number: 7)).run(socketURL: socketURL)
-        XCTAssertEqual(untracked, 1)
 
         try "repos: [unclosed".write(to: dir.appendingPathComponent("prbar.yaml"), atomically: true, encoding: .utf8)
         runtime.repoConfigs.reloadIfChanged()
         let degraded = await ClientCommand.status(json: true).run(socketURL: socketURL)
         XCTAssertEqual(degraded, 1)
+    }
+
+    /// `refresh` exits 0 for an inbox PR and 1 for one PRBar doesn't track.
+    @MainActor
+    func testRefreshAgainstARealServer() async throws {
+        let dir = URL(fileURLWithPath: "/tmp/prbar-cli-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let socketURL = dir.appendingPathComponent("server.sock")
+
+        let tracked = RuntimeFixtures.requestedPR(number: 1)
+        let runtime = RuntimeFixtures.make(dir, ownsAutomation: true, prs: [tracked])
+        let server = APIServer(runtime: runtime, holder: "test")
+        try server.start(socketURL: socketURL)
+        defer { server.stop() }
+
+        let ok = await ClientCommand.refresh(PRReference(owner: "o", repo: "r", number: 1)).run(socketURL: socketURL)
+        XCTAssertEqual(ok, 0)
+        let untracked = await ClientCommand.refresh(PRReference(owner: "o", repo: "r", number: 7)).run(socketURL: socketURL)
+        XCTAssertEqual(untracked, 1)
     }
 }

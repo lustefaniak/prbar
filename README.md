@@ -257,7 +257,8 @@ prbar-review refresh owner/repo#123     # re-read one tracked PR now, not at the
 ```
 
 `status` exits 1 when the server reports a problem (a failed poll, a broken
-config) and 3 when no PRBar is running.
+config) and 3 when no PRBar is running. `refresh` exits 1 when PRBar doesn't
+track the PR.
 
 ### Coding agents (MCP)
 

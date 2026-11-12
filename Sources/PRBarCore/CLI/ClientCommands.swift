@@ -127,12 +127,14 @@ enum ClientCommand: Equatable {
                 Self.fail("the server went away")
                 return 1
             case .refresh(let pr):
-                _ = try await client.call(.refreshPR, RefreshParams(pr: pr, force: true), as: APIEmpty.self)
+                do {
+                    _ = try await client.call(.refreshPR, RefreshParams(pr: pr, force: true), as: APIEmpty.self)
+                } catch let error as RPCError where error.code == RPCError.notFound {
+                    Self.fail("\(pr.owner ?? "")/\(pr.repo ?? "")#\(pr.number.map(String.init) ?? "") isn't in PRBar's inbox")
+                    return 1
+                }
             }
             return 0
-        } catch let error as RPCError where error.code == RPCError.notFound {
-            Self.fail(error.message)
-            return 1
         } catch {
             Self.fail(error.localizedDescription)
             return 3
