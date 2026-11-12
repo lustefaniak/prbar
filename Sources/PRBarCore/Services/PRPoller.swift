@@ -141,6 +141,12 @@ final class PRPoller {
                 let updated = try await refresher(owner, repo, number)
                 if let idx = self.prs.firstIndex(where: { $0.nodeId == nodeId }) {
                     self.prs[idx] = updated
+                    // Clients that watch the state directory (scripts, editor
+                    // plugins) learn of the change the same way as after a poll.
+                    if let cache {
+                        let snapshot = self.prs
+                        Task.detached { await cache.save(snapshot) }
+                    }
                 }
             } catch {
                 self.lastError = error.localizedDescription

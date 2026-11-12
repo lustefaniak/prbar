@@ -1,22 +1,24 @@
 import Foundation
 
-/// `prbar-review status | inbox | history | events`: clients of the running
-/// PRBar server (the app, or `prbar-review serve`). They read what that
-/// server knows; none of them starts one.
+/// `prbar-review status | inbox | history | events | refresh`: clients of the
+/// running PRBar server (the app, or `prbar-review serve`). They read what
+/// that server knows, or ask it to re-read a PR; none of them starts one.
 ///
-/// Exit status: 0 fine, 1 the server reported a problem (`status`) or went
-/// away (`events`), 2 bad arguments, 3 no reachable or compatible server.
+/// Exit status: 0 fine, 1 the server reported a problem (`status`), went
+/// away (`events`) or doesn't track the PR (`refresh`), 2 bad arguments,
+/// 3 no reachable or compatible server.
 enum ClientCommand: Equatable {
     case status(json: Bool)
     case inbox(json: Bool)
     case history(kind: HistoryKind, limit: Int?, json: Bool)
     case events
+    case refresh(PRReference)
 
     enum HistoryKind: String, Equatable {
         case actions, reviews
     }
 
-    static let names: Set<String> = ["status", "inbox", "history", "events"]
+    static let names: Set<String> = ["status", "inbox", "history", "events", "refresh"]
 
     init?(args: [String]) {
         guard let name = args.first else { return nil }
@@ -48,6 +50,9 @@ enum ClientCommand: Equatable {
             self = .history(kind: kind, limit: limit ?? (json ? nil : 20), json: json)
         case "events" where positional.isEmpty && limit == nil && !json:
             self = .events
+        case "refresh" where positional.count == 1 && limit == nil && !json:
+            guard let target = Invocation.parseTarget(positional[0]) else { return nil }
+            self = .refresh(PRReference(owner: target.owner, repo: target.repo, number: target.number))
         default:
             return nil
         }
@@ -58,6 +63,7 @@ enum ClientCommand: Equatable {
            prbar-review inbox [--json]
            prbar-review history [actions|reviews] [--limit <n>] [--json]
            prbar-review events
+           prbar-review refresh <pr-url|owner/repo#number>
 
     Ask the running PRBar server (the app, or `prbar-review serve`).
 
@@ -66,6 +72,9 @@ enum ClientCommand: Equatable {
       history   recent GitHub actions or AI reviews, newest first
                 (20 unless --limit; all of them with --json)
       events    follow changes as they happen, one JSON object per line
+      refresh   re-read one tracked PR from GitHub now, e.g. after acting
+                on it, instead of waiting for the next poll. Returns once
+                asked; the inbox changes when GitHub answers
 
     """
 
@@ -117,8 +126,13 @@ enum ClientCommand: Equatable {
                 }
                 Self.fail("the server went away")
                 return 1
+            case .refresh(let pr):
+                _ = try await client.call(.refreshPR, RefreshParams(pr: pr, force: true), as: APIEmpty.self)
             }
             return 0
+        } catch let error as RPCError where error.code == RPCError.notFound {
+            Self.fail(error.message)
+            return 1
         } catch {
             Self.fail(error.localizedDescription)
             return 3

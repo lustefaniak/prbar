@@ -11,6 +11,12 @@ final class ClientCommandTests: XCTestCase {
         // --json means "all of it" unless a limit is given.
         XCTAssertEqual(ClientCommand(args: ["history", "--json"]), .history(kind: .actions, limit: nil, json: true))
         XCTAssertEqual(ClientCommand(args: ["events"]), .events)
+        let ref = PRReference(owner: "o", repo: "r", number: 7)
+        XCTAssertEqual(ClientCommand(args: ["refresh", "o/r#7"]), .refresh(ref))
+        XCTAssertEqual(ClientCommand(args: ["refresh", "https://github.com/o/r/pull/7"]), .refresh(ref))
+        XCTAssertNil(ClientCommand(args: ["refresh"]))
+        XCTAssertNil(ClientCommand(args: ["refresh", "not-a-pr"]))
+        XCTAssertNil(ClientCommand(args: ["refresh", "o/r#7", "--json"]))
 
         XCTAssertNil(ClientCommand(args: ["status", "--help"]))
         XCTAssertNil(ClientCommand(args: ["status", "extra"]))
@@ -59,6 +65,8 @@ final class ClientCommandTests: XCTestCase {
         XCTAssertEqual(healthy, 0)
         let history = await ClientCommand.history(kind: .reviews, limit: 1, json: true).run(socketURL: socketURL)
         XCTAssertEqual(history, 0)
+        let untracked = await ClientCommand.refresh(PRReference(owner: "o", repo: "r", number: 7)).run(socketURL: socketURL)
+        XCTAssertEqual(untracked, 1)
 
         try "repos: [unclosed".write(to: dir.appendingPathComponent("prbar.yaml"), atomically: true, encoding: .utf8)
         runtime.repoConfigs.reloadIfChanged()

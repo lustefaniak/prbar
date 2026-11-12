@@ -237,7 +237,7 @@ public enum PRBarReviewCLI {
                                    (one JSON line with --json), posts nothing
     prbar-review serve [options]   run the PRBar server headless;
                                    see `prbar-review serve --help`
-    prbar-review status | inbox | history | events
+    prbar-review status | inbox | history | events | refresh
                                    ask the running server; see
                                    `prbar-review status --help`
     prbar-review rules check | explain <pr>

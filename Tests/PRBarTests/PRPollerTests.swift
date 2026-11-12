@@ -76,6 +76,23 @@ final class PRPollerTests: XCTestCase {
         XCTAssertTrue(poller.refreshingPRs.isEmpty, "should clear after refresh")
     }
 
+    func testRefreshPRPersistsSnapshot() async throws {
+        let original = makePR(nodeId: "PR_a", number: 1, title: "before")
+        let updated  = makePR(nodeId: "PR_a", number: 1, title: "after")
+        let cache = SnapshotCache(stateDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("prbar-snap-\(UUID().uuidString)"))
+
+        let poller = PRPoller(
+            fetcher: { [original] },
+            prRefresher: { _, _, _ in updated },
+            cache: cache
+        )
+        poller.pollNow()
+        try await waitUntil { cache.load().first?.title == "before" }
+
+        poller.refreshPR(original)
+        try await waitUntil { cache.load().first?.title == "after" }
+    }
+
     func testRefreshPRSurfacesErrorWithoutRemovingEntry() async throws {
         struct StubError: Error, LocalizedError {
             var errorDescription: String? { "rate limited" }

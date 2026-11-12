@@ -253,6 +253,7 @@ prbar-review status                     # last poll, queue, config problems
 prbar-review inbox                      # the PRs it tracks
 prbar-review history reviews --limit 5  # or `actions`; --json for jq
 prbar-review events                     # follow changes, one JSON line each
+prbar-review refresh owner/repo#123     # re-read one tracked PR now, not at the next poll
 ```
 
 `status` exits 1 when the server reports a problem (a failed poll, a broken
