@@ -111,6 +111,10 @@ struct PRBarConfig: Sendable, Hashable, Codable {
     /// GitHub failed transiently (`GHClient.isTransient`). Empty: no retries.
     var readRetries: [Double] = Self.defaultReadRetries
     static let defaultReadRetries: [Double] = [2, 5]
+    /// Longest single wait `readRetries` accepts, in seconds. Bounds the
+    /// value well inside what `GHClient.setReadRetries` can turn into a
+    /// `Duration`, and keeps one transient failure from stalling a poll.
+    static let maxReadRetry: Double = 3600
     /// The rules directory (`RuleDirectory`), compiled by whoever loaded
     /// the config (`ConfigFile.load`, `RepoConfigStore`). Kept apart from
     /// prbar.yaml: not part of the file, not sent over the API, and never
@@ -146,9 +150,10 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         agents = try c.decodeIfPresent(AgentPolicy.self, forKey: .agents) ?? AgentPolicy()
         pollSchedule = try c.decodeIfPresent(PollSchedule.self, forKey: .pollSchedule)
         readRetries = try c.decodeIfPresent([Double].self, forKey: .readRetries) ?? Self.defaultReadRetries
-        guard readRetries.allSatisfy({ $0.isFinite && $0 >= 0 }) else {
+        guard readRetries.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= Self.maxReadRetry }) else {
             throw DecodingError.dataCorruptedError(
-                forKey: .readRetries, in: c, debugDescription: "readRetries are seconds to wait, zero or more")
+                forKey: .readRetries, in: c,
+                debugDescription: "readRetries are seconds to wait, from 0 to \(Int(Self.maxReadRetry))")
         }
     }
 
