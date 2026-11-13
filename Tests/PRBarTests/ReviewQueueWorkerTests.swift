@@ -69,6 +69,42 @@ final class ReviewQueueWorkerTests: XCTestCase {
             "successful retriage keeps prior drafts in the chain")
     }
 
+    func testRateLimitedRunRestoresPriorReviewChain() async throws {
+        let worker = makeWorker(
+            provider: StubProvider(verdict: .comment, summary: "first", cost: 0.05),
+            diffText: makeDiff())
+        worker.enqueue(makePR(nodeId: "PR_1", number: 1, headSha: "oldSha1"))
+        try await waitUntil { self.isCompleted(worker.reviews["PR_1"]?.status) }
+
+        worker.diffFetcher = { _, _, _ in
+            throw GHClient.GHError.rateLimited(until: Date().addingTimeInterval(60))
+        }
+        worker.enqueue(makePR(nodeId: "PR_1", number: 1, headSha: "newSha2"))
+        try await waitUntil { worker.reviews["PR_1"]?.headSha == "oldSha1" }
+
+        guard case .completed(let agg) = worker.reviews["PR_1"]?.status else {
+            return XCTFail("expected the earlier review back, got \(String(describing: worker.reviews["PR_1"]))")
+        }
+        XCTAssertEqual(agg.summaryMarkdown, "first")
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReviews ?? [], [])
+
+        // After the hold, the head move folds it back into the chain.
+        let diff = makeDiff()
+        worker.diffFetcher = { _, _, _ in diff }
+        worker.provider = SlowStubProvider(verdict: .approve)
+        worker.enqueue(makePR(nodeId: "PR_1", number: 1, headSha: "newSha2"))
+        XCTAssertEqual(worker.reviews["PR_1"]?.priorReviews.map(\.headSha), ["oldSha1"])
+    }
+
+    func testRateLimitedFirstRunClearsState() async throws {
+        let worker = makeWorker(provider: StubProvider(verdict: .comment, summary: "x", cost: 0), diffText: "")
+        worker.diffFetcher = { _, _, _ in
+            throw GHClient.GHError.rateLimited(until: Date().addingTimeInterval(60))
+        }
+        worker.enqueue(makePR(nodeId: "PR_1", number: 1))
+        try await waitUntil { worker.reviews["PR_1"] == nil }
+    }
+
     func testRetriageAccumulatesChainAcrossMultipleHeadMoves() async throws {
         // Three head-moves without the user posting between them: the
         // chain should accumulate all completed-but-unposted drafts so
