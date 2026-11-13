@@ -70,6 +70,9 @@ final class GHClientRetryTests: XCTestCase {
         XCTAssertEqual(try ConfigFile.decode("readRetries: [1, 3, 10]\n").config.readRetries, [1, 3, 10])
         XCTAssertEqual(try ConfigFile.decode("readRetries: []\n").config.readRetries, [])
         XCTAssertThrowsError(try ConfigFile.decode("readRetries: [-1]\n"))
+        XCTAssertEqual(try ConfigFile.decode("readRetries: [3600]\n").config.readRetries, [3600])
+        XCTAssertThrowsError(try ConfigFile.decode("readRetries: [3601]\n"))
+        XCTAssertThrowsError(try ConfigFile.decode("readRetries: [1e30]\n"))
     }
 
     func testOtherFailuresAreNotRetried() async throws {
