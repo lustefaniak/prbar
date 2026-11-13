@@ -276,7 +276,8 @@ pollSchedule:
 
 GitHub sometimes answers the inbox query with a 502 or cuts the response short.
 PRBar then tries the read-only `gh` calls (inbox, single PR, review threads)
-again, waiting the listed number of seconds before each try. Writes are never
+again, waiting the listed number of seconds before each try. Each wait is at
+most 3600 seconds; a larger one makes the file invalid. Writes are never
 retried.
 
 ```yaml
