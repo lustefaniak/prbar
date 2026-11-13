@@ -55,6 +55,17 @@ repositories:
   # what is posted under your name.
   trustRules: ["acme/monorepo"]
 
+# When the inbox is fetched: one cron entry or a list of them (missing: every
+# minute). The timezone is an IANA name; missing means the machine's.
+pollSchedule:
+  - cron: "*/5 8-17 * * 1-5"
+    timezone: Europe/Copenhagen
+  - cron: "*/30 * * * *"
+
+# Seconds to wait before each retry of a GitHub read that failed transiently
+# (a 502, a cut-off response). Missing: [2, 5]. [] turns retries off.
+readRetries: [2, 5, 15]
+
 # What coding agents may do through `prbar-review mcp`: off, allow or ask.
 # Anything else turns the capability off.
 agents:
