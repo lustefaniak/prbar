@@ -21,6 +21,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case refreshPR = "inbox.refresh"
     case review
     case runReview = "review.run"
+    case postReview = "review.post"
     case reviewOutcome = "review.outcome"
     case reviewLocal = "review.local"
     case explainRules = "rules.explain"
@@ -386,6 +387,14 @@ struct LocalReviewParams: Codable, Sendable {
     var provider: ProviderID?
     /// Review again even when these exact changes were reviewed already.
     var force: Bool?
+}
+
+/// Post the review PRBar recommends for an inbox PR (`RecommendedReview`)
+/// and wait until GitHub has it.
+struct PostReviewParams: Codable, Sendable {
+    var pr: PRReference
+    /// The review's body instead of PRBar's summary.
+    var body: String?
 }
 
 struct ReviewResult: Codable, Sendable {
