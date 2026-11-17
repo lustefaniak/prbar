@@ -267,7 +267,8 @@ their own, such as an approval below the auto-approve confidence. The verdict
 picks the review (approve with notes is an approval), the summary is its body
 unless `--body` gives one, and findings that fall on the diff become line
 comments. It waits until GitHub has the review and exits 1 when there is
-nothing to post or the post fails.
+nothing to post or the post fails. `--dry-run` prints that review as JSON
+instead, line comments included, and posts nothing.
 
 ### Coding agents (MCP)
 

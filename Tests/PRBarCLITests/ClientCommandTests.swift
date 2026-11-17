@@ -27,7 +27,9 @@ final class ClientCommandTests: XCTestCase {
         let target = Invocation.Target(owner: "o", repo: "r", number: 7)
         XCTAssertEqual(ClientCommand(args: ["post", "o/r#7"]), .post(target, body: nil))
         XCTAssertEqual(ClientCommand(args: ["post", "https://github.com/o/r/pull/7", "--body", "LGTM"]), .post(target, body: "LGTM"))
+        XCTAssertEqual(ClientCommand(args: ["post", "o/r#7", "--dry-run"]), .post(target, body: nil, dryRun: true))
         XCTAssertNil(ClientCommand(args: ["post"]))
+        XCTAssertNil(ClientCommand(args: ["status", "--dry-run"]))
         XCTAssertNil(ClientCommand(args: ["post", "o/r#7", "--body"]))
         XCTAssertNil(ClientCommand(args: ["status", "--body", "x"]))
     }
@@ -57,6 +59,15 @@ final class ClientCommandTests: XCTestCase {
             costUsd: 0, toolCallCount: 0, toolNamesUsed: [], perSubreview: [], isSubscriptionAuth: false)
         runtime.queue._setReviewsForScreenshot([pr.nodeId: ReviewState(
             prNodeId: pr.nodeId, headSha: pr.headSha, triggeredAt: Date(), status: .completed(review), costUsd: 0)])
+        let preview = try await server.postRecommendedReview(pr, body: nil, dryRun: true)
+        XCTAssertEqual(preview.action, .approve)
+        XCTAssertEqual(preview.comments.map(\.line), [1])
+        XCTAssertEqual(preview.omitted, 0)
+        let dryRun = await ClientCommand.post(Invocation.Target(owner: "o", repo: "r", number: 1), body: nil, dryRun: true).run(socketURL: socketURL)
+        XCTAssertEqual(dryRun, 0)
+        let previewed = await posted.reviews
+        XCTAssertTrue(previewed.isEmpty, "a dry run posted")
+
         let ok = await post.run(socketURL: socketURL)
         XCTAssertEqual(ok, 0)
         let reviews = await posted.reviews
