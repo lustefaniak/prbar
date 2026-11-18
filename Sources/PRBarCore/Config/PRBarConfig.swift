@@ -105,6 +105,16 @@ struct PRBarConfig: Sendable, Hashable, Codable {
     var repositories = RepositoryScope()
     /// What coding agents may do through `prbar-review mcp`.
     var agents = AgentPolicy()
+    /// When the inbox is fetched. Nil: every `PRPoller.pollInterval` seconds.
+    var pollSchedule: PollSchedule?
+    /// Seconds to wait before each retry of a read-only `gh` call that
+    /// GitHub failed transiently (`GHClient.isTransient`). Empty: no retries.
+    var readRetries: [Double] = Self.defaultReadRetries
+    static let defaultReadRetries: [Double] = [2, 5]
+    /// Longest single wait `readRetries` accepts, in seconds. Bounds the
+    /// value well inside what `GHClient.setReadRetries` can turn into a
+    /// `Duration`, and keeps one transient failure from stalling a poll.
+    static let maxReadRetry: Double = 3600
     /// The rules directory (`RuleDirectory`), compiled by whoever loaded
     /// the config (`ConfigFile.load`, `RepoConfigStore`). Kept apart from
     /// prbar.yaml: not part of the file, not sent over the API, and never
@@ -122,7 +132,7 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         case defaultClaudeModel, defaultClaudeEffort
         case defaultCodexModel, defaultCodexEffort
         case defaultClaudeLargeChangeEffort, defaultCodexLargeChangeEffort
-        case defaults, repositories, agents
+        case defaults, repositories, agents, pollSchedule, readRetries
     }
 
     init(from decoder: Decoder) throws {
@@ -138,6 +148,13 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         defaults = try c.decodeIfPresent(ReviewDefaults.self, forKey: .defaults) ?? ReviewDefaults()
         repositories = try c.decodeIfPresent(RepositoryScope.self, forKey: .repositories) ?? RepositoryScope()
         agents = try c.decodeIfPresent(AgentPolicy.self, forKey: .agents) ?? AgentPolicy()
+        pollSchedule = try c.decodeIfPresent(PollSchedule.self, forKey: .pollSchedule)
+        readRetries = try c.decodeIfPresent([Double].self, forKey: .readRetries) ?? Self.defaultReadRetries
+        guard readRetries.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= Self.maxReadRetry }) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .readRetries, in: c,
+                debugDescription: "readRetries are seconds to wait, from 0 to \(Int(Self.maxReadRetry))")
+        }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -153,6 +170,8 @@ struct PRBarConfig: Sendable, Hashable, Codable {
         if defaults != ReviewDefaults() { try c.encode(defaults, forKey: .defaults) }
         if repositories != RepositoryScope() { try c.encode(repositories, forKey: .repositories) }
         if agents != AgentPolicy() { try c.encode(agents, forKey: .agents) }
+        try c.encodeIfPresent(pollSchedule, forKey: .pollSchedule)
+        if readRetries != Self.defaultReadRetries { try c.encode(readRetries, forKey: .readRetries) }
     }
 
     /// A repository's overrides of the review defaults: what the

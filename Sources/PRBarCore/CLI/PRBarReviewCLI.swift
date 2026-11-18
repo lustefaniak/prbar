@@ -111,6 +111,7 @@ public enum PRBarReviewCLI {
                 Data("prbar-review: \(error.localizedDescription)\n".utf8))
             return 2
         }
+        await client.setReadRetries(config.readRetries)
 
         let target = invocation.target
         let taskId = "\(target.owner)/\(target.repo)#\(target.number)"

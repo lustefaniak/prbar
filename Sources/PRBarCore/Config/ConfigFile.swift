@@ -165,6 +165,7 @@ enum ConfigFile {
         top["defaults"] = .object(defaults)
         top["repositories"] = .object(keys(RepositoryScope.CodingKeys.self))
         top["agents"] = .object(keys(AgentPolicy.CodingKeys.self))
+        top["pollSchedule"] = .list(keys(PollSchedule.Entry.CodingKeys.self))
         return top
     }()
 
@@ -187,7 +188,13 @@ enum ConfigFile {
             case let .object(inner)?:
                 walk(value, schema: inner, path: here, into: &found)
             case let .list(inner)?:
-                for (index, item) in (value.sequence.map(Array.init) ?? []).enumerated() {
+                // Any list key also takes a single item in place of the list,
+                // as `pollSchedule:` documents.
+                guard let items = value.sequence.map(Array.init) else {
+                    walk(value, schema: inner, path: here, into: &found)
+                    continue
+                }
+                for (index, item) in items.enumerated() {
                     walk(item, schema: inner, path: "\(here)[\(index)]", into: &found)
                 }
             }
