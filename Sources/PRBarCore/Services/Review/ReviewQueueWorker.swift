@@ -352,6 +352,22 @@ final class ReviewQueueWorker {
         return s
     }
 
+    /// The state `enqueue` started from for a run that never ran: the last
+    /// prior review as completed at its own SHA, the rest still behind it.
+    /// Nil when there was none.
+    static func restoringLatestPrior(_ state: ReviewState) -> ReviewState? {
+        guard let latest = state.priorReviews.last else { return nil }
+        return ReviewState(
+            prNodeId: state.prNodeId,
+            providerId: state.providerId,
+            headSha: latest.headSha,
+            triggeredAt: state.triggeredAt,
+            status: .completed(latest.aggregated),
+            costUsd: 0,
+            priorReviews: Array(state.priorReviews.dropLast())
+        )
+    }
+
     /// Closure that fetches the unified diff for a PR. Injected so tests
     /// don't need a real `gh` install.
     @ObservationIgnored
@@ -1479,7 +1495,16 @@ final class ReviewQueueWorker {
             }
         } catch {
             PRBarLog.triage.error("run failed pr=\(pr.nameWithOwner, privacy: .public)#\(pr.number, privacy: .public) error=\(String(describing: error), privacy: .public)")
-            reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
+            if case GHClient.GHError.rateLimited = error {
+                // Not a failure of this commit: a failed state would keep
+                // auto-enqueue off it (`failedAtCurrentSha`) until the next
+                // push, so put back the last completed review instead. It is
+                // at an older SHA, so the first poll after the hold
+                // re-enqueues and `enqueue` rebuilds the same prior chain.
+                reviews[pr.nodeId] = reviews[pr.nodeId].flatMap(Self.restoringLatestPrior)
+            } else {
+                reviews[pr.nodeId]?.status = .failed(error.localizedDescription)
+            }
             liveProgress[pr.nodeId] = nil
             persist()
             // Cost from any subreviews that completed before the throw
