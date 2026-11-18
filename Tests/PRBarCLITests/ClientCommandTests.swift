@@ -11,6 +11,12 @@ final class ClientCommandTests: XCTestCase {
         // --json means "all of it" unless a limit is given.
         XCTAssertEqual(ClientCommand(args: ["history", "--json"]), .history(kind: .actions, limit: nil, json: true))
         XCTAssertEqual(ClientCommand(args: ["events"]), .events)
+        let ref = Invocation.Target(owner: "o", repo: "r", number: 7)
+        XCTAssertEqual(ClientCommand(args: ["refresh", "o/r#7"]), .refresh(ref))
+        XCTAssertEqual(ClientCommand(args: ["refresh", "https://github.com/o/r/pull/7"]), .refresh(ref))
+        XCTAssertNil(ClientCommand(args: ["refresh"]))
+        XCTAssertNil(ClientCommand(args: ["refresh", "not-a-pr"]))
+        XCTAssertNil(ClientCommand(args: ["refresh", "o/r#7", "--json"]))
 
         XCTAssertNil(ClientCommand(args: ["status", "--help"]))
         XCTAssertNil(ClientCommand(args: ["status", "extra"]))
@@ -64,5 +70,39 @@ final class ClientCommandTests: XCTestCase {
         runtime.repoConfigs.reloadIfChanged()
         let degraded = await ClientCommand.status(json: true).run(socketURL: socketURL)
         XCTAssertEqual(degraded, 1)
+    }
+
+    /// `refresh` exits 0 for an inbox PR and 1 for one PRBar doesn't track,
+    /// including one the server fetched for another request without tracking it.
+    @MainActor
+    func testRefreshAgainstARealServer() async throws {
+        let dir = URL(fileURLWithPath: "/tmp/prbar-cli-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let socketURL = dir.appendingPathComponent("server.sock")
+
+        let tracked = RuntimeFixtures.requestedPR(nodeId: "PR_1", number: 1)
+        let outside = RuntimeFixtures.requestedPR(nodeId: "PR_7", number: 7)
+        let runtime = RuntimeFixtures.make(dir, ownsAutomation: true, prs: [tracked], github: [tracked, outside])
+        let server = APIServer(runtime: runtime, holder: "test")
+        try server.start(socketURL: socketURL)
+        defer { server.stop() }
+
+        func refresh(_ number: Int) async -> Int32 {
+            await ClientCommand.refresh(Invocation.Target(owner: "o", repo: "r", number: number))
+                .run(socketURL: socketURL, refreshSettle: .zero)
+        }
+        let ok = await refresh(1)
+        XCTAssertEqual(ok, 0)
+        let untracked = await refresh(9)
+        XCTAssertEqual(untracked, 1)
+
+        // Explaining the rules for a PR outside the inbox fetches it from GitHub.
+        let client = try await ServerConnection.connect(socketURL: socketURL, client: "test").client
+        defer { client.close() }
+        _ = try await client.call(
+            .explainRules, ExplainRulesParams(pr: PRReference(owner: "o", repo: "r", number: 7)), as: RulesExplanation.self)
+        let fetched = await refresh(7)
+        XCTAssertEqual(fetched, 1)
     }
 }

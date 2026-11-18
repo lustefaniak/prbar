@@ -55,9 +55,24 @@ final class PRPoller {
     var onPollSuccess: (@MainActor (_ prs: [InboxPR]) -> Void)?
 
     /// Optional snapshot cache for loading the last known state on launch
-    /// and persisting after each successful poll.
+    /// and persisting after each successful poll or single-PR refresh.
     @ObservationIgnored
     private let cache: SnapshotCache?
+
+    /// The last snapshot write. Each write waits for the one before it, so
+    /// a poll's and a refresh's snapshots reach disk in the order they were
+    /// taken and an older one never overwrites a newer one.
+    @ObservationIgnored
+    private var saveTask: Task<Void, Never>?
+
+    /// Persist off the main actor without blocking the caller on disk I/O.
+    private func persist(_ snapshot: [InboxPR]) {
+        guard let cache else { return }
+        saveTask = Task.detached { [previous = saveTask] in
+            await previous?.value
+            await cache.save(snapshot)
+        }
+    }
 
     init(
         fetcher: @Sendable @escaping () async throws -> [InboxPR],
@@ -141,6 +156,9 @@ final class PRPoller {
                 let updated = try await refresher(owner, repo, number)
                 if let idx = self.prs.firstIndex(where: { $0.nodeId == nodeId }) {
                     self.prs[idx] = updated
+                    // Clients that watch the state directory (scripts, editor
+                    // plugins) learn of the change the same way as after a poll.
+                    self.persist(self.prs)
                 }
             } catch {
                 self.lastError = error.localizedDescription
@@ -204,10 +222,7 @@ final class PRPoller {
             // (PR drops out of inbox).
             onPollSuccess?(fetched)
 
-            // Persist asynchronously; don't block the poll on disk I/O.
-            if let cache {
-                Task.detached { await cache.save(fetched) }
-            }
+            persist(fetched)
         } catch {
             self.lastError = error.localizedDescription
             PRBarLog.poller.error("poll failed error=\(error.localizedDescription, privacy: .public)")
