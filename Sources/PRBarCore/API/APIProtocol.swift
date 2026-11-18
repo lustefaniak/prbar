@@ -21,6 +21,7 @@ enum APIMethod: String, CaseIterable, Sendable {
     case refreshPR = "inbox.refresh"
     case review
     case runReview = "review.run"
+    case postReview = "review.post"
     case reviewOutcome = "review.outcome"
     case reviewLocal = "review.local"
     case explainRules = "rules.explain"
@@ -386,6 +387,26 @@ struct LocalReviewParams: Codable, Sendable {
     var provider: ProviderID?
     /// Review again even when these exact changes were reviewed already.
     var force: Bool?
+}
+
+/// Post the review PRBar recommends for an inbox PR (`RecommendedReview`)
+/// and wait until GitHub has it.
+struct PostReviewParams: Codable, Sendable {
+    var pr: PRReference
+    /// The review's body instead of PRBar's summary.
+    var body: String?
+    /// Answer with the review that would be posted, and post nothing.
+    var dryRun: Bool?
+}
+
+/// The review `review.post` posted, or would post on a dry run.
+struct PostReviewResult: Codable, Sendable, Equatable {
+    var action: ReviewActionKind
+    var body: String
+    /// The findings that land on the diff, as the line comments they become.
+    var comments: [GHClient.InlineComment]
+    /// Findings left out because they don't land on the diff.
+    var omitted: Int
 }
 
 struct ReviewResult: Codable, Sendable {

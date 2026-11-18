@@ -23,6 +23,57 @@ final class ClientCommandTests: XCTestCase {
         XCTAssertNil(ClientCommand(args: ["history", "merges"]))
         XCTAssertNil(ClientCommand(args: ["history", "--limit", "0"]))
         XCTAssertNil(ClientCommand(args: ["events", "--json"]))
+
+        let target = Invocation.Target(owner: "o", repo: "r", number: 7)
+        XCTAssertEqual(ClientCommand(args: ["post", "o/r#7"]), .post(target, body: nil))
+        XCTAssertEqual(ClientCommand(args: ["post", "https://github.com/o/r/pull/7", "--body", "LGTM"]), .post(target, body: "LGTM"))
+        XCTAssertEqual(ClientCommand(args: ["post", "o/r#7", "--dry-run"]), .post(target, body: nil, dryRun: true))
+        XCTAssertNil(ClientCommand(args: ["post"]))
+        XCTAssertNil(ClientCommand(args: ["status", "--dry-run"]))
+        XCTAssertNil(ClientCommand(args: ["post", "o/r#7", "--body"]))
+        XCTAssertNil(ClientCommand(args: ["status", "--body", "x"]))
+    }
+
+    @MainActor
+    func testPostSendsPRBarsRecommendationAndWaitsForIt() async throws {
+        let dir = URL(fileURLWithPath: "/tmp/prbar-cli-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let socketURL = dir.appendingPathComponent("server.sock")
+        let pr = RuntimeFixtures.requestedPR()
+        let runtime = RuntimeFixtures.make(dir, ownsAutomation: true, prs: [pr])
+        let posted = PostedReviews()
+        runtime.actionQueue.reviewExecutor = { _, kind, body, comments in await posted.record(kind, body, comments) }
+        let server = APIServer(runtime: runtime, holder: "test")
+        try server.start(socketURL: socketURL)
+        defer { server.stop() }
+        let post = ClientCommand.post(Invocation.Target(owner: "o", repo: "r", number: 1), body: nil)
+
+        let nothing = await post.run(socketURL: socketURL)
+        XCTAssertEqual(nothing, 1, "posted without a review")
+
+        // The fixture diff adds line 1 of f.txt.
+        let finding = DiffAnnotation(path: "f.txt", lineStart: 1, lineEnd: 1, severity: .warning, title: "T", body: "B")
+        let review = AggregatedReview(
+            verdict: .comment, confidence: 0.5, summaryMarkdown: "Looks fine", annotations: [finding],
+            costUsd: 0, toolCallCount: 0, toolNamesUsed: [], perSubreview: [], isSubscriptionAuth: false)
+        runtime.queue._setReviewsForScreenshot([pr.nodeId: ReviewState(
+            prNodeId: pr.nodeId, headSha: pr.headSha, triggeredAt: Date(), status: .completed(review), costUsd: 0)])
+        let preview = try await server.postRecommendedReview(pr, body: nil, dryRun: true)
+        XCTAssertEqual(preview.action, .approve)
+        XCTAssertEqual(preview.comments.map(\.line), [1])
+        XCTAssertEqual(preview.omitted, 0)
+        let dryRun = await ClientCommand.post(Invocation.Target(owner: "o", repo: "r", number: 1), body: nil, dryRun: true).run(socketURL: socketURL)
+        XCTAssertEqual(dryRun, 0)
+        let previewed = await posted.reviews
+        XCTAssertTrue(previewed.isEmpty, "a dry run posted")
+
+        let ok = await post.run(socketURL: socketURL)
+        XCTAssertEqual(ok, 0)
+        let reviews = await posted.reviews
+        XCTAssertEqual(reviews.map(\.kind), [.approve])
+        XCTAssertEqual(reviews.first?.body, "Looks fine")
+        XCTAssertEqual(reviews.first?.comments.map(\.line), [1])
     }
 
     func testStatusText() {
@@ -104,5 +155,12 @@ final class ClientCommandTests: XCTestCase {
             .explainRules, ExplainRulesParams(pr: PRReference(owner: "o", repo: "r", number: 7)), as: RulesExplanation.self)
         let fetched = await refresh(7)
         XCTAssertEqual(fetched, 1)
+    }
+}
+
+private actor PostedReviews {
+    var reviews: [(kind: ReviewActionKind, body: String, comments: [GHClient.InlineComment])] = []
+    func record(_ kind: ReviewActionKind, _ body: String, _ comments: [GHClient.InlineComment]) {
+        reviews.append((kind, body, comments))
     }
 }

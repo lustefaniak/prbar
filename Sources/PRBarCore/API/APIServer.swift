@@ -562,6 +562,14 @@ final class APIServer {
                 self.runtime.actionQueue.enqueue(params.pr, kind: params.kind, source: .manual)
                 return APIEmpty()
             }
+        case .postReview:
+            return await reply(line, id, PostReviewParams.self) { params in
+                guard let params else { throw Self.missingParams }
+                guard let pr = self.findPR(params.pr) else {
+                    throw RPCError(code: RPCError.notFound, message: "no such PR in the inbox")
+                }
+                return try await self.postRecommendedReview(pr, body: params.body, dryRun: params.dryRun ?? false)
+            }
         case .retryAction:
             return await reply(line, id, ActionTarget.self) { params in
                 guard let params else { throw Self.missingParams }
@@ -746,6 +754,8 @@ final class APIServer {
             capability = .read
         case .runReview, .reviewLocal:
             capability = .review
+        case .postReview:
+            capability = .post
         case .enqueueAction, .retryAction, .dismissAction:
             // Post or merge depends on the action, so the handler decides
             // with `denial(of:under:)` once it knows which action it is.
@@ -839,6 +849,49 @@ final class APIServer {
         return RPCError(
             code: RPCError.notPermitted,
             message: "PRBar's agents.\(capability.rawValue) is \(policy[capability].rawValue) in prbar.yaml, so coding agents can't do this")
+    }
+
+    /// `review.post`: queue the review PRBar recommends for `pr` like any
+    /// manual post, so it gets the queue's retries and History, then wait
+    /// until it lands. Throws when there is nothing to post, a write to the
+    /// PR is already in flight, or the post fails for good. Still retrying
+    /// at `timeout` throws too, though the queue keeps trying. A dry run
+    /// returns the review without posting it.
+    func postRecommendedReview(_ pr: InboxPR, body: String?, dryRun: Bool = false, timeout: Duration = .seconds(120)) async throws -> PostReviewResult {
+        let actions = runtime.actionQueue
+        let state = runtime.queue.reviews[pr.nodeId]
+        let findings: Int = {
+            guard case .completed(let review) = state?.status else { return 0 }
+            return review.annotations.count
+        }()
+        let diffText = findings > 0 ? try await runtime.queue.diff(for: pr) : ""
+        let result: PostReviewResult
+        switch RecommendedReview.plan(state: state, headSha: pr.headSha, body: body, diffText: diffText) {
+        case .refuse(let reason):
+            throw RPCError(code: RPCError.refused, message: reason)
+        case .post(let kind):
+            guard case .review(let action, let text, let comments) = kind else {
+                throw RPCError(code: RPCError.internalError, message: "PRBar planned something other than a review")
+            }
+            result = PostReviewResult(action: action, body: text, comments: comments, omitted: findings - comments.count)
+            if dryRun { return result }
+            // Checked right before enqueueing, with no await between: enqueue
+            // ignores a PR already being written, and this would then wait on
+            // that other write as if it were this one.
+            guard !actions.isBusy(pr.nodeId) else {
+                throw RPCError(code: RPCError.refused, message: "a write to this PR is already in flight")
+            }
+            actions.enqueue(pr, kind: kind, source: .manual)
+        }
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            switch actions.state(for: pr.nodeId) {
+            case nil: return result
+            case .failed(let message): throw RPCError(code: RPCError.internalError, message: message)
+            case .queued, .running, .retrying: try await Task.sleep(for: .milliseconds(250))
+            }
+        }
+        throw RPCError(code: RPCError.internalError, message: "not posted yet: PRBar is still retrying; see `prbar-review history`")
     }
 
     func status() -> ServerStatus {

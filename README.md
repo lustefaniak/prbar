@@ -254,11 +254,21 @@ prbar-review inbox                      # the PRs it tracks
 prbar-review history reviews --limit 5  # or `actions`; --json for jq
 prbar-review events                     # follow changes, one JSON line each
 prbar-review refresh owner/repo#123     # re-read one tracked PR now, not at the next poll
+prbar-review post owner/repo#123        # post PRBar's recommended review
 ```
 
 `status` exits 1 when the server reports a problem (a failed poll, a broken
 config) and 3 when no PRBar is running. `refresh` exits 1 when PRBar doesn't
 track the PR.
+
+`post` is the app's post button without the app: it posts the review PRBar
+recommends for the PR's current commit even when the rules didn't post it on
+their own, such as an approval below the auto-approve confidence. The verdict
+picks the review (approve with notes is an approval), the summary is its body
+unless `--body` gives one, and findings that fall on the diff become line
+comments. It waits until GitHub has the review and exits 1 when there is
+nothing to post or the post fails. `--dry-run` prints that review as JSON
+instead, line comments included, and posts nothing.
 
 ### Coding agents (MCP)
 

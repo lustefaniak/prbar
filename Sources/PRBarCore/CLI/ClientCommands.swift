@@ -1,29 +1,33 @@
 import Foundation
 
-/// `prbar-review status | inbox | history | events | refresh`: clients of the
-/// running PRBar server (the app, or `prbar-review serve`). They read what
-/// that server knows, or ask it to re-read a PR; none of them starts one.
+/// `prbar-review status | inbox | history | events | refresh | post`: clients
+/// of the running PRBar server (the app, or `prbar-review serve`). They read
+/// what that server knows, ask it to re-read a PR, or have it post PRBar's
+/// recommended review; none of them starts one.
 ///
 /// Exit status: 0 fine, 1 the server reported a problem (`status`), went
-/// away (`events`) or doesn't track the PR (`refresh`), 2 bad arguments,
-/// 3 no reachable or compatible server.
+/// away (`events`), doesn't track the PR (`refresh`) or didn't post (`post`),
+/// 2 bad arguments, 3 no reachable or compatible server.
 enum ClientCommand: Equatable {
     case status(json: Bool)
     case inbox(json: Bool)
     case history(kind: HistoryKind, limit: Int?, json: Bool)
     case events
     case refresh(Invocation.Target)
+    case post(Invocation.Target, body: String?, dryRun: Bool = false)
 
     enum HistoryKind: String, Equatable {
         case actions, reviews
     }
 
-    static let names: Set<String> = ["status", "inbox", "history", "events", "refresh"]
+    static let names: Set<String> = ["status", "inbox", "history", "events", "refresh", "post"]
 
     init?(args: [String]) {
         guard let name = args.first else { return nil }
         var json = false
         var limit: Int?
+        var body: String?
+        var dryRun = false
         var positional: [String] = []
         var i = args.index(after: args.startIndex)
         while i < args.endIndex {
@@ -34,12 +38,19 @@ enum ClientCommand: Equatable {
                 i += 1
                 guard i < args.endIndex, let n = Int(args[i]), n > 0 else { return nil }
                 limit = n
+            case "--dry-run":
+                dryRun = true
+            case "--body":
+                i += 1
+                guard i < args.endIndex else { return nil }
+                body = args[i]
             default:
                 guard !args[i].hasPrefix("-") else { return nil }
                 positional.append(args[i])
             }
             i += 1
         }
+        guard (body == nil && !dryRun) || name == "post" else { return nil }
         switch name {
         case "status" where positional.isEmpty && limit == nil:
             self = .status(json: json)
@@ -53,6 +64,9 @@ enum ClientCommand: Equatable {
         case "refresh" where positional.count == 1 && limit == nil && !json:
             guard let target = Invocation.parseTarget(positional[0]) else { return nil }
             self = .refresh(target)
+        case "post" where positional.count == 1 && limit == nil && !json:
+            guard let target = Invocation.parseTarget(positional[0]) else { return nil }
+            self = .post(target, body: body, dryRun: dryRun)
         default:
             return nil
         }
@@ -64,6 +78,7 @@ enum ClientCommand: Equatable {
            prbar-review history [actions|reviews] [--limit <n>] [--json]
            prbar-review events
            prbar-review refresh <pr-url|owner/repo#number>
+           prbar-review post <pr-url|owner/repo#number> [--body <text>] [--dry-run]
 
     Ask the running PRBar server (the app, or `prbar-review serve`).
 
@@ -75,6 +90,12 @@ enum ClientCommand: Equatable {
       refresh   re-read one tracked PR from GitHub now, e.g. after acting
                 on it, instead of waiting for the next poll; and once more
                 about a second later, since GitHub's reads lag its writes
+      post      post the review PRBar recommends for a tracked PR, as the
+                app's post button does: its verdict, its summary (or
+                --body) and its findings as line comments where they fall
+                on the diff. Waits until GitHub has it. --dry-run prints
+                that review as JSON instead (action, body, the line
+                comments, how many findings were left out) and posts nothing
 
     """
 
@@ -139,6 +160,21 @@ enum ClientCommand: Equatable {
                 // settles, as the app does after its own writes.
                 try await Task.sleep(for: refreshSettle)
                 _ = try await client.call(.refreshPR, params, as: APIEmpty.self)
+            case .post(let target, let body, let dryRun):
+                let name = "\(target.owner)/\(target.repo)#\(target.number)"
+                let params = PostReviewParams(pr: PRReference(owner: target.owner, repo: target.repo, number: target.number), body: body, dryRun: dryRun)
+                let result: PostReviewResult
+                do {
+                    result = try await client.call(.postReview, params, as: PostReviewResult.self)
+                } catch let error as RPCError where error.code != RPCError.incompatibleVersion && error.code != RPCError.methodNotFound {
+                    Self.fail("\(name): \(error.message)")
+                    return 1
+                }
+                if dryRun {
+                    try Self.printJSON(result)
+                } else {
+                    Self.print("posted PRBar's review on \(name)")
+                }
             }
             return 0
         } catch {
